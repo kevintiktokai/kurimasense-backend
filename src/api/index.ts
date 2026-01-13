@@ -1,0 +1,8 @@
+export { default as ingestRouter } from './ingest.js'
+export { default as inferenceRouter } from './inference.js'
+export { default as fieldsRouter } from './fields.js'
+export { default as analysisRunsRouter } from './analysisRuns.js'
+export { default as contextRouter } from './context.js'
+export { default as provenanceRouter } from './provenance.js'
+export { default as interpretationRouter } from './interpretation.js'
+export { default as decisionContextRouter } from './decisionContext.js'
