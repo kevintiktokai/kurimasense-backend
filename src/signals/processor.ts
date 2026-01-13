@@ -17,7 +17,7 @@ export function processSatelliteSignals(fieldId: string) {
   )
   const records = stmt.all('satellite') as Array<{ id: number; payload: string }>
 
-  const signals = []
+  const signals: any[] = []
 
   for (const record of records) {
     const data = JSON.parse(record.payload) as any
@@ -55,7 +55,7 @@ export function processWeatherSignals(fieldId: string) {
   )
   const records = stmt.all('weather') as Array<{ id: number; payload: string }>
 
-  const signals = []
+  const signals: any[] = []
 
   for (const record of records) {
     const data = JSON.parse(record.payload) as any

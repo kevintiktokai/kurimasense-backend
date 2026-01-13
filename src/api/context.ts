@@ -56,19 +56,19 @@ router.get('/:fieldId', (req: Request, res: Response) => {
       })
     }
 
+    const windowStartStr = windowStart as string
+    const windowEndStr = windowEnd as string
+
     // Phase E: Context is descriptive only, factual and raw
     // Fetch actual signal data from database (read-only, not persisted as context)
-    const windowStartString = windowStart as string
-    const windowEndString = windowEnd as string
-
-    const input = assembleInferenceInput(fieldId, windowStartString, windowEndString)
+    const input = assembleInferenceInput(fieldId, windowStartStr, windowEndStr)
     
     // Phase E: Build factual, non-interpretive context data
     const context = {
       source: 'Database signals (vegetation_signals, weather_signals)',
       timeWindow: {
-        start: windowStartString,
-        end: windowEndString,
+        start: windowStartStr,
+        end: windowEndStr,
       },
       fetchedAt: new Date().toISOString(),
       data: {
