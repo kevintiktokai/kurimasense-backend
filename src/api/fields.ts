@@ -39,7 +39,14 @@ router.get('/', (req: Request, res: Response) => {
  */
 router.get('/:id/analysis-runs', (req: Request, res: Response) => {
   try {
-    const { id } = req.params
+    const idParam = (req.params as any).id as string | string[] | undefined
+    const id = Array.isArray(idParam) ? idParam[0] : idParam
+    if (!id || typeof id !== 'string') {
+      return res.status(400).json({
+        success: false,
+        error: 'Field id is required'
+      })
+    }
     const runs = getAnalysisRunsByFieldId(id)
     res.json({
       success: true,
@@ -60,7 +67,14 @@ router.get('/:id/analysis-runs', (req: Request, res: Response) => {
  */
 router.get('/:id', (req: Request, res: Response) => {
   try {
-    const { id } = req.params
+    const idParam = (req.params as any).id as string | string[] | undefined
+    const id = Array.isArray(idParam) ? idParam[0] : idParam
+    if (!id || typeof id !== 'string') {
+      return res.status(400).json({
+        success: false,
+        error: 'Field id is required'
+      })
+    }
     const field = getFieldById(id)
     
     if (!field) {

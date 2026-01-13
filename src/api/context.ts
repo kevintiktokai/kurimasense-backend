@@ -31,8 +31,16 @@ const router = express.Router()
  */
 router.get('/:fieldId', (req: Request, res: Response) => {
   try {
-    const { fieldId } = req.params
+    const fieldIdParam = (req.params as any).fieldId as string | string[] | undefined
+    const fieldId = Array.isArray(fieldIdParam) ? fieldIdParam[0] : fieldIdParam
     const { windowStart, windowEnd } = req.query
+
+    if (!fieldId || typeof fieldId !== 'string') {
+      return res.status(400).json({
+        success: false,
+        error: 'fieldId is required'
+      })
+    }
 
     if (!windowStart || typeof windowStart !== 'string') {
       return res.status(400).json({
@@ -50,14 +58,17 @@ router.get('/:fieldId', (req: Request, res: Response) => {
 
     // Phase E: Context is descriptive only, factual and raw
     // Fetch actual signal data from database (read-only, not persisted as context)
-    const input = assembleInferenceInput(fieldId, windowStart, windowEnd)
+    const windowStartString = windowStart as string
+    const windowEndString = windowEnd as string
+
+    const input = assembleInferenceInput(fieldId, windowStartString, windowEndString)
     
     // Phase E: Build factual, non-interpretive context data
     const context = {
       source: 'Database signals (vegetation_signals, weather_signals)',
       timeWindow: {
-        start: windowStart,
-        end: windowEnd,
+        start: windowStartString,
+        end: windowEndString,
       },
       fetchedAt: new Date().toISOString(),
       data: {

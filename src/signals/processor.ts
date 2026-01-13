@@ -12,14 +12,15 @@ import db from '../db/client.js'
  */
 export function processSatelliteSignals(fieldId: string) {
   // Get all unprocessed satellite records
-  const records = db.prepare(
+  const stmt = db.prepare(
     'SELECT id, payload FROM satellite_records WHERE id NOT IN (SELECT source_id FROM signals WHERE source_type = ?)'
-  ).all('satellite')
+  )
+  const records = stmt.all('satellite') as Array<{ id: number; payload: string }>
 
   const signals = []
 
   for (const record of records) {
-    const data = JSON.parse(record.payload)
+    const data = JSON.parse(record.payload) as any
     
     if (data.fieldId === fieldId || !fieldId) {
       // Extract NDVI signal
@@ -49,14 +50,15 @@ export function processSatelliteSignals(fieldId: string) {
  * Process weather records into environmental signals
  */
 export function processWeatherSignals(fieldId: string) {
-  const records = db.prepare(
+  const stmt = db.prepare(
     'SELECT id, payload FROM weather_records WHERE id NOT IN (SELECT source_id FROM signals WHERE source_type = ?)'
-  ).all('weather')
+  )
+  const records = stmt.all('weather') as Array<{ id: number; payload: string }>
 
   const signals = []
 
   for (const record of records) {
-    const data = JSON.parse(record.payload)
+    const data = JSON.parse(record.payload) as any
     
     if (data.fieldId === fieldId || !fieldId) {
       // Temperature signal
