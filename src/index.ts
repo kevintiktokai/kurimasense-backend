@@ -30,14 +30,20 @@ app.get('/health', (req: Request, res: Response) => {
 // API routes
 app.use('/api/ingest', ingestRoutes)
 app.use('/api/signals', signalsRoutes)
-app.use('/api/inference', inferenceRouter)
+
+// V1 Authoritative Route (PRIMARY)
+app.use('/api/insights', insightsRouter) // V1: Primary insight entrypoint - NO dependency on analysis_runs or inference
+
+// Legacy/Optional Routes (NOT REQUIRED FOR V1)
+app.use('/api/inference', inferenceRouter) // Legacy: Computed on-the-fly, not stored
+app.use('/api/analysis-runs', analysisRunsRouter) // Legacy: Optional, not required for V1
+
+// Other routes
 app.use('/api/fields', fieldsRouter)
-app.use('/api/analysis-runs', analysisRunsRouter)
 app.use('/api/context', contextRouter)
 app.use('/api/provenance', provenanceRouter)
 app.use('/api/interpretation', interpretationRouter)
 app.use('/api/decision-context', decisionContextRouter)
-app.use('/api/insights', insightsRouter)
 app.use('/api/satellite', satelliteRoutes)
 app.use('/api/weather', weatherRoutes)
 

@@ -1,8 +1,13 @@
 /**
  * Insights API
- * V1: Primary Insight Entrypoint
+ * V1: Primary Insight Entrypoint (AUTHORITATIVE)
  * 
  * GET /api/insights?fieldId=X&seasonId=Y
+ * 
+ * This is the ONLY V1 insight entrypoint. It is completely independent of:
+ * - analysis_runs (legacy, optional)
+ * - inference endpoints (legacy, optional)
+ * - inference_response (legacy, optional)
  * 
  * Behavior:
  * 1. Validate fieldId and seasonId
@@ -15,9 +20,11 @@
  * 
  * STRICT RULES:
  * - Insights are the authoritative V1 output
+ * - NO dependency on analysis_runs or inference endpoints
  * - Deterministic, explainable logic
  * - No AI/LLM decision-making
  * - Idempotent: same request → same stored Insight
+ * - One insight per field per season (enforced by UNIQUE constraint)
  */
 
 import { Router, Request, Response } from 'express'

@@ -2,6 +2,12 @@
  * Insight Generation
  * V1: Deterministic Performance Deviation Insight Generation
  * 
+ * This module is the authoritative V1 insight generation logic.
+ * It is completely independent of:
+ * - analysis_runs (legacy, optional)
+ * - inference endpoints (legacy, optional)
+ * - inference_response (legacy, optional)
+ * 
  * STRICT RULES:
  * - Deterministic: same inputs → same output
  * - Explainable: all logic is auditable

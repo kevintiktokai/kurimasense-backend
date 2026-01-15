@@ -1,6 +1,12 @@
 /**
  * Analysis Run API
- * Phase 4.2 — Analysis Run Persistence
+ * LEGACY / OPTIONAL — NOT REQUIRED FOR V1
+ * 
+ * ⚠️ IMPORTANT: This endpoint is NOT required for V1 functionality.
+ * - V1 insights are served via GET /api/insights (authoritative)
+ * - analysis_runs are legacy/optional and remain for backward compatibility
+ * - No V1 route depends on analysis_runs
+ * - Frontend should use /api/insights for V1 functionality
  * 
  * STRICT RULES (NON-NEGOTIABLE):
  * - AnalysisRuns are immutable (no update, delete, recomputation)

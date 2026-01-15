@@ -1,6 +1,14 @@
 /**
  * Inference API
- * Endpoint for retrieving field inference results
+ * LEGACY / OPTIONAL — NOT REQUIRED FOR V1
+ * 
+ * ⚠️ IMPORTANT: This endpoint is NOT required for V1 functionality.
+ * - V1 insights are served via GET /api/insights (authoritative)
+ * - inference endpoints are legacy/optional and remain for backward compatibility
+ * - No V1 route depends on inference endpoints
+ * - Frontend should use /api/insights for V1 functionality
+ * 
+ * Endpoint for retrieving field inference results (computed on-the-fly, not stored)
  */
 
 import { Router, Request, Response } from 'express'

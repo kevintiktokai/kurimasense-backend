@@ -34,8 +34,13 @@ router.get('/', (req: Request, res: Response) => {
  * GET /api/fields/:id/analysis-runs
  * Get all AnalysisRuns for a specific field
  * 
- * Phase 4.2: Returns stored AnalysisRuns only, no recomputation
- * Must be defined before /:id route to avoid route conflict
+ * LEGACY / OPTIONAL — NOT REQUIRED FOR V1
+ * 
+ * ⚠️ IMPORTANT: This endpoint is NOT required for V1 functionality.
+ * - V1 insights are served via GET /api/insights (authoritative)
+ * - This endpoint is legacy/optional and remains for backward compatibility
+ * - Returns stored AnalysisRuns only, no recomputation
+ * - Must be defined before /:id route to avoid route conflict
  */
 router.get('/:id/analysis-runs', (req: Request, res: Response) => {
   try {
