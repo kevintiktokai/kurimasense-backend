@@ -25,6 +25,7 @@
  * - No AI/LLM decision-making
  * - Idempotent: same request → same stored Insight
  * - One insight per field per season (enforced by UNIQUE constraint)
+ * - seasonId is MANDATORY: NO automatic inference, NO defaults, explicit context required
  */
 
 import { Router, Request, Response } from 'express'
@@ -41,6 +42,12 @@ const router = Router()
  * - fieldId: string (required)
  * - seasonId: string (required)
  * 
+ * V1 REQUIREMENT: seasonId is MANDATORY
+ * - NO automatic season inference
+ * - NO default season selection
+ * - NO season derivation from dates
+ * - Explicit season context is REQUIRED
+ * 
  * Returns: Insight object as JSON
  */
 router.get('/', async (req: Request, res: Response) => {
@@ -48,16 +55,20 @@ router.get('/', async (req: Request, res: Response) => {
     const { fieldId, seasonId } = req.query
 
     // Step 1: Validate required parameters
-    if (!fieldId || typeof fieldId !== 'string') {
+    // V1 REQUIREMENT: fieldId is mandatory
+    if (!fieldId || typeof fieldId !== 'string' || fieldId.trim().length === 0) {
       return res.status(400).json({
         success: false,
-        error: 'fieldId is required and must be a string'
+        error: 'fieldId is required and must be a non-empty string'
       })
     }
-    if (!seasonId || typeof seasonId !== 'string') {
+
+    // V1 REQUIREMENT: seasonId is mandatory - NO inference allowed
+    // This ensures explicit season context for all insight queries
+    if (!seasonId || typeof seasonId !== 'string' || seasonId.trim().length === 0) {
       return res.status(400).json({
         success: false,
-        error: 'seasonId is required and must be a string'
+        error: 'seasonId is required and must be a non-empty string. V1 requires explicit season context - no automatic season inference is allowed.'
       })
     }
 

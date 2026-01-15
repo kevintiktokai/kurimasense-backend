@@ -53,9 +53,15 @@ export interface Insight {
 /**
  * Generate Performance Deviation insight deterministically
  * 
- * @param fieldId - Field identifier
- * @param seasonId - Season identifier
+ * @param fieldId - Field identifier (required)
+ * @param seasonId - Season identifier (required, must be provided explicitly)
  * @returns Fully formed Insight object
+ * 
+ * V1 REQUIREMENT: seasonId is MANDATORY
+ * - NO automatic season inference
+ * - NO default season selection
+ * - NO season derivation from dates
+ * - Explicit season context is REQUIRED
  * 
  * Logic:
  * 1. Load observations for field + season
@@ -69,6 +75,10 @@ export function generatePerformanceDeviationInsight(
   fieldId: string,
   seasonId: string
 ): Insight {
+  // V1 REQUIREMENT: seasonId must be provided - no inference allowed
+  if (!seasonId || typeof seasonId !== 'string' || seasonId.trim().length === 0) {
+    throw new Error('seasonId is required and must be a non-empty string. V1 requires explicit season context.')
+  }
   // Step 1: Load observations for field + season
   const vegetationSignals = getVegetationSignalsByFieldAndSeason(fieldId, seasonId)
   const weatherSignals = getWeatherSignalsByFieldAndSeason(fieldId, seasonId)
