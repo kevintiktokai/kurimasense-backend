@@ -467,9 +467,14 @@ export function getInsightByFieldAndSeason(fieldId: string, seasonId: string) {
 }
 
 /**
- * Insert a new insight
+ * Insert a new insight or return existing one if UNIQUE constraint fails
  * 
- * Note: UNIQUE constraint on (field_id, season_id) is enforced at database level
+ * This function guarantees:
+ * - Idempotency: same request → same result
+ * - Race safety: concurrent requests don't cause errors
+ * - One insight per field per season: UNIQUE constraint enforced
+ * 
+ * @returns The inserted or existing insight object
  */
 export function insertInsight(
   id: string,
@@ -499,6 +504,7 @@ export function insertInsight(
   `)
   
   try {
+    // Attempt insert
     stmt.run(
       id,
       fieldId,
@@ -511,12 +517,24 @@ export function insertInsight(
       suggestedAction || null,
       generatedAt
     )
-    return { id }
-  } catch (error: any) {
-    // Handle UNIQUE constraint violation
-    if (error?.code === 'SQLITE_CONSTRAINT' || error?.message?.includes('UNIQUE constraint')) {
-      throw new Error(`Insight already exists for field_id='${fieldId}' and season_id='${seasonId}'`)
+    // Insert succeeded - return the newly inserted insight
+    const insertedInsight = getInsightByFieldAndSeason(fieldId, seasonId)
+    if (!insertedInsight) {
+      throw new Error('Insight was inserted but cannot be retrieved')
     }
+    return insertedInsight
+  } catch (error: any) {
+    // Handle UNIQUE constraint violation (race condition or duplicate request)
+    if (error?.code === 'SQLITE_CONSTRAINT' || error?.message?.includes('UNIQUE constraint')) {
+      // Re-query the existing insight
+      const existingInsight = getInsightByFieldAndSeason(fieldId, seasonId)
+      if (!existingInsight) {
+        throw new Error(`UNIQUE constraint violation detected but insight not found for field_id='${fieldId}' and season_id='${seasonId}'`)
+      }
+      // Return the existing insight (idempotent behavior)
+      return existingInsight
+    }
+    // Re-throw other errors
     throw new Error(`Database error inserting insight: ${error?.message || 'Unknown error'}`)
   }
 }

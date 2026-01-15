@@ -93,8 +93,9 @@ router.get('/', async (req: Request, res: Response) => {
       const id = randomUUID()
       const generatedAt = new Date().toISOString()
 
-      // Store insight
-      insertInsight(
+      // Store insight (or return existing if UNIQUE constraint fails)
+      // This guarantees idempotency and race safety
+      const storedInsight = insertInsight(
         id,
         fieldId,
         seasonId,
@@ -107,30 +108,12 @@ router.get('/', async (req: Request, res: Response) => {
         generatedAt
       )
 
-      // Fetch stored insight to return
-      const storedInsight = getInsightByFieldAndSeason(fieldId, seasonId)
-      
-      if (!storedInsight) {
-        throw new Error('Insight was created but cannot be retrieved')
-      }
-
+      // Return the stored insight (either newly inserted or existing)
       return res.json({
         success: true,
         data: storedInsight
       })
     } catch (error: any) {
-      // Handle UNIQUE constraint violation (race condition)
-      if (error?.message?.includes('already exists')) {
-        // Another request created it, fetch and return
-        const storedInsight = getInsightByFieldAndSeason(fieldId, seasonId)
-        if (storedInsight) {
-          return res.json({
-            success: true,
-            data: storedInsight
-          })
-        }
-      }
-
       console.error('Error generating insight:', error)
       return res.status(500).json({
         success: false,
