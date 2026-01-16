@@ -4,7 +4,7 @@ import satelliteRoutes from './api/satellite.js'
 import weatherRoutes from './api/weather.js'
 import ingestRoutes from './api/ingest.js'
 import signalsRoutes from './api/signals.js'
-import { inferenceRouter, fieldsRouter, analysisRunsRouter, contextRouter, provenanceRouter, interpretationRouter, decisionContextRouter, insightsRouter } from './api/index.js'
+import { inferenceRouter, fieldsRouter, analysisRunsRouter, contextRouter, provenanceRouter, interpretationRouter, decisionContextRouter, insightsRouter, devRouter } from './api/index.js'
 
 const app = express()
 const PORT = process.env.PORT || 3001
@@ -46,6 +46,11 @@ app.use('/api/interpretation', interpretationRouter)
 app.use('/api/decision-context', decisionContextRouter)
 app.use('/api/satellite', satelliteRoutes)
 app.use('/api/weather', weatherRoutes)
+
+// Dev routes (only in non-production)
+if (process.env.NODE_ENV !== 'production') {
+  app.use('/api/dev', devRouter)
+}
 
 // Error handling
 app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
