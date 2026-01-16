@@ -11,12 +11,15 @@
  */
 
 import { Router, Request, Response } from 'express'
+import { randomUUID } from 'crypto'
 import db from '../db/client.js'
 import {
   insertField,
   insertSeason,
-  getInsightByFieldAndSeason
+  getInsightByFieldAndSeason,
+  insertInsight
 } from '../db/client.js'
+import { generatePerformanceDeviationInsight } from '../insights/generate.js'
 
 const router = Router()
 
@@ -131,9 +134,42 @@ router.post('/seed-demo', (req: Request, res: Response) => {
       )
     }
 
-    // Check if insight already exists (don't generate mock insights)
+    // Generate and store insight using existing logic (deterministic and idempotent)
+    // This reuses the same path as GET /api/insights
+    let insightId: string | null = null
+    
+    // Check if insight already exists
     const existingInsight = getInsightByFieldAndSeason(fieldId, seasonId)
-    const insightId = existingInsight ? existingInsight.id : null
+    
+    if (existingInsight) {
+      // Insight already exists - reuse it (idempotent behavior)
+      insightId = existingInsight.id
+    } else {
+      // Generate insight deterministically using existing function
+      // This function loads observations, computes baseline, calculates delta, and assigns severity
+      const insight = generatePerformanceDeviationInsight(fieldId, seasonId)
+
+      // Generate stable ID and timestamp
+      const id = randomUUID()
+      const generatedAt = new Date().toISOString()
+
+      // Store insight using existing persistence logic
+      // insertInsight handles UNIQUE constraint and returns existing if race condition occurs
+      const storedInsight = insertInsight(
+        id,
+        fieldId,
+        seasonId,
+        insight.type,
+        insight.severity,
+        insight.confidence,
+        insight.summary,
+        insight.evidence,
+        insight.suggestedAction,
+        generatedAt
+      )
+      
+      insightId = storedInsight.id
+    }
 
     // Return JSON response
     res.status(201).json({
