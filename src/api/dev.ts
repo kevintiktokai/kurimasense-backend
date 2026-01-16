@@ -33,6 +33,12 @@ function isProduction(): boolean {
 /**
  * POST /api/dev/seed-demo
  * 
+ * ⚠️ DEV ONLY - SAFE TO DELETE - NOT PART OF V1 CORE LOGIC
+ * 
+ * This route is for development and demo purposes only.
+ * It can be safely deleted without affecting V1 functionality.
+ * It is NOT part of the V1 core logic or production requirements.
+ * 
  * Dev-only route to seed demo data for testing/demo purposes.
  * 
  * Creates or reuses:
