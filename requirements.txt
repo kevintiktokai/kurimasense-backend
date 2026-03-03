@@ -1,0 +1,11 @@
+requests
+python-dotenv
+openai
+fastapi
+uvicorn
+psycopg2-binary
+pypdf
+tiktoken
+PyJWT
+httpx
+cryptography

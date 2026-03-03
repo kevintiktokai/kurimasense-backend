@@ -1,0 +1,11 @@
+{
+  "ScheduleExpression": "rate(1 day)",
+  "State": "ENABLED",
+  "Description": "KurimaSense proactive daily checks",
+  "Targets": [
+    {
+      "Id": "KurimaSenseProactive",
+      "Arn": "<lambda-arn>"
+    }
+  ]
+}

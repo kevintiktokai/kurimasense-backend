@@ -1,0 +1,8 @@
+# Backend Data Storage
+This directory contains persisted raw payloads.
+
+## Structure
+- `satellite/` - Raw satellite imagery and NDVI data
+- `weather/` - Raw weather station and forecast data
+
+Data files are stored in JSON format and organized by field ID and timestamp.

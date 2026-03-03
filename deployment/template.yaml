@@ -1,0 +1,41 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: KurimaSense AI - Lambda deployment
+
+Globals:
+  Function:
+    Runtime: python3.11
+    Timeout: 60
+    MemorySize: 512
+
+Resources:
+  KurimaSenseRouter:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: deployment.lambda_handler.handle_request
+      CodeUri: .
+      Environment:
+        Variables:
+          LOG_LEVEL: INFO
+          ENVIRONMENT: production
+      Events:
+        ApiInvoke:
+          Type: HttpApi
+          Properties:
+            Path: /router
+            Method: POST
+
+  KurimaSenseProactive:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: deployment.lambda_handler.handle_scheduled
+      CodeUri: .
+      Environment:
+        Variables:
+          LOG_LEVEL: INFO
+          ENVIRONMENT: production
+      Events:
+        DailyCheck:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 day)
