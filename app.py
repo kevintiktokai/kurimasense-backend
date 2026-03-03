@@ -469,7 +469,7 @@ def health_check():
     try:
         conn = get_db_connection()
         if conn:
-            cursor = conn.cursor()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
             cursor.execute("SELECT 1")
             cursor.close()
             conn.close()
@@ -548,7 +548,7 @@ def db_schema_check():
         return {"status": "error", "message": "No database connection"}
     
     try:
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
         
         # Check if fields table exists and its columns
         cursor.execute("""
@@ -593,7 +593,7 @@ def get_fields(user_id: str = Depends(verify_token)):
         return MOCK_FIELDS
     
     try:
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
         
         cursor.execute("""
             SELECT 
@@ -767,7 +767,7 @@ def trigger_sentinel_analysis(field_id: str, lat: float, lon: float):
             print(f"Insight gen error: {e}")
             insight_text = "Analysis complete. Review new metrics."
 
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute("""
             INSERT INTO daily_logs (field_id, ndvi, evi, soil_moisture, cloud_cover, source, insight_text)
             VALUES (%s, %s, %s, %s, %s, 'Sentinel-2', %s)
@@ -785,7 +785,7 @@ def trigger_sentinel_analysis(field_id: str, lat: float, lon: float):
         # In production we might want to show an error instead.
         try:
              # Just set some plausible defaults if real fetch fails
-             cursor = conn.cursor()
+             cursor = conn.cursor(cursor_factory=RealDictCursor)
              # Logic to insert fallback data... omitted to keep code clean, 
              # assuming main flow works or we just fail gracefully.
              conn.rollback()
@@ -810,7 +810,7 @@ def analyze_field(field_id: str, background_tasks: BackgroundTasks, user_id: str
                 break
     else:
         try:
-            cursor = conn.cursor()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
             # Verify ownership and get coords
             cursor.execute("""
                 SELECT polygon_coordinates FROM fields 
@@ -857,7 +857,7 @@ def get_field_history(field_id: str, user_id: str = Depends(verify_token)):
         return list(reversed(history))
 
     try:
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
         # Ensure field belongs to user implicitly via a join or by checking field ownership first
         # For simplicity and security, we join with fields table
         cursor.execute("""
@@ -936,7 +936,7 @@ def create_field(payload: dict, background_tasks: BackgroundTasks, user_id: str 
         return {"status": "success", "id": new_id}
     
     try:
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
         
         # Insert with all field data including planting info and transplant info
         cursor.execute("""
@@ -992,7 +992,7 @@ def delete_field(field_id: str, user_id: str = Depends(verify_token)):
         return {"status": "success", "message": "Field deleted (mock mode)"}
     
     try:
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
         
         # First verify the field belongs to this user
         cursor.execute("""
@@ -1066,7 +1066,7 @@ def get_user_profile(user_id: str = Depends(verify_token)):
         }
     
     try:
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute("""
             SELECT full_name, role, preferred_language 
             FROM profiles WHERE id = %s
@@ -1118,7 +1118,7 @@ def log_input(payload: dict, user_id: str = Depends(verify_token)):
         return {"status": "success", "id": new_id}
     
     try:
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute("""
             INSERT INTO field_inputs (field_id, user_id, input_type, quantity, unit, input_date)
             VALUES (%s, %s::uuid, %s, %s, %s, %s)
@@ -1162,7 +1162,7 @@ def get_dashboard_stats(user_id: str = Depends(verify_token)):
     else:
         # Fetch user's fields WITH variety information
         try:
-            cursor = conn.cursor()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
             
             # Check if user_id column exists
             cursor.execute("""
@@ -1279,7 +1279,7 @@ def post_generate_yield(field_id: str, user_id: str = Depends(verify_token)):
     
     if conn:
         try:
-            cursor = conn.cursor()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
             cursor.execute("""
                 SELECT id, name, crop_type, planting_date, variety, fertilizer_history, size_hectares
                 FROM fields 
@@ -1292,7 +1292,7 @@ def post_generate_yield(field_id: str, user_id: str = Depends(verify_token)):
             user_lang = "en"
             try:
                 # Re-use connection for efficiency
-                l_cursor = conn.cursor()
+                l_cursor = conn.cursor(cursor_factory=RealDictCursor)
                 l_cursor.execute("SELECT preferred_language FROM profiles WHERE id = %s", (user_id,))
                 l_row = l_cursor.fetchone()
                 if l_row and l_row.get('preferred_language'):
@@ -1515,7 +1515,7 @@ def get_chat_history(limit: int = 50, user_id: str = Depends(verify_token)):
         return MOCK_CHATS[-limit:]
         
     try:
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute("""
             SELECT role, content, to_char(created_at, 'HH:MI AM') as timestamp 
             FROM chat_logs 
@@ -1664,7 +1664,7 @@ async def chat_v2_send(payload: dict, user_id: str = Depends(verify_token)):
             if not conn:
                 return
             try:
-                cursor = conn.cursor()
+                cursor = conn.cursor(cursor_factory=RealDictCursor)
                 # One round-trip: insert both rows
                 cursor.execute("""
                     INSERT INTO chat_logs (user_id, role, content, field_context_id)
@@ -1818,7 +1818,7 @@ async def chat_v2_stream(payload: dict, user_id: str = Depends(verify_token)):
                 if not conn:
                     return
                 try:
-                    cur = conn.cursor()
+                    cur = conn.cursor(cursor_factory=RealDictCursor)
                     cur.execute(
                         """INSERT INTO chat_logs (user_id, role, content, field_context_id)
                            VALUES (%s,'user',%s,%s),(%s,'ai',%s,%s)""",
@@ -2033,7 +2033,7 @@ def get_ai_insights(user_id: str = Depends(verify_token)):
     fields = []
     if conn:
         try:
-            cursor = conn.cursor()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
             cursor.execute("""
                 SELECT id, name, crop_type, variety, planting_date, 
                        polygon_coordinates, health_score,
@@ -2060,7 +2060,7 @@ def get_ai_insights(user_id: str = Depends(verify_token)):
     existing_tasks = []
     if conn:
         try:
-            cursor = conn.cursor()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
             # JOIN with fields to get field_name for UI
             cursor.execute("""
                 SELECT t.*, f.name as field_name 
@@ -2396,7 +2396,7 @@ def get_ai_insights(user_id: str = Depends(verify_token)):
             # Persist generated actions to DB
             if conn:
                 try:
-                    cursor = conn.cursor()
+                    cursor = conn.cursor(cursor_factory=RealDictCursor)
                     for ga in generated_actions:
                         cursor.execute("""
                             INSERT INTO farm_tasks (user_id, field_id, title, description, activity_type, priority, is_ai_generated)
@@ -2443,7 +2443,7 @@ async def get_farm_tasks(
         raise HTTPException(status_code=500, detail="Database connection failed")
     
     try:
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
         query = "SELECT * FROM farm_tasks WHERE user_id = %s"
         params = [user_id]
         
@@ -2489,7 +2489,7 @@ async def update_farm_task(
         raise HTTPException(status_code=500, detail="Database connection failed")
     
     try:
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
         
         allowed_fields = ['completed', 'title', 'description', 'priority', 'activity_type']
         update_parts = []
@@ -2550,7 +2550,7 @@ async def create_farm_task(
         raise HTTPException(status_code=500, detail="Database connection failed")
     
     try:
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute("""
             INSERT INTO farm_tasks (user_id, field_id, title, description, activity_type, priority, task_date)
             VALUES (%s, %s, %s, %s, %s, %s, %s)
@@ -2645,7 +2645,7 @@ async def get_agricultural_metrics(
         conn = get_db_connection()
         if conn:
             try:
-                cursor = conn.cursor()
+                cursor = conn.cursor(cursor_factory=RealDictCursor)
                 cursor.execute("SELECT variety FROM fields WHERE id = %s", (field_id,))
                 row = cursor.fetchone()
                 if row:
@@ -3231,7 +3231,7 @@ async def resolve_coordinates(field_id: str = None, lat: float = None, lon: floa
         conn = get_db_connection()
         if conn:
             try:
-                cursor = conn.cursor()
+                cursor = conn.cursor(cursor_factory=RealDictCursor)
                 cursor.execute("""
                     SELECT polygon_coordinates FROM fields WHERE id = %s::uuid AND user_id = %s::uuid
                 """, (field_id, user_id))
