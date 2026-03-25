@@ -1,0 +1,16 @@
+[
+  {
+    "user_id": "farmer-001",
+    "session_id": "proactive-001",
+    "timestamp": "2026-01-26T06:00:00Z",
+    "location": {"lat": -17.8216, "lon": 31.0492, "region": "Harare"},
+    "context": {
+      "crop_type": "maize",
+      "sowing_date": "2025-11-15",
+      "growth_stage": "vegetative",
+      "voice_enabled": false
+    },
+    "intent_classification": "general_advice",
+    "raw_message": "Daily field check"
+  }
+]

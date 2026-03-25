@@ -1,0 +1,24 @@
+[
+    {
+        "url": "https://www.cimmyt.org/zimbabwe-research-digest",
+        "title": "Nitrogen Use Efficiency (NUE) in Zimbabwean Maize Systems",
+        "metadata": {
+            "source": "Research Digest (CIMMYT/UZ/FAO)",
+            "year": "2024",
+            "type": "Scientific Review",
+            "category": "Soil Chemistry"
+        },
+        "content": "ABSTRACT: Low Nitrogen Use Efficiency (NUE) is a primary yield gap driver in Zimbabwean smallholder agriculture. Farmers often achieve only 3.8 kg grain/kg N applied, compared to >12 kg/kg N in researcher-managed plots. \n\nKEY FINDINGS:\n1. Tillage Impact: Conservation Agriculture (CA) with reduced tillage improves Fertilizer N Recovery Efficiency (FNRE) by 5-40% compared to conventional tillage, primarily due to better moisture retention facilitating N uptake.\n2. Weeding Synergy: Weed competition is the largest antagonist to N efficiency. Research shows increasing weeding frequency from once to twice doubles the Agronomic Efficiency of Nitrogen (AEN) from 19.3 to 38.7 kg grain/kg N.\n3. Application Rates: While yield response peaks at high N rates (192 kg N/ha), efficiency declines. The economic optimum for resource-poor farmers is often lower (~67 kg N/ha), maximizing the marginal return per dollar invested rather than absolute yield.\n4. Interaction: Application of N without P/K balance or in acidic soils (pH < 4.5) results in near-zero efficiency due to root stunting (Aluminum toxicity).\n\nCONCLUSION: To improve NUE, farmers must prioritize weed control and pH correction before increasing top-dressing rates."
+    },
+    {
+        "url": "https://www.agritex.gov.zw/soil-acidity-research",
+        "title": "Soybean Response to Liming in Acidic Sandy Soils of Zimbabwe",
+        "metadata": {
+            "source": "Research Digest (Dept of Research & Specialist Services)",
+            "year": "2023",
+            "type": "Scientific Review",
+            "category": "Soil Chemistry"
+        },
+        "content": "INTRODUCTION: Soil acidity (pH < 5.0) locks away Phosphorus (P) and Molybdenum (Mo), both critical for soybean production. Mo is essential for the nitrogenase enzyme in Rhizobium nodules.\n\nTRIAL RESULTS:\n- Liming rates of 1500-2000 kg/ha on sandy soils raised pH from 5.0 to 6.5.\n- Biological Nitrogen Fixation (BNF) increased by 60% in limed plots because Rhizobium bacteria survival is compromised below pH 5.2.\n- Visual Diagnostics: Soybeans in acidic soils often show 'Yellowing' indistinguishable from N-deficiency. This is 'Pseudo-N deficiency' caused by the failure of nodulation. Applying slightly more N does not fix this; only Liming or Mo foliar sprays can unlock the potential.\n- Gypsum vs Lime: Gypsum (Calcium Sulfate) supplies Ca and S but DOES NOT correct pH. Only Lime (Calcium Carbonate/Dolomite) neutralizes acidity. Farmers often confuse the two.\n\nRECOMMENDATION: Soil sampling is non-negotiable for Soybeans. Target pH (CaCl2) of 5.2 to 6.0."
+    }
+]
