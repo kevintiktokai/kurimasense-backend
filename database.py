@@ -12,6 +12,11 @@ class _PooledConn:
     """
     Wraps a psycopg2 connection so existing code calling conn.close()
     returns it to the pool instead of closing the socket.
+
+    Supports context manager usage:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            ...
     """
     def __init__(self, pool: ThreadedConnectionPool, conn):
         self._pool = pool
@@ -19,6 +24,13 @@ class _PooledConn:
 
     def __getattr__(self, name):
         return getattr(self._conn, name)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False  # Do not suppress exceptions
 
     def close(self):
         try:

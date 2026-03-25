@@ -1,68 +1,66 @@
 import os
 import re
 import json
+import random
+import traceback
 import urllib.request
 import urllib.error
 import asyncio
-from datetime import datetime, timedelta
+import logging
+from datetime import datetime, date, timedelta
 import time
+import uuid
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from fastapi import FastAPI, HTTPException, Depends, Header, Request
+from fastapi import FastAPI, HTTPException, Depends, Header, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.concurrency import run_in_threadpool
+from typing import Optional
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from router import route
 from ai_brain import (
-    AgronomistBrain, AgentInput, AgentResponse, 
+    AgronomistBrain, AgentInput, AgentResponse,
     FieldContext, WeatherContext, ConversationMessage,
     VisionAnalyzer, get_brain, get_vision_analyzer
 )
 from database import get_db_connection, init_db, log_user_event, get_recent_field_activity
-from climate_service import get_current_weather
 from proactive_intelligence import (
-    calculate_growth_stage, 
+    calculate_growth_stage,
     generate_proactive_alerts,
     get_variety_info,
     assess_disease_risk,
     generate_harvest_alert
 )
-from dotenv import load_dotenv
 from tools.get_crop_health import run as run_crop_health
 from tools.generate_yield import run as run_generate_yield
 from tools.get_weather_forecast import fetch_weather as fetch_weather_data
-import jwt
-from typing import Optional
+import climate_service
 
-load_dotenv()
+# Shared dependencies (auth, caching, helpers)
+from deps import (
+    verify_token,
+    cache_get as _cache_get,
+    cache_set as _cache_set,
+    cache_invalidate_prefix as _cache_invalidate_prefix,
+    get_user_language,
+    get_health_status as _get_health_status,
+    get_field_context as _get_field_context,
+    resolve_coordinates,
+    validate_environment,
+    MOCK_FIELDS, MOCK_CHATS, MOCK_INPUTS,
+    SUPABASE_JWT_SECRET, SUPABASE_JWT_PUBLIC_KEY,
+    SUPABASE_URL, SUPABASE_ANON_KEY,
+)
 
-# ---------------------------------------------------------------------------
-# In-memory response cache (stdlib only, no Redis required)
-# ---------------------------------------------------------------------------
-_response_cache: dict = {}
-_token_cache: dict = {}  # keyed by sha256(token), value: (user_id, expires_at_unix)
+logger = logging.getLogger("kurimasense")
 
-
-def _cache_get(key: str):
-    entry = _response_cache.get(key)
-    if not entry:
-        return None
-    data, expires_at = entry
-    if time.time() > expires_at:
-        del _response_cache[key]
-        return None
-    return data
-
-
-def _cache_set(key: str, data, ttl_seconds: int = 300):
-    _response_cache[key] = (data, time.time() + ttl_seconds)
-
-
-def _cache_invalidate_prefix(prefix: str):
-    keys = [k for k in _response_cache if k.startswith(prefix)]
-    for k in keys:
-        del _response_cache[k]
+# Cache functions and verify_token are imported from deps.py
 # ---------------------------------------------------------------------------
 
 app = FastAPI(title="KurimaSense AI")
@@ -164,15 +162,9 @@ class TimingMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(TimingMiddleware)
 
-# Also keep the standard CORS middleware as a fallback
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins_list,
-    allow_origin_regex=allow_origin_regex,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# NOTE: Standard CORSMiddleware removed — RobustCORSMiddleware above handles
+# all CORS logic including preflight, error responses, and header injection.
+# Having two CORS middlewares caused duplicate headers and unpredictable behavior.
 
 
 # Global exception handler to ensure CORS headers on HTTPExceptions
@@ -209,266 +201,12 @@ async def cors_general_exception_handler(request: Request, exc: Exception):
         headers=headers
     )
 
-# Supabase JWT Secret (from Supabase Dashboard > Settings > API)
-SUPABASE_JWT_SECRET = os.environ.get("SUPABASE_JWT_SECRET")
-SUPABASE_JWT_PUBLIC_KEY = os.environ.get("SUPABASE_JWT_PUBLIC_KEY")
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY") or os.environ.get("SUPABASE_KEY")
+# JWT configuration imported from deps.py (SUPABASE_JWT_SECRET, etc.)
 
-# Cache for JWKS data
-_jwks_keys = None
-_jwks_fetch_time = None
-
-def fetch_jwks_keys():
-    """Fetch JWKS keys from Supabase with proper authentication."""
-    global _jwks_keys, _jwks_fetch_time
-    
-    # Cache for 1 hour
-    if _jwks_keys and _jwks_fetch_time:
-        from datetime import datetime
-        if (datetime.now() - _jwks_fetch_time).total_seconds() < 3600:
-            return _jwks_keys
-    
-    if not SUPABASE_URL:
-        return None
-
-    jwks_url = f"{SUPABASE_URL}/auth/v1/jwks"
-
-    try:
-        headers = {'User-Agent': 'KurimaSense/1.0'}
-
-        # Add API key if available (required by Supabase)
-        if SUPABASE_ANON_KEY:
-            headers['apikey'] = SUPABASE_ANON_KEY
-
-        req = urllib.request.Request(jwks_url, headers=headers)
-        with urllib.request.urlopen(req, timeout=10) as response:
-            jwks_data = json.loads(response.read().decode())
-            _jwks_keys = jwks_data.get('keys', [])
-            _jwks_fetch_time = datetime.now()
-            return _jwks_keys
-    except urllib.error.HTTPError as e:
-        print(f"JWKS fetch HTTP error: {e.code} - {e.reason}")
-        try:
-            error_body = e.read().decode()
-            print(f"JWKS error response: {error_body}")
-        except:
-            pass
-        return None
-    except Exception as e:
-        print(f"JWKS fetch error: {type(e).__name__}: {e}")
-        return None
+# JWKS, verify_token, and mock data are imported from deps.py
 
 
-def get_signing_key_from_jwks(token):
-    """Get the signing key for a token from JWKS."""
-    keys = fetch_jwks_keys()
-    if not keys:
-        return None
-    
-    try:
-        # Get the key ID from token header
-        unverified_header = jwt.get_unverified_header(token)
-        kid = unverified_header.get('kid')
-        
-        # Find matching key
-        for key_data in keys:
-            if kid and key_data.get('kid') != kid:
-                continue
-            
-            # Convert JWK to PEM
-            from jwt.algorithms import ECAlgorithm, RSAAlgorithm
-            
-            kty = key_data.get('kty')
-            if kty == 'EC':
-                key = ECAlgorithm.from_jwk(json.dumps(key_data))
-                return key
-            elif kty == 'RSA':
-                key = RSAAlgorithm.from_jwk(json.dumps(key_data))
-                return key
-
-        return None
-    except Exception as e:
-        print(f"Error extracting key from JWKS: {type(e).__name__}: {e}")
-        return None
-
-
-def verify_token(authorization: Optional[str] = Header(None)) -> str:
-    """
-    Verify Supabase JWT token and return user_id.
-    
-    Supabase can use either:
-    - HS256 (symmetric) with JWT Secret
-    - ES256/RS256 (asymmetric) with public key from JWKS
-    
-    Strategy:
-    1. Try HS256 if JWT secret is configured
-    2. Try ES256/RS256 with public key if configured
-    3. Try fetching public key from JWKS
-    4. Fall back with clear error messages
-    """
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Missing authorization header")
-    
-    try:
-        # Extract token from "Bearer <token>" format
-        parts = authorization.split()
-        if len(parts) != 2:
-            raise HTTPException(status_code=401, detail="Invalid authorization header format")
-        
-        scheme, token = parts
-        if scheme.lower() != "bearer":
-            raise HTTPException(status_code=401, detail="Invalid authentication scheme")
-
-        # Token cache lookup — avoids redundant decode/JWKS fetch on every request
-        import hashlib
-        token_hash = hashlib.sha256(token.encode()).hexdigest()
-        _cached_token = _token_cache.get(token_hash)
-        if _cached_token:
-            _cached_user_id, _cached_exp = _cached_token
-            if time.time() < _cached_exp:
-                return _cached_user_id
-            else:
-                del _token_cache[token_hash]
-
-        # For development: allow bypass if no secrets set
-        if not SUPABASE_JWT_SECRET and not SUPABASE_JWT_PUBLIC_KEY and not SUPABASE_URL:
-            return "00000000-0000-0000-0000-000000000000"
-
-        # Get token header to check algorithm
-        try:
-            unverified_header = jwt.get_unverified_header(token)
-            token_alg = unverified_header.get('alg', 'HS256')
-        except Exception as e:
-            raise HTTPException(status_code=401, detail="Invalid token header")
-
-        payload = None
-        last_error = None
-
-        # Strategy 1: Try HS256 with SUPABASE_JWT_SECRET
-        if SUPABASE_JWT_SECRET and token_alg == 'HS256':
-            try:
-                payload = jwt.decode(
-                    token,
-                    SUPABASE_JWT_SECRET,
-                    algorithms=["HS256"],
-                    audience="authenticated"
-                )
-            except jwt.ExpiredSignatureError:
-                raise HTTPException(status_code=401, detail="Token has expired")
-            except jwt.InvalidTokenError as e:
-                last_error = str(e)
-
-        # Strategy 2: Try with configured public key for ES256/RS256
-        if payload is None and SUPABASE_JWT_PUBLIC_KEY and token_alg in ['RS256', 'ES256']:
-            try:
-                public_key = SUPABASE_JWT_PUBLIC_KEY.replace("\\n", "\n")
-                payload = jwt.decode(
-                    token,
-                    public_key,
-                    algorithms=[token_alg],
-                    audience="authenticated"
-                )
-            except jwt.ExpiredSignatureError:
-                raise HTTPException(status_code=401, detail="Token has expired")
-            except jwt.InvalidTokenError as e:
-                last_error = str(e)
-
-        # Strategy 3: Try JWKS for ES256/RS256
-        if payload is None and token_alg in ['RS256', 'ES256'] and SUPABASE_URL:
-            try:
-                signing_key = get_signing_key_from_jwks(token)
-                if signing_key:
-                    payload = jwt.decode(
-                        token,
-                        signing_key,
-                        algorithms=[token_alg],
-                        audience="authenticated"
-                    )
-                else:
-                    last_error = "Could not get signing key from JWKS"
-            except jwt.ExpiredSignatureError:
-                raise HTTPException(status_code=401, detail="Token has expired")
-            except Exception as e:
-                last_error = f"JWKS: {str(e)}"
-
-        # Strategy 4: For ES256, try using JWT secret as the key directly
-        # (Some Supabase setups encode the ES256 key in the secret field)
-        if payload is None and token_alg == 'ES256' and SUPABASE_JWT_SECRET:
-            try:
-                payload = jwt.decode(
-                    token,
-                    SUPABASE_JWT_SECRET,
-                    algorithms=["ES256"],
-                    audience="authenticated",
-                    options={"verify_signature": True}
-                )
-            except jwt.ExpiredSignatureError:
-                raise HTTPException(status_code=401, detail="Token has expired")
-            except Exception:
-                pass  # Keep the more informative last_error
-
-        if payload is None:
-            error_msg = f"Token verification failed for {token_alg}"
-            if last_error:
-                error_msg += f": {last_error}"
-            raise HTTPException(status_code=401, detail=error_msg)
-
-        # Extract user_id from payload
-        user_id = payload.get("sub")
-
-        if not user_id:
-            raise HTTPException(status_code=401, detail="Invalid token payload: missing user ID")
-
-        # Store verified token in cache keyed by its own exp claim
-        exp_unix = payload.get("exp", time.time() + 3600)
-        if len(_token_cache) > 10000:
-            _now = time.time()
-            _expired = [k for k, (_, e) in _token_cache.items() if _now > e]
-            for k in _expired:
-                del _token_cache[k]
-        _token_cache[token_hash] = (user_id, exp_unix)
-
-        return user_id
-    
-    except HTTPException:
-        raise
-    except ValueError as e:
-        raise HTTPException(status_code=401, detail=f"Invalid authorization header: {str(e)}")
-    except Exception as e:
-        print(f"Unexpected token verification error: {type(e).__name__}: {e}")
-        raise HTTPException(status_code=401, detail=f"Token verification failed: {str(e)}")
-
-    return "en"
-
-
-
-
-# get_db_connection imported from database.py
-
-MOCK_INPUTS = []
-MOCK_CHATS = [
-    {
-        "role": "ai",
-        "content": "Hello! I'm your KurimaSense AI Agronomist. I've analyzed your satellite data for the week. Where should we start?",
-        "timestamp": "2024-03-24T08:00:00"
-    }
-]
-
-MOCK_FIELDS = [
-    {
-        "id": "mock-1",
-        "name": "Home Field (Offline)",
-        "crop": "Maize",
-        "area": 12.5,
-        "ndvi": 0.72,
-        "soilMoisture": 48,
-        "healthStatus": "Good",
-        "lastSatellitePass": "2024-03-15",
-        "location": {"lat": -17.82, "lon": 31.05},
-        "coordinates": []
-    }
-]
+# Auth (verify_token), caching, mock data, and helpers are all imported from deps.py above.
 
 @app.get("/health")
 def health_check():
@@ -509,7 +247,7 @@ def health_check():
 
 
 @app.get("/jwt-config")
-def jwt_config_check():
+def jwt_config_check(user_id: str = Depends(verify_token)):
     """
     Debug endpoint to check JWT configuration (doesn't expose secrets).
     """
@@ -552,7 +290,7 @@ def jwt_config_check():
 
 
 @app.get("/db-schema")
-def db_schema_check():
+def db_schema_check(user_id: str = Depends(verify_token)):
     """
     Debug endpoint to check database schema.
     """
@@ -595,7 +333,11 @@ def db_schema_check():
         return {"status": "error", "message": str(e)}
 
 @app.on_event("startup")
-def startup_db_check():
+def startup_checks():
+    """Run startup validations and initialize database."""
+    # Validate environment variables
+    validate_environment()
+    # Initialize database tables
     init_db()
 
 @app.get("/fields")
@@ -692,20 +434,20 @@ def get_fields(user_id: str = Depends(verify_token)):
         print(f"Fields Query Error: {e}")
         return MOCK_FIELDS
 
-from fastapi import BackgroundTasks
+# BackgroundTasks imported at top level
 
-def trigger_sentinel_analysis(field_id: str, lat: float, lon: float):
+async def trigger_sentinel_analysis(field_id: str, lat: float, lon: float):
     """
     Background task to fetch satellite data and update daily_logs.
+    Now async to avoid asyncio.run() conflicts with FastAPI's event loop.
     """
     conn = get_db_connection()
     if not conn:
         # Offline/Mock Mode Logic
         print(f"Offline Mode: Simulating Analysis for {field_id}...")
-        import time
         import random
-        time.sleep(2) # Simulate delay
-        
+        await asyncio.sleep(2)  # Non-blocking delay
+
         # Find field in MOCK_FIELDS and update it
         for field in MOCK_FIELDS:
             if field["id"] == field_id:
@@ -720,33 +462,28 @@ def trigger_sentinel_analysis(field_id: str, lat: float, lon: float):
 
     try:
         print(f"Starting Sentinel Analysis for Field {field_id}...")
-        
+
         # Call the satellite tool directly (no subprocess overhead)
         print(f"Calling satellite tool...")
         tool_output = run_crop_health(lat, lon)
-        
+
         if tool_output.get("status") == "error":
             print(f"Satellite API Error: {tool_output.get('error_message')}")
-            # Fallback to defaults if API fails (e.g. creds missing)
             raise Exception(tool_output.get("error_message"))
-            
+
         data = tool_output.get("data", {})
-        
+
         # Extract Real Values
         real_ndvi = data.get("ndvi_mean", 0.0)
         real_evi = data.get("evi_mean", 0.0)
-        # Sentinel doesn't give direct soil moisture, we approximate from NDVI/EVI or use a separate API
-        # For now, we will infer "vegetation moisture index" or just randomize slightly around a base linked to NDVI
-        # High NDVI usually implies decent moisture.
-        real_moisture = int(real_ndvi * 65) # Crude approximation for prototype
-        
+        real_moisture = int(real_ndvi * 65)  # Crude approximation for prototype
+
         print(f"Satellite Analysis Result: NDVI={real_ndvi}, EVI={real_evi}")
-        
+
         # Update Field Health based on NDVI
         new_health = 0.9 if real_ndvi > 0.6 else 0.5
-        
-        # GENERATE AI INSIGHT
-        import asyncio
+
+        # GENERATE AI INSIGHT (now properly awaited instead of asyncio.run())
         brain = get_brain()
         metrics = {
             "ndvi": real_ndvi,
@@ -754,12 +491,10 @@ def trigger_sentinel_analysis(field_id: str, lat: float, lon: float):
             "health_score": new_health,
             "evi": real_evi
         }
-        
-        # Generate insight synchronously
+
         try:
-             # Use a new loop if needed, but basic run is usually enough here
-             insight_text = asyncio.run(brain.generate_field_insight(metrics))
-             print(f"Generated Insight: {insight_text}")
+            insight_text = await brain.generate_field_insight(metrics)
+            print(f"Generated Insight: {insight_text}")
         except Exception as e:
             print(f"Insight gen error: {e}")
             insight_text = "Analysis complete. Review new metrics."
@@ -1417,7 +1152,7 @@ def get_market_prices(region: str = "Zimbabwe"):
 # ========== FIELD ENDPOINTS ==========
 
 @app.post("/router")
-def router_endpoint(payload: dict):
+def router_endpoint(payload: dict, user_id: str = Depends(verify_token)):
     try:
         return route(payload)
     except Exception as exc:
@@ -1425,7 +1160,7 @@ def router_endpoint(payload: dict):
 
 
 @app.post("/chat/send")
-async def chat_adapter(payload: dict):
+async def chat_adapter(payload: dict, user_id: str = Depends(verify_token)):
     """
     Handles chat interaction using the AgronomistBrain.
     
@@ -1440,7 +1175,7 @@ async def chat_adapter(payload: dict):
         
         user_msg = payload.get("message", "")
         context = payload.get("context", {})
-        user_id = context.get("user_id", "web-user-01")
+        # user_id comes from verified JWT token (Depends(verify_token)), not payload
         field_id = context.get("field_id")
         
         # 1. Fetch Context Concurrently
@@ -1532,7 +1267,7 @@ def get_chat_history(limit: int = 50, user_id: str = Depends(verify_token)):
 
 
 @app.post("/proactive")
-def proactive_endpoint(payload: dict):
+def proactive_endpoint(payload: dict, user_id: str = Depends(verify_token)):
     seeds = payload.get("seeds") or []
     results = []
     for seed in seeds:
@@ -1627,14 +1362,14 @@ async def chat_v2_send(payload: dict, user_id: str = Depends(verify_token)):
         weather_context = None
         if weather_data:
             weather_context = WeatherContext(
-                current_temp=weather_data.get("temperature_2m"),
-                humidity=weather_data.get("relative_humidity_2m"),
-                precipitation_prob=weather_data.get("precipitation_probability"),
-                wind_speed=weather_data.get("wind_speed_10m"),
+                current_temp=weather_data.get("temperature"),
+                humidity=weather_data.get("humidity"),
+                precipitation_prob=weather_data.get("precipitation", 0.0),
+                wind_speed=weather_data.get("wind_speed"),
                 forecast_summary=weather_data.get("weather_description"),
                 alerts=[]
             )
-        
+
         # Create agent input
         agent_input = AgentInput(
             user_id=user_id,
@@ -1766,10 +1501,10 @@ async def chat_v2_stream(payload: dict, user_id: str = Depends(verify_token)):
     weather_context = None
     if weather_data:
         weather_context = WeatherContext(
-            current_temp=weather_data.get("temperature_2m"),
-            humidity=weather_data.get("relative_humidity_2m"),
-            precipitation_prob=weather_data.get("precipitation_probability"),
-            wind_speed=weather_data.get("wind_speed_10m"),
+            current_temp=weather_data.get("temperature"),
+            humidity=weather_data.get("humidity"),
+            precipitation_prob=weather_data.get("precipitation", 0.0),
+            wind_speed=weather_data.get("wind_speed"),
             forecast_summary=weather_data.get("weather_description"),
             alerts=[],
         )
@@ -1833,100 +1568,7 @@ async def chat_v2_stream(payload: dict, user_id: str = Depends(verify_token)):
     return StreamingResponse(_event_stream(), media_type="text/event-stream")
 
 
-async def _get_field_context(field_id: str, user_id: str) -> FieldContext:
-    """
-    Build FieldContext from database for AI Brain.
-    
-    Enhanced to include:
-    - Variety information for variety-specific AI responses
-    - Growth stage calculation using proactive_intelligence
-    - Transplant date support for horticultural crops
-    - Recent alerts from proactive system
-    """
-    context = FieldContext(field_id=field_id)
-    
-    conn = get_db_connection()
-    if not conn:
-        return context
-    
-    try:
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
-        # Enhanced query to include variety and transplant data
-        cursor.execute("""
-            SELECT 
-                f.name, f.crop_type, f.planting_date, f.variety, f.health_score,
-                f.transplant_date, f.is_transplanted,
-                (SELECT ndvi FROM daily_logs WHERE field_id = f.id ORDER BY log_date DESC LIMIT 1) as current_ndvi,
-                (SELECT soil_moisture FROM daily_logs WHERE field_id = f.id ORDER BY log_date DESC LIMIT 1) as soil_moisture
-            FROM fields f
-            WHERE f.id = %s::uuid AND f.user_id = %s
-        """, (field_id, user_id))
-        
-        row = cursor.fetchone()
-        cursor.close()
-        conn.close()
-        
-        if row:
-            context.field_name = row.get("name")
-            context.crop_type = row.get("crop_type")
-            context.variety = row.get("variety")  # Now properly set!
-            context.planting_date = row["planting_date"].isoformat() if row.get("planting_date") else None
-            context.current_ndvi = row.get("current_ndvi")
-            context.soil_moisture = row.get("soil_moisture")
-            context.health_status = _get_health_status(row.get("health_score"))
-            
-            # Calculate growth stage if planting date available
-            if row.get("planting_date") and row.get("crop_type"):
-                try:
-                    from proactive_intelligence import calculate_growth_stage
-                    
-                    transplant_date = row.get("transplant_date")
-                    is_transplanted = row.get("is_transplanted", False)
-                    
-                    growth_stage = calculate_growth_stage(
-                        planting_date=row["planting_date"],
-                        variety_name=row.get("variety") or "Generic",
-                        crop_type=row.get("crop_type"),
-                        transplant_date=transplant_date,
-                        is_transplanted=is_transplanted
-                    )
-                    
-                    context.growth_stage = f"{growth_stage.stage_name} ({growth_stage.days_since_planting}d, {growth_stage.progress_percent:.0f}%)"
-                    
-                    # Add current stage risks as alerts
-                    if growth_stage.risks:
-                        context.recent_alerts = growth_stage.risks[:3]
-                        
-                except Exception as stage_error:
-                    print(f"Growth stage calculation error: {stage_error}")
-            
-            # Get recent activities from database
-            try:
-                context.recent_activities = get_recent_field_activity(field_id)[:5]
-            except Exception:
-                pass
-            
-    except Exception as e:
-        print(f"Field context fetch error: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    return context
-
-
-def _get_health_status(score: int) -> str:
-    """Convert health score to status string."""
-    if score is None:
-        return "Unknown"
-    if score >= 80:
-        return "Excellent"
-    if score >= 60:
-        return "Good"
-    if score >= 40:
-        return "Moderate"
-    if score >= 20:
-        return "Poor"
-    return "Critical"
+# _get_field_context and _get_health_status imported from deps.py
 
 
 @app.post("/vision/analyze")
@@ -2564,8 +2206,6 @@ async def create_farm_task(
 
 # ========== CLIMATE INTELLIGENCE ENDPOINTS ==========
 
-import climate_service
-
 @app.get("/climate/current")
 async def get_current_weather(lat: float = None, lon: float = None, field_id: str = None, user_id: str = Depends(verify_token)):
     """
@@ -2887,10 +2527,10 @@ async def get_field_proactive_alerts(field_id: str, user_id: str = Depends(verif
             current_weather = await climate_service.get_current_weather(lat, lon)
             if current_weather:
                 weather_data = {
-                    "temperature": current_weather.get("temperature_2m"),
-                    "humidity": current_weather.get("relative_humidity_2m"),
+                    "temperature": current_weather.get("temperature"),
+                    "humidity": current_weather.get("humidity"),
                     "precipitation": current_weather.get("precipitation", 0),
-                    "wind_speed": current_weather.get("wind_speed_10m")
+                    "wind_speed": current_weather.get("wind_speed")
                 }
         except Exception as e:
             print(f"Weather fetch for proactive alerts failed: {e}")
@@ -3143,8 +2783,8 @@ async def get_disease_risk(field_id: str, user_id: str = Depends(verify_token)):
             current_weather = await climate_service.get_current_weather(lat, lon)
             if current_weather:
                 weather_data = {
-                    "temperature": current_weather.get("temperature_2m", 25),
-                    "humidity": current_weather.get("relative_humidity_2m", 50),
+                    "temperature": current_weather.get("temperature", 25),
+                    "humidity": current_weather.get("humidity", 50),
                     "precipitation": current_weather.get("precipitation", 0)
                 }
         except Exception as e:
@@ -3201,49 +2841,7 @@ async def get_disease_risk(field_id: str, user_id: str = Depends(verify_token)):
         raise HTTPException(status_code=500, detail=f"Failed to assess disease risk: {str(e)}")
 
 
-async def resolve_coordinates(field_id: str = None, lat: float = None, lon: float = None, user_id: str = None) -> tuple:
-    """
-    Resolve coordinates from field_id, explicit lat/lon, or default to Zimbabwe.
-    Priority: field_id > explicit lat/lon > default
-    """
-    # Default coordinates (Harare, Zimbabwe)
-    default_lat, default_lon = -17.82, 31.05
-    
-    # If field_id provided, look up field coordinates
-    if field_id:
-        conn = get_db_connection()
-        if conn:
-            try:
-                cursor = conn.cursor(cursor_factory=RealDictCursor)
-                cursor.execute("""
-                    SELECT polygon_coordinates FROM fields WHERE id = %s::uuid AND user_id = %s::uuid
-                """, (field_id, user_id))
-                row = cursor.fetchone()
-                cursor.close()
-                conn.close()
-                
-                if row and row.get('polygon_coordinates'):
-                    coords = row['polygon_coordinates']
-                    if isinstance(coords, list) and len(coords) > 0:
-                        lats = [p['lat'] for p in coords]
-                        lons = [p['lon'] for p in coords]
-                        return sum(lats) / len(lats), sum(lons) / len(lons)
-            except Exception as e:
-                print(f"Field lookup error: {e}")
-        else:
-            # Check mock fields
-            for f in MOCK_FIELDS:
-                if f.get("id") == field_id:
-                    loc = f.get("location")
-                    if loc:
-                        return loc["lat"], loc["lon"]
-    
-    # Use explicit coordinates if provided
-    if lat is not None and lon is not None:
-        return lat, lon
-    
-    # Fallback to default
-    return default_lat, default_lon
+# resolve_coordinates imported from deps.py
 
 
 # ========== YIELD HISTORY ENDPOINTS ==========

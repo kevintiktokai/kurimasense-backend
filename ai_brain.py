@@ -22,8 +22,6 @@ import asyncio
 
 from openai import OpenAI, AsyncOpenAI
 from dotenv import load_dotenv
-
-from dotenv import load_dotenv
 from database import get_db_connection
 from tools.retrieve_context import search_knowledge_base
 

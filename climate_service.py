@@ -67,7 +67,7 @@ async def get_current_weather(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON
         
     current = data.get("current", {})
     
-    return {
+    result = {
         "temperature": current.get("temperature_2m"),
         "feels_like": current.get("apparent_temperature"),
         "humidity": current.get("relative_humidity_2m"),
