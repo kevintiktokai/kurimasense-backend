@@ -2080,43 +2080,60 @@ async def get_ai_insights(user_id: str = Depends(verify_token)):
 
 @app.get("/ai/tasks")
 async def get_farm_tasks(
-    field_id: Optional[str] = None, 
+    field_id: Optional[str] = None,
     date: Optional[str] = None,
     user_id: str = Depends(verify_token)
 ):
-    """Fetch tasks for the user, optionally filtered by field or date."""
+    """Fetch tasks for the user, optionally filtered by field or date.
+    Joins with fields table to return field_name for each task."""
     conn = get_db_connection()
     if not conn:
         raise HTTPException(status_code=500, detail="Database connection failed")
-    
+
     try:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-        query = "SELECT * FROM farm_tasks WHERE user_id = %s"
+        query = """
+            SELECT t.*, f.name as field_name
+            FROM farm_tasks t
+            LEFT JOIN fields f ON t.field_id = f.id
+            WHERE t.user_id = %s
+        """
         params = [user_id]
-        
+
         if field_id:
-            query += " AND field_id = %s"
+            query += " AND t.field_id = %s::uuid"
             params.append(field_id)
-        
+
         if date:
-            query += " AND task_date = %s"
+            query += " AND t.task_date = %s"
             params.append(date)
         else:
             # Default to today if no date provided
-            query += " AND task_date = CURRENT_DATE"
-            
-        query += " ORDER BY completed ASC, priority DESC, created_at DESC"
-        
+            query += " AND t.task_date = CURRENT_DATE"
+
+        # Sort: incomplete first, then by priority (urgent > high > normal > low)
+        query += """
+            ORDER BY t.completed ASC,
+                     CASE t.priority
+                         WHEN 'urgent' THEN 0
+                         WHEN 'high' THEN 1
+                         WHEN 'normal' THEN 2
+                         WHEN 'low' THEN 3
+                         ELSE 4
+                     END ASC,
+                     t.created_at DESC
+        """
+
         cursor.execute(query, tuple(params))
         tasks = cursor.fetchall()
         cursor.close()
         conn.close()
-        
+
         # Convert UUID to string for JSON serialization
         for t in tasks:
             t['id'] = str(t['id'])
             if t.get('field_id'): t['field_id'] = str(t['field_id'])
-            
+
         return tasks
     except Exception as e:
         if conn: conn.close()
