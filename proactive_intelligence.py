@@ -18,6 +18,10 @@ import json
 
 from database import get_db_connection
 from ai_brain import get_brain
+from crop_knowledge import (
+    get_crop_profile, get_diseases_for_conditions, get_pests_for_stage,
+    get_current_stage_for_crop as ck_get_stage,
+)
 
 
 class GrowthStage(Enum):
@@ -619,6 +623,59 @@ def assess_disease_risk(
             created_at=now
         ))
     
+    # --- ENHANCED: Use crop_knowledge engine for additional disease/pest risks ---
+    try:
+        stage_code = growth_stage.stage_code if growth_stage else ""
+        ck_diseases = get_diseases_for_conditions(crop, temperature, humidity, stage_code)
+        ck_pests = get_pests_for_stage(crop, stage_code)
+
+        # Add any high-risk diseases not already covered by the hardcoded checks above
+        existing_titles = {a.title.lower() for a in alerts}
+        for d in ck_diseases:
+            if d["risk_level"] in ("high", "moderate"):
+                title_check = d["disease"].lower()
+                if not any(title_check in t for t in existing_titles):
+                    alerts.append(ProactiveAlert(
+                        id=f"ck-disease-{d['disease'].replace(' ', '-').lower()}-{now}",
+                        alert_type="disease_risk",
+                        severity="warning" if d["risk_level"] == "moderate" else "critical",
+                        title=f"{'🔴' if d['risk_level'] == 'high' else '🟡'} {d['disease']} Risk — {d['risk_level'].upper()}",
+                        message=f"{d['disease']} ({d['pathogen']}): {'; '.join(d['reasons'])}. "
+                                f"Look for: {d['scouting_tip']}",
+                        variety_name=variety_name,
+                        field_name=None,
+                        action_required=d["risk_level"] == "high",
+                        recommended_actions=[
+                            str(a) if isinstance(a, str) else a.get("name", str(a))
+                            for a in d.get("recommended_actions", [])
+                        ],
+                        triggered_by={"risk_score": d["risk_score"], "source": "crop_knowledge_engine"},
+                        created_at=now,
+                    ))
+
+        # Add stage-specific pest alerts
+        for p in ck_pests[:2]:
+            alerts.append(ProactiveAlert(
+                id=f"ck-pest-{p['pest'].replace(' ', '-').lower()}-{now}",
+                alert_type="pest_risk",
+                severity="info",
+                title=f"🐛 {p['pest']} — Scout Now",
+                message=f"At growth stage {stage_code}, {p['pest']} ({p['scientific_name']}) is a key pest. "
+                        f"Look for: {', '.join(p['damage_to_look_for'])}. "
+                        f"Economic threshold: {p['economic_threshold']}.",
+                variety_name=variety_name,
+                field_name=None,
+                action_required=False,
+                recommended_actions=[
+                    f"Scouting: {p['scouting_protocol'][:150]}",
+                    f"Top control: {p['top_control']}",
+                ],
+                triggered_by={"stage": stage_code, "source": "crop_knowledge_engine"},
+                created_at=now,
+            ))
+    except Exception as e:
+        print(f"Crop knowledge engine disease/pest enhancement failed: {e}")
+
     return alerts
 
 

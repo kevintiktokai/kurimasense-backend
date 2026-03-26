@@ -3166,3 +3166,357 @@ async def get_yield_analytics(user_id: str = Depends(verify_token)):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to get analytics: {str(e)}")
 
+
+# ===========================================================================
+# AGRONOMIC DECISION ENGINE ENDPOINTS
+# ===========================================================================
+# Fast-path, science-based recommendations that don't require LLM calls.
+# These provide instant, deterministic advice from the crop knowledge engine.
+
+from agronomic_engine import (
+    check_planting_window,
+    get_fertilizer_recommendation,
+    get_ipm_recommendations,
+    get_irrigation_advice,
+    check_harvest_readiness,
+)
+from crop_knowledge import (
+    get_crop_profile, get_all_crop_names, build_crop_context_for_ai,
+    get_diseases_for_conditions, get_pests_for_stage,
+)
+
+
+@app.get("/agro/planting-window")
+async def planting_window_check(
+    crop: str,
+    region: str = "",
+    user_id: str = Depends(verify_token),
+):
+    """
+    Check if now is the right time to plant a specific crop.
+    Returns planting window status and recommendations.
+    """
+    return check_planting_window(crop, region)
+
+
+@app.get("/agro/fertilizer/{field_id}")
+async def fertilizer_recommendation(
+    field_id: str,
+    soil_ph: Optional[float] = None,
+    user_id: str = Depends(verify_token),
+):
+    """
+    Get stage-specific fertilizer recommendations for a field.
+    Uses crop type, planting date, and soil pH to generate precise advice.
+    """
+    conn = get_db_connection()
+    if not conn:
+        raise HTTPException(status_code=500, detail="Database unavailable")
+
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT crop_type, planting_date FROM fields WHERE id = %s AND user_id = %s",
+            (field_id, user_id),
+        )
+        field = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+        if not field:
+            raise HTTPException(status_code=404, detail="Field not found")
+
+        crop_type = field["crop_type"]
+        planting_date = field.get("planting_date")
+
+        if not planting_date:
+            return {"recommendation": "Set a planting date to get fertilizer advice."}
+
+        days = (date.today() - planting_date).days if isinstance(planting_date, date) else 0
+
+        return get_fertilizer_recommendation(crop_type, days, soil_ph)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        if conn:
+            conn.close()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/agro/ipm/{field_id}")
+async def ipm_recommendations(
+    field_id: str,
+    user_id: str = Depends(verify_token),
+):
+    """
+    Integrated Pest Management recommendations for a field.
+    Combines current weather, growth stage, and crop-specific disease/pest profiles.
+    """
+    conn = get_db_connection()
+    if not conn:
+        raise HTTPException(status_code=500, detail="Database unavailable")
+
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT crop_type, planting_date, polygon_coordinates FROM fields WHERE id = %s AND user_id = %s",
+            (field_id, user_id),
+        )
+        field = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+        if not field:
+            raise HTTPException(status_code=404, detail="Field not found")
+
+        crop_type = field["crop_type"]
+        planting_date = field.get("planting_date")
+        days = (date.today() - planting_date).days if planting_date and isinstance(planting_date, date) else 30
+
+        # Get weather for disease risk assessment
+        temp, humidity = None, None
+        try:
+            coords = field.get("polygon_coordinates")
+            if coords:
+                if isinstance(coords, str):
+                    coords = json.loads(coords)
+                if isinstance(coords, list) and len(coords) > 0:
+                    lat = coords[0].get("lat") or coords[0].get("latitude")
+                    lon = coords[0].get("lng") or coords[0].get("lon") or coords[0].get("longitude")
+                    if lat and lon:
+                        from climate_service import get_current_weather
+                        weather = await get_current_weather(float(lat), float(lon))
+                        if weather:
+                            temp = weather.get("temperature")
+                            humidity = weather.get("humidity")
+        except Exception as e:
+            print(f"Weather fetch for IPM failed: {e}")
+
+        return get_ipm_recommendations(crop_type, days, temp, humidity)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/agro/irrigation/{field_id}")
+async def irrigation_advice(
+    field_id: str,
+    recent_rainfall_mm: float = 0.0,
+    user_id: str = Depends(verify_token),
+):
+    """
+    Crop-coefficient-based irrigation scheduling for a field.
+    """
+    conn = get_db_connection()
+    if not conn:
+        raise HTTPException(status_code=500, detail="Database unavailable")
+
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT crop_type, planting_date FROM fields WHERE id = %s AND user_id = %s",
+            (field_id, user_id),
+        )
+        field = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+        if not field:
+            raise HTTPException(status_code=404, detail="Field not found")
+
+        days = 0
+        planting_date = field.get("planting_date")
+        if planting_date and isinstance(planting_date, date):
+            days = (date.today() - planting_date).days
+
+        return get_irrigation_advice(field["crop_type"], days, recent_rainfall_mm)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/agro/harvest/{field_id}")
+async def harvest_readiness(
+    field_id: str,
+    user_id: str = Depends(verify_token),
+):
+    """
+    Check harvest readiness for a field, including post-harvest guidance.
+    """
+    conn = get_db_connection()
+    if not conn:
+        raise HTTPException(status_code=500, detail="Database unavailable")
+
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT crop_type, planting_date, variety FROM fields WHERE id = %s AND user_id = %s",
+            (field_id, user_id),
+        )
+        field = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+        if not field:
+            raise HTTPException(status_code=404, detail="Field not found")
+
+        days = 0
+        planting_date = field.get("planting_date")
+        if planting_date and isinstance(planting_date, date):
+            days = (date.today() - planting_date).days
+
+        # Try to get variety maturity from DB
+        variety_maturity = None
+        variety = field.get("variety")
+        if variety:
+            conn2 = get_db_connection()
+            if conn2:
+                try:
+                    cur2 = conn2.cursor()
+                    cur2.execute(
+                        "SELECT days_to_maturity FROM crop_varieties WHERE LOWER(variety_name) LIKE LOWER(%s) LIMIT 1",
+                        (f"%{variety}%",),
+                    )
+                    row = cur2.fetchone()
+                    if row and row.get("days_to_maturity"):
+                        variety_maturity = int(row["days_to_maturity"])
+                    cur2.close()
+                    conn2.close()
+                except Exception:
+                    if conn2:
+                        conn2.close()
+
+        return check_harvest_readiness(field["crop_type"], days, variety_maturity)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/agro/crop-intelligence/{field_id}")
+async def crop_intelligence(
+    field_id: str,
+    user_id: str = Depends(verify_token),
+):
+    """
+    Full crop intelligence report combining all agronomic engines.
+    Returns growth stage, disease risks, pest alerts, fertilizer advice,
+    irrigation needs, and harvest readiness in a single call.
+    """
+    conn = get_db_connection()
+    if not conn:
+        raise HTTPException(status_code=500, detail="Database unavailable")
+
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT crop_type, planting_date, variety, polygon_coordinates, name FROM fields WHERE id = %s AND user_id = %s",
+            (field_id, user_id),
+        )
+        field = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+        if not field:
+            raise HTTPException(status_code=404, detail="Field not found")
+
+        crop_type = field["crop_type"]
+        planting_date = field.get("planting_date")
+        days = 0
+        if planting_date and isinstance(planting_date, date):
+            days = (date.today() - planting_date).days
+
+        # Get weather
+        temp, humidity, rainfall = None, None, 0.0
+        try:
+            coords = field.get("polygon_coordinates")
+            if coords:
+                if isinstance(coords, str):
+                    coords = json.loads(coords)
+                if isinstance(coords, list) and len(coords) > 0:
+                    lat = coords[0].get("lat") or coords[0].get("latitude")
+                    lon = coords[0].get("lng") or coords[0].get("lon") or coords[0].get("longitude")
+                    if lat and lon:
+                        from climate_service import get_current_weather
+                        weather = await get_current_weather(float(lat), float(lon))
+                        if weather:
+                            temp = weather.get("temperature")
+                            humidity = weather.get("humidity")
+                            rainfall = weather.get("precipitation", 0.0)
+        except Exception:
+            pass
+
+        # Get variety maturity
+        variety_maturity = None
+        variety = field.get("variety")
+        if variety:
+            conn2 = get_db_connection()
+            if conn2:
+                try:
+                    cur2 = conn2.cursor()
+                    cur2.execute(
+                        "SELECT days_to_maturity FROM crop_varieties WHERE LOWER(variety_name) LIKE LOWER(%s) LIMIT 1",
+                        (f"%{variety}%",),
+                    )
+                    row = cur2.fetchone()
+                    if row and row.get("days_to_maturity"):
+                        variety_maturity = int(row["days_to_maturity"])
+                    cur2.close()
+                    conn2.close()
+                except Exception:
+                    if conn2:
+                        conn2.close()
+
+        # Assemble full intelligence report
+        return {
+            "field": {
+                "id": field_id,
+                "name": field.get("name"),
+                "crop": crop_type,
+                "variety": variety,
+                "days_since_planting": days,
+            },
+            "ipm": get_ipm_recommendations(crop_type, days, temp, humidity),
+            "fertilizer": get_fertilizer_recommendation(crop_type, days),
+            "irrigation": get_irrigation_advice(crop_type, days, rainfall * 7),
+            "harvest": check_harvest_readiness(crop_type, days, variety_maturity),
+            "planting_window": check_planting_window(crop_type),
+            "generated_at": datetime.utcnow().isoformat(),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Crop Intelligence Error: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/agro/supported-crops")
+async def supported_crops():
+    """List all crops with detailed knowledge profiles."""
+    crops = get_all_crop_names()
+    result = []
+    for name in crops:
+        profile = get_crop_profile(name)
+        if profile:
+            result.append({
+                "name": profile.crop_name,
+                "scientific_name": profile.scientific_name,
+                "family": profile.family,
+                "optimal_ph": list(profile.optimal_ph),
+                "optimal_temp": list(profile.optimal_temp),
+                "total_water_mm": profile.total_water_mm,
+                "growth_stages": len(profile.growth_stages),
+                "diseases_tracked": len(profile.diseases),
+                "pests_tracked": len(profile.pests),
+                "regions": profile.natural_region_suitability,
+            })
+    return {"crops": result, "total": len(result)}
+

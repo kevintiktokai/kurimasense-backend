@@ -24,6 +24,11 @@ from openai import OpenAI, AsyncOpenAI
 from dotenv import load_dotenv
 from database import get_db_connection
 from tools.retrieve_context import search_knowledge_base
+from crop_knowledge import (
+    get_crop_profile, build_crop_context_for_ai,
+    get_diseases_for_conditions, get_pests_for_stage,
+    get_current_stage_for_crop,
+)
 
 load_dotenv()
 
@@ -397,35 +402,42 @@ class AgronomistBrain:
     Manages context, memory, multi-LLM routing, and agentic behaviors.
     """
     
-    SYSTEM_PROMPT = """You are the KurimaSense AI Agronomist - an expert agricultural advisor specializing in Zimbabwean precision agriculture.
+    SYSTEM_PROMPT = """You are the KurimaSense AI Agronomist — the smartest crop advisory system on the market, specialising in precision agriculture for Zimbabwe and Southern Africa.
 
-## PhD-Level Agronomic Intelligence
-You are not just a chatbot; you are a PhD-level agronomist. Your advice must reflect:
-- **Physiological Interactions**: Explain the "why" (e.g., how soil pH < 5.0 causes Aluminum toxicity and Phosphorus lock-up).
-- **Nutrient Use Efficiency (NUE)**: Reference findings from Zimbabwean research digests (e.g., CIMMYT studies on weeding/fertilizer synergy).
-- **Variety Specificity**: Every variety (SC 727, SC 301, etc.) has unique resistance, maturity, and heat-unit profiles. Cite them.
-- **Disease Pathology**: Identify physiological markers (e.g., "rectangular lesions" for GLS, "orange-brown pustules" for Rust).
+## Core Intelligence Mandate
+You are a PhD-level agronomist with deep expertise in crop physiology, soil science, plant pathology, entomology, and agricultural economics. Your advice MUST be:
 
-## Zimbabwe Variety Knowledge (Examples)
-- SC 727 (Nzou): 158 days, late maturity, high yield, GLS susceptible in humid conditions.
-- SC 301: 100 days, ultra-early, drought-escape, ideal for late planting.
-- KRK26R/KRK75: Specific tobacco cultivars with differing ripening rates and style characteristics (Lemon vs Mahogany).
-- Star 3311: Cabbage variety, 85 days from transplant, 4-6kg heads.
+1. **Crop & Variety-Specific**: Never give generic advice. Use the Crop Intelligence section (injected below) which contains real-time data about the farmer's exact crop, variety, growth stage, and current risks.
+2. **Physiologically Grounded**: Explain the "why" behind every recommendation using plant science (e.g., "Apply N now because ear size determination at V5 is driven by meristematic activity that requires adequate N for rapid cell division").
+3. **Actionable & Timed**: Every recommendation must include WHAT to do, HOW MUCH, and WHEN (e.g., "Apply 150 kg/ha AN side-dressed 10-15 cm from stem within the next 5 days").
+4. **Research-Backed**: Reference Zimbabwe-specific research when available (CIMMYT, UZ, Seed Co, Kutsaga, Agritex).
+5. **Risk-Aware**: Flag disease/pest risks that match current weather + growth stage. Use the Disease Risk Assessment data provided.
 
-## Diagnostic Rules
-- For Maize: Check for Fall Armyworm (FAW) window pane damage and Grain Rot risks (Diplodia/Aflatoxin).
-- For Soybeans: Monitor nodulation (pink vs white nodules). If pH is low, recommend Liming/Molybdenum over extra Nitrogen.
-- For Tobacco: Focus on Topping status, Sucker control, and Frog-eye prevention.
+## Diagnostic Decision Tree
+When a farmer describes a problem, follow this protocol:
+1. **Identify the crop and growth stage** from context
+2. **Cross-reference symptoms** with known diseases/pests for that crop at that stage
+3. **Check weather conditions** — do they favour the suspected pathogen?
+4. **Check variety resistance** — is this variety known to be susceptible?
+5. **Provide confidence level** based on how many factors align
+6. **Recommend IPM approach**: cultural control first, then biological, then chemical as last resort
+7. **Include economic thresholds** — only recommend chemical intervention when justified
+
+## Zimbabwe-Specific Knowledge
+- **Natural Regions**: NR I (>1000mm, Eastern Highlands) to NR V (<450mm, Lowveld). Adjust all recommendations to region.
+- **Fertilizer Economics**: CIMMYT shows smallholder NUE is 3.8 kg grain/kg N vs 12+ kg in research plots. Timely weeding doubles NUE.
+- **Soil Acidity**: pH <5.0 is the #1 hidden yield limiter. Causes Al toxicity → root stunting → P/Mo lockup → nodulation failure in legumes.
+- **Variety Portfolio**: SC 727 (158d, highest yield, GLS tolerant), SC 301 (100d, drought-escape), SC 403 (GLS tolerant, medium), KRK26R/KRK75 (tobacco), SC Sentinel/Safari (soybean), Natal Common/Makulu Red (groundnuts).
 
 ## Output Format
-You must respond with a JSON object containing:
+Respond with a JSON object:
 {
-    "text_body": "Your main response - authoritative, scientifically deep, and variety-specific. Reference sources if applicable.",
-    "actions": ["Priority actions with timing and scientific justification (e.g., 'Apply basal fertilizer before rain to minimize N-volatilization')"],
+    "text_body": "Authoritative, scientifically grounded response. Reference crop stage, variety characteristics, and current conditions. Include specific rates, timings, and products where applicable.",
+    "actions": ["Specific, prioritised actions with scientific justification and timing"],
     "confidence_score": 0.0-1.0,
-    "reasoning_trace": "Detailed agronomic logic used (e.g., 'Soil moisture + Stage V4 = Side-dressing peak window')",
-    "follow_up_questions": ["Technical questions to refine advice"],
-    "proactive_insights": ["Variety-specific 'Crop Doctor' tips (e.g., 'Watch for P-deficiency purpling in cold soils')"]
+    "reasoning_trace": "Show your agronomic reasoning chain (e.g., 'Stage V4 + low N symptoms + adequate moisture = optimal top-dress window. NUE will be maximised because...')",
+    "follow_up_questions": ["Questions to narrow diagnosis or improve advice quality"],
+    "proactive_insights": ["Anticipatory tips based on what's coming NEXT in the growth cycle (e.g., 'In 2 weeks you will enter tasseling — ensure adequate moisture reserves now')"]
 }"""
 
     def __init__(self):
@@ -433,29 +445,126 @@ You must respond with a JSON object containing:
         self.llm_router = LLMRouter()
         self.intent_classifier = IntentClassifier()
 
-    async def _build_context_prompt(self, 
+    # ------------------------------------------------------------------
+    # Variety lookup — queries DB or falls back to crop_knowledge module
+    # ------------------------------------------------------------------
+
+    def _get_variety_details(self, crop_type: Optional[str], variety_name: Optional[str]) -> Optional[str]:
+        """
+        Fetch variety-specific details from the crop_varieties table in Supabase.
+        Falls back to crop_knowledge module for general crop intelligence.
+        """
+        if not crop_type or not variety_name:
+            return None
+
+        conn = get_db_connection()
+        if not conn:
+            return None
+
+        try:
+            cursor = conn.cursor()
+            # Try exact match first, then fuzzy
+            cursor.execute("""
+                SELECT variety_name, breeder, days_to_maturity,
+                       yield_potential_low, yield_potential_high, characteristics
+                FROM crop_varieties
+                WHERE LOWER(crop_name) = LOWER(%s)
+                  AND (LOWER(variety_name) = LOWER(%s)
+                       OR LOWER(variety_name) LIKE LOWER(%s))
+                LIMIT 1
+            """, (crop_type, variety_name, f"%{variety_name}%"))
+            row = cursor.fetchone()
+            cursor.close()
+            conn.close()
+
+            if not row:
+                return None
+
+            chars = row.get("characteristics") or {}
+            if isinstance(chars, str):
+                try:
+                    chars = json.loads(chars)
+                except Exception:
+                    chars = {}
+
+            parts = [f"**Variety Intelligence: {row['variety_name']}**"]
+            if row.get("breeder"):
+                parts.append(f"- Breeder: {row['breeder']}")
+            if row.get("days_to_maturity"):
+                parts.append(f"- Days to Maturity: {row['days_to_maturity']}")
+            if row.get("yield_potential_low") and row.get("yield_potential_high"):
+                parts.append(f"- Yield Potential: {row['yield_potential_low']}-{row['yield_potential_high']} t/ha")
+
+            # Extract JSONB characteristics
+            for key in ["disease_resistance", "drought_tolerance", "gls_tolerance",
+                         "grain_type", "region_suitability", "special_features",
+                         "growth_habit", "maturity_class"]:
+                val = chars.get(key)
+                if val:
+                    label = key.replace("_", " ").title()
+                    parts.append(f"- {label}: {val}")
+
+            return "\n".join(parts)
+
+        except Exception as e:
+            print(f"Variety lookup failed: {e}")
+            if conn:
+                conn.close()
+            return None
+
+    # ------------------------------------------------------------------
+    # Context prompt builder — enhanced with crop knowledge engine
+    # ------------------------------------------------------------------
+
+    async def _build_context_prompt(self,
                                field_context: Optional[FieldContext],
                                weather_context: Optional[WeatherContext],
                                language: str,
                                user_query: str = "") -> str:
-        """Build the contextual prompt section with RAG integration."""
+        """Build the contextual prompt section with RAG + crop knowledge engine."""
         parts = []
-        
+
         if language and language != "en":
             parts.append(f"**Language**: Respond in {language}\n")
-        
-        # --- RAG INTEGRATION START ---
-        # If we have a query, search the knowledge base
+
+        # --- CROP KNOWLEDGE ENGINE (deterministic, instant) ---
+        # Inject PhD-level crop-specific intelligence based on current stage + weather
+        if field_context and field_context.crop_type:
+            days_since = 0
+            if field_context.planting_date:
+                try:
+                    from datetime import date
+                    pd = datetime.fromisoformat(field_context.planting_date.replace("Z", "+00:00"))
+                    days_since = (datetime.now(timezone.utc) - pd).days
+                except Exception:
+                    days_since = 0
+
+            temp = weather_context.current_temp if weather_context else None
+            hum = weather_context.humidity if weather_context else None
+
+            crop_intel = build_crop_context_for_ai(
+                crop_name=field_context.crop_type,
+                days_since_planting=days_since,
+                temperature=temp,
+                humidity=hum,
+                variety_name=field_context.variety,
+            )
+            if crop_intel and "No detailed profile" not in crop_intel:
+                parts.append(crop_intel)
+
+        # --- RAG INTEGRATION (semantic, async) ---
         if user_query and len(user_query) > 5:
             try:
-                # Use simple region heuristic or default
                 region = "generic"
                 if field_context and field_context.location:
-                    # In a real app we'd determine region from lat/lon
-                    pass
-                    
+                    from tools.retrieve_context import _get_region_from_coords
+                    lat = field_context.location.get("lat")
+                    lon = field_context.location.get("lon")
+                    if lat and lon:
+                        region = _get_region_from_coords(lat, lon)
+
                 kb_results = await search_knowledge_base(user_query, region, limit=3)
-                
+
                 if kb_results:
                     rag_content = "**📚 Verified Knowledge Base Context:**\n"
                     rag_content += "Use this information to answer. Cite sources using [Source: Title].\n"
@@ -466,14 +575,14 @@ You must respond with a JSON object containing:
                     parts.append(rag_content)
             except Exception as e:
                 print(f"RAG Retrieval failed: {e}")
-        # --- RAG INTEGRATION END ---
 
         if field_context:
             parts.append(field_context.to_prompt_section())
-        
+
         if weather_context:
             parts.append(weather_context.to_prompt_section())
-        
+
+        # Variety-specific DB details
         if field_context and field_context.variety:
              variety_details = self._get_variety_details(field_context.crop_type, field_context.variety)
              if variety_details:
@@ -481,7 +590,7 @@ You must respond with a JSON object containing:
 
         if not parts:
             return "No specific context available. Provide general advice."
-        
+
         return "\n\n".join(parts)
 
     
@@ -879,8 +988,6 @@ You must respond with a JSON object containing:
             return json.loads(response_text)
         except Exception as e:
             print(f"AI Crop Plan Generation Failed: {e}")
-            # Fallback will be handled by the caller
-            return None
             return None
 
 
