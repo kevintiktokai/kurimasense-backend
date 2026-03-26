@@ -1084,6 +1084,7 @@ def post_generate_yield(field_id: str, user_id: str = Depends(verify_token)):
     try:
         response = run_generate_yield(
             {
+                "field_id": field_id,
                 "crop": field.get("crop"),
                 "variety": field.get("variety"),
                 "planting_date": field.get("planting_date"),
@@ -1109,12 +1110,16 @@ def post_generate_yield(field_id: str, user_id: str = Depends(verify_token)):
         
     except Exception as e:
         print(f"Yield Gen Error: {e}")
-        # Fallback
+        # Honest error fallback — no fabricated numbers
         return {
-            "current_stage": "Unknown",
-            "projected_yield": field.get("area", 10) * 5, 
-            "yield_potential": field.get("area", 10) * 8, 
-            "next_actions": ["Scout for pests", "Check moisture"]
+            "current_stage": "Unavailable",
+            "projected_yield": None,
+            "yield_potential": None,
+            "yield_gap_analysis": "Yield projection could not be generated. Ensure planting date and variety are set.",
+            "next_actions": [],
+            "full_plan": [],
+            "confidence_bands": None,
+            "error": "Projection generation failed. Check field configuration."
         }
 
 @app.get("/market/prices")
@@ -2246,6 +2251,112 @@ async def create_farm_task(
     except Exception as e:
         if conn: conn.close()
         print(f"Error creating task: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/ai/tasks/history")
+async def get_task_history(
+    field_id: Optional[str] = None,
+    days: int = 30,
+    user_id: str = Depends(verify_token)
+):
+    """Fetch completed task history for the user over the past N days."""
+    conn = get_db_connection()
+    if not conn:
+        raise HTTPException(status_code=500, detail="Database connection failed")
+
+    try:
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        query = """
+            SELECT t.*, f.name as field_name
+            FROM farm_tasks t
+            LEFT JOIN fields f ON t.field_id = f.id
+            WHERE t.user_id = %s
+              AND t.task_date >= CURRENT_DATE - INTERVAL '%s days'
+            ORDER BY t.task_date DESC, t.completed_at DESC NULLS LAST
+        """
+        params = [user_id, days]
+
+        if field_id:
+            query = """
+                SELECT t.*, f.name as field_name
+                FROM farm_tasks t
+                LEFT JOIN fields f ON t.field_id = f.id
+                WHERE t.user_id = %s
+                  AND t.task_date >= CURRENT_DATE - INTERVAL '%s days'
+                  AND t.field_id = %s::uuid
+                ORDER BY t.task_date DESC, t.completed_at DESC NULLS LAST
+            """
+            params = [user_id, days, field_id]
+
+        cursor.execute(query, tuple(params))
+        tasks = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        for t in tasks:
+            t['id'] = str(t['id'])
+            if t.get('field_id'): t['field_id'] = str(t['field_id'])
+
+        # Compute summary stats
+        completed = [t for t in tasks if t.get('completed')]
+        pending = [t for t in tasks if not t.get('completed')]
+
+        return {
+            "tasks": tasks,
+            "summary": {
+                "total": len(tasks),
+                "completed": len(completed),
+                "pending": len(pending),
+                "completion_rate": round(len(completed) / max(len(tasks), 1) * 100, 1),
+                "days_covered": days
+            }
+        }
+    except Exception as e:
+        if conn: conn.close()
+        print(f"Error fetching task history: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/ai/tasks/from-plan")
+async def create_tasks_from_plan(
+    payload: dict,
+    user_id: str = Depends(verify_token)
+):
+    """Convert AI plan actions into farm tasks."""
+    actions = payload.get("actions", [])
+    field_id = payload.get("field_id")
+
+    if not actions:
+        raise HTTPException(status_code=400, detail="No actions provided")
+
+    conn = get_db_connection()
+    if not conn:
+        raise HTTPException(status_code=500, detail="Database connection failed")
+
+    created_tasks = []
+    try:
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        for action in actions:
+            title = action if isinstance(action, str) else action.get("title", str(action))
+            description = "" if isinstance(action, str) else action.get("description", "")
+            cursor.execute("""
+                INSERT INTO farm_tasks (user_id, field_id, title, description, activity_type, priority, is_ai_generated)
+                VALUES (%s, %s, %s, %s, 'scout', 'high', TRUE)
+                RETURNING *
+            """, (user_id, field_id, title[:200], description[:500]))
+            task = cursor.fetchone()
+            task['id'] = str(task['id'])
+            if task.get('field_id'): task['field_id'] = str(task['field_id'])
+            created_tasks.append(task)
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return {"created": len(created_tasks), "tasks": created_tasks}
+    except Exception as e:
+        if conn: conn.close()
+        print(f"Error creating tasks from plan: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
