@@ -892,7 +892,10 @@ def get_dashboard_stats(user_id: str = Depends(verify_token)):
         "tomato": 40.0, "cabbage": 50.0, "potato": 25.0, "cotton": 2.5,
         "groundnuts": 2.0, "sunflower": 2.0, "sorghum": 3.0, "sugar_beans": 2.0,
         "sweet_potato": 20.0, "finger_millet": 1.5, "pearl_millet": 1.5,
-        "cowpeas": 1.2, "bambara_nuts": 1.0, "butternut": 20.0, "paprika": 2.5
+        "cowpeas": 1.2, "bambara_nuts": 1.0, "butternut": 20.0, "paprika": 2.5,
+        "peas": 6.0, "snow_peas": 5.0, "blueberries": 8.0, "green_beans": 10.0,
+        "tea": 3.0, "sesame": 0.8, "cassava": 20.0, "garlic": 8.0,
+        "strawberries": 25.0, "green_pepper": 30.0
     }
     
     if not conn:

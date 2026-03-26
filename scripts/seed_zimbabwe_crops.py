@@ -1895,6 +1895,670 @@ ZIMBABWE_VARIETIES = [
             "post_harvest": "Sun dry or smoke dry. Grade and pack."
         }
     },
+
+    # ============================================================
+    # PEAS (Garden Peas) - Fresh Market & Export
+    # ============================================================
+    {
+        "crop_name": "Peas",
+        "variety_name": "Greenfeast",
+        "breeder": "Open Pollinated",
+        "days_to_maturity": 70,
+        "yield_potential_low": 4.0,
+        "yield_potential_high": 8.0,
+        "description": "Standard garden pea for fresh market. Produces well-filled pods with sweet, tender peas. Popular for local market and freezing.",
+        "characteristics": {
+            "drought_tolerance": "low",
+            "heat_tolerance": "low",
+            "pea_type": "Garden/Shelling",
+            "region_suitability": ["Natural Region I", "Natural Region II", "Irrigation"],
+            "planting_method": "Direct seed",
+            "planting_window": "March to June (cool season crop). Can also plant August-September with irrigation.",
+            "row_spacing_cm": 30,
+            "in_row_spacing_cm": "5-7",
+            "planting_depth_cm": "3-5",
+            "seed_rate_kg_per_ha": "80-120",
+            "soil_requirements": "Well-drained, fertile loams, pH 6.0-7.0. Cool temperatures essential (15-20C optimal).",
+            "optimal_temperature_c": "15-20 (will not set pods above 27C)",
+            "irrigation": "Regular. 25mm per week. Peas are shallow-rooted and drought-sensitive.",
+            "fertilizer_basal": "Compound D: 200-300 kg/ha. Peas fix nitrogen but benefit from starter fertilizer.",
+            "inoculation": "Inoculate with Rhizobium leguminosarum for improved N-fixation",
+            "key_pests": ["Pea Aphid", "Pod Borer", "Cutworm", "Thrips"],
+            "key_diseases": ["Powdery Mildew", "Downy Mildew", "Fusarium Wilt", "Ascochyta Blight"],
+            "pest_management": "Powdery Mildew: spray Sulphur or Triadimefon preventatively in warm/dry weather. Aphids: Dimethoate or natural predators.",
+            "staking": "Tall varieties need staking with strings or netting. Dwarf types are self-supporting.",
+            "harvesting": "Pick when pods are well-filled but still bright green. Test by pressing - peas should be tender. Pick every 2-3 days.",
+            "post_harvest": "Highly perishable. Cool immediately. Shelf life 2-3 days at ambient, 7-10 days at 0-2C. Shell and freeze for longer storage."
+        }
+    },
+    {
+        "crop_name": "Peas",
+        "variety_name": "Onward",
+        "breeder": "Open Pollinated",
+        "days_to_maturity": 75,
+        "yield_potential_low": 5.0,
+        "yield_potential_high": 10.0,
+        "description": "Heavy-yielding garden pea, semi-dwarf. Reliable producer with excellent flavour. Good for freezing.",
+        "characteristics": {
+            "drought_tolerance": "low",
+            "pea_type": "Garden/Shelling",
+            "growth_habit": "Semi-dwarf (60-75cm)",
+            "region_suitability": ["Natural Region I", "Natural Region II", "Irrigation"],
+            "planting_window": "March to June (cool season)",
+            "row_spacing_cm": 30,
+            "in_row_spacing_cm": "5-7",
+            "seed_rate_kg_per_ha": "80-120",
+            "soil_requirements": "Well-drained loams, pH 6.0-7.0",
+            "optimal_temperature_c": "15-20",
+            "fertilizer_basal": "Compound D: 200-300 kg/ha",
+            "key_pests": ["Pea Aphid", "Pod Borer"],
+            "key_diseases": ["Powdery Mildew", "Fusarium Wilt"],
+            "harvesting": "Pick every 2-3 days when pods well-filled"
+        }
+    },
+
+    # ============================================================
+    # SNOW PEAS / MANGE TOUT / SUGAR SNAP - Major Export Crop
+    # ============================================================
+    {
+        "crop_name": "Snow Peas",
+        "variety_name": "Oregon Sugar Pod",
+        "breeder": "Open Pollinated",
+        "days_to_maturity": 65,
+        "yield_potential_low": 3.0,
+        "yield_potential_high": 6.0,
+        "description": "Flat-podded mange tout for export. Entire pod eaten before peas develop. One of Zimbabwe's top horticultural exports to EU and UK markets. High-value crop requiring strict quality control.",
+        "characteristics": {
+            "drought_tolerance": "low",
+            "heat_tolerance": "low",
+            "pea_type": "Mange Tout/Snow Pea (flat pod, eaten whole)",
+            "region_suitability": ["Natural Region I", "Natural Region II", "Irrigation"],
+            "planting_method": "Direct seed",
+            "planting_window": "March to July (cool season). Stagger plantings every 2-3 weeks for continuous supply.",
+            "row_spacing_cm": 75,
+            "in_row_spacing_cm": "5-7",
+            "planting_depth_cm": "3-5",
+            "seed_rate_kg_per_ha": "80-100",
+            "soil_requirements": "Well-drained, fertile soils, pH 6.0-7.0. Must be free of heavy metals and pesticide residues for export (GlobalGAP).",
+            "optimal_temperature_c": "12-18 (very sensitive to heat)",
+            "irrigation": "Drip irrigation essential for export quality. 25mm per week. Consistent moisture prevents pod distortion.",
+            "fertilizer_basal": "2:3:4 at 400-600 kg/ha. Foliar calcium for pod quality.",
+            "trellising": "ESSENTIAL. Use 1.5-2m poles with netting or string trellis. Pods must hang freely for straight, clean pods.",
+            "key_pests": ["Pea Aphid", "Leaf Miner", "Thrips", "American Bollworm"],
+            "key_diseases": ["Powdery Mildew", "Downy Mildew", "Ascochyta Blight", "Fusarium Wilt"],
+            "pest_management": "EXPORT CROPS: Only use approved pesticides with correct pre-harvest intervals (PHI). Check EU MRL (Maximum Residue Limit) database. Keep spray records. IPM approach essential.",
+            "harvesting": "Pick DAILY when pods are flat, translucent, and peas barely visible. Pods must be straight, unblemished, uniform green. Grade strictly.",
+            "post_harvest": "COLD CHAIN CRITICAL: Cool to 2-4C within 1 hour of harvest. Pack in approved cartons. Transport in refrigerated trucks. Shelf life 7-10 days at 0-2C.",
+            "export_requirements": "GlobalGAP certification required. Traceability from seed to pack. Pesticide residue testing. Phytosanitary certificate.",
+            "market_info": "Major buyers: UK supermarkets, EU fresh produce importers. Contracts through Zimbabwean horticultural exporters (e.g., Nhimbe Fresh, Interfresh)."
+        }
+    },
+    {
+        "crop_name": "Snow Peas",
+        "variety_name": "Sugar Snap",
+        "breeder": "Various",
+        "days_to_maturity": 68,
+        "yield_potential_low": 4.0,
+        "yield_potential_high": 8.0,
+        "description": "Round-podded sugar snap pea for export. Eaten whole with developed peas inside. Crunchy, sweet. Growing demand in EU markets.",
+        "characteristics": {
+            "drought_tolerance": "low",
+            "pea_type": "Sugar Snap (round pod, eaten whole with peas)",
+            "region_suitability": ["Natural Region I", "Natural Region II", "Irrigation"],
+            "planting_window": "March to July (cool season)",
+            "row_spacing_cm": 75,
+            "in_row_spacing_cm": "5-7",
+            "seed_rate_kg_per_ha": "80-100",
+            "soil_requirements": "Well-drained, fertile soils, pH 6.0-7.0",
+            "optimal_temperature_c": "12-18",
+            "irrigation": "Drip irrigation essential",
+            "trellising": "ESSENTIAL. 1.5-2m support.",
+            "key_pests": ["Pea Aphid", "Leaf Miner", "Thrips"],
+            "key_diseases": ["Powdery Mildew", "Downy Mildew"],
+            "harvesting": "Pick when pods are round, plump, and peas visible but pod still tender and stringless",
+            "post_harvest": "Cool immediately to 2-4C. Strict cold chain for export.",
+            "export_requirements": "GlobalGAP certification, pesticide residue compliance"
+        }
+    },
+
+    # ============================================================
+    # BLUEBERRIES - High-Value Export Fruit
+    # ============================================================
+    {
+        "crop_name": "Blueberries",
+        "variety_name": "Legacy",
+        "breeder": "USDA/Introduced",
+        "days_to_maturity": 730,
+        "yield_potential_low": 5.0,
+        "yield_potential_high": 12.0,
+        "description": "Southern highbush blueberry variety suited to Zimbabwe's climate. Produces during the Northern Hemisphere off-season (September-December), commanding premium export prices to EU and UK. First commercial harvest in year 2-3.",
+        "characteristics": {
+            "crop_type": "Perennial fruit (lifespan 15-20+ years)",
+            "drought_tolerance": "low",
+            "heat_tolerance": "moderate",
+            "chill_hours_required": "400-600 (low chill - suited to Zimbabwe)",
+            "berry_size": "medium-large",
+            "flavour": "Sweet, aromatic",
+            "firmness": "good (important for export shelf life)",
+            "region_suitability": ["Natural Region I", "Natural Region II (highveld)"],
+            "altitude": "Above 1200m preferred for adequate winter chill (Harare, Marondera, Nyanga, Juliasdale)",
+            "planting_method": "Transplant tissue-culture or rooted cuttings into prepared beds",
+            "planting_window": "September to November (spring planting into permanent beds)",
+            "row_spacing_m": "2.5-3.0",
+            "in_row_spacing_m": "0.8-1.0",
+            "plants_per_ha": "3300-5000",
+            "soil_requirements": "ACIDIC soil essential: pH 4.5-5.5. Sandy, well-drained, high organic matter. Most Zimbabwe soils need acidification with elemental sulphur or acidifying fertilizers.",
+            "soil_preparation": "Incorporate pine bark, sawdust, or peat moss. Raised beds recommended. Mulch heavily with pine needles or wood chips (10-15cm).",
+            "irrigation": "Drip irrigation ESSENTIAL. 25-30mm per week. Blueberries have shallow, fibrous root systems - cannot tolerate drought or waterlogging.",
+            "water_quality": "pH <6.5 preferred. Alkaline irrigation water must be acidified.",
+            "fertilizer_programme": "Use acidifying fertilizers (Ammonium Sulphate, NOT Calcium-based). Fertigation through drip. NPK 10:5:10 at 150-200 kg/ha/year split into weekly applications.",
+            "fertilizer_note": "NEVER use Compound D or lime on blueberries - they raise pH and kill the plant. Use acid-forming fertilizers only.",
+            "pruning": "Annual winter pruning essential. Remove old/unproductive wood, thin fruiting laterals. Train open vase shape for light penetration.",
+            "key_pests": ["Fruit Fly (Drosophila suzukii)", "Birds", "Aphids", "Mealybug", "Red Spider Mite"],
+            "key_diseases": ["Botrytis (Grey Mould)", "Anthracnose", "Phytophthora Root Rot", "Blueberry Rust"],
+            "pest_management": "Fruit Fly: netting, traps, Spinosad. Birds: netting essential over fruiting blocks. Botrytis: ensure good airflow, spray preventatively at flowering.",
+            "harvesting": "Hand-pick when berries are fully blue with waxy bloom. Pick every 5-7 days during season. Handle GENTLY - berries bruise easily.",
+            "harvest_season": "September to December (Zimbabwe's counter-season advantage for Northern Hemisphere markets)",
+            "post_harvest": "COLD CHAIN CRITICAL: Pre-cool to 0-2C within 2 hours. Pack in 125g/250g punnets. MAP (Modified Atmosphere Packaging) extends shelf life. Air-freight to EU/UK within 48 hours.",
+            "yield_timeline": "Year 1: establishment only. Year 2: light crop (1-2 t/ha). Year 3+: full production (5-12 t/ha).",
+            "economics": "Investment: USD 15,000-25,000/ha establishment. Returns: USD 30,000-80,000/ha at full production. Payback in 3-4 years.",
+            "export_requirements": "GlobalGAP, GRASP. Pesticide residue compliance (EU MRLs). Cold chain certification. Phytosanitary certificate.",
+            "market_info": "Zimbabwe exports blueberries Sep-Dec when Northern Hemisphere supply is low. Premium prices USD 8-15/kg. Major buyers: UK retailers, EU importers, Middle East."
+        }
+    },
+    {
+        "crop_name": "Blueberries",
+        "variety_name": "Ventura",
+        "breeder": "International/Licensed",
+        "days_to_maturity": 730,
+        "yield_potential_low": 6.0,
+        "yield_potential_high": 15.0,
+        "description": "High-yielding southern highbush variety with excellent firmness for long-distance export. Low chill requirement makes it well-suited to Zimbabwe's highveld.",
+        "characteristics": {
+            "crop_type": "Perennial fruit (lifespan 15-20+ years)",
+            "chill_hours_required": "300-500 (very low chill)",
+            "berry_size": "large",
+            "firmness": "excellent (key for air-freight export)",
+            "flavour": "Sweet-tart, good",
+            "region_suitability": ["Natural Region I", "Natural Region II (highveld)"],
+            "altitude": "Above 1200m preferred",
+            "row_spacing_m": "2.5-3.0",
+            "in_row_spacing_m": "0.8-1.0",
+            "soil_requirements": "ACIDIC: pH 4.5-5.5. Sandy, high organic matter. Mulch with pine bark.",
+            "irrigation": "Drip irrigation ESSENTIAL. 25-30mm per week.",
+            "fertilizer_programme": "Acidifying fertilizers only (Ammonium Sulphate). Fertigation.",
+            "pruning": "Annual winter pruning. Open vase shape.",
+            "key_pests": ["Fruit Fly", "Birds", "Mealybug"],
+            "key_diseases": ["Botrytis", "Anthracnose", "Phytophthora"],
+            "harvest_season": "September to December",
+            "post_harvest": "Pre-cool to 0-2C immediately. Air-freight within 48 hours.",
+            "economics": "Premium export crop. USD 30,000-80,000/ha revenue at full production."
+        }
+    },
+    {
+        "crop_name": "Blueberries",
+        "variety_name": "Eureka Sunrise",
+        "breeder": "Mountain Blue (Australia)/Licensed",
+        "days_to_maturity": 730,
+        "yield_potential_low": 8.0,
+        "yield_potential_high": 18.0,
+        "description": "Ultra-low chill variety from Australia's breeding programme. Earliest to produce in Zimbabwe (August-September). Very large berries with outstanding export quality.",
+        "characteristics": {
+            "crop_type": "Perennial fruit",
+            "chill_hours_required": "150-300 (ultra-low - ideal for subtropical zones)",
+            "berry_size": "very large (>2g)",
+            "firmness": "excellent",
+            "region_suitability": ["Natural Region I", "Natural Region II"],
+            "soil_requirements": "ACIDIC: pH 4.5-5.5. Raised beds with pine bark/peat media.",
+            "irrigation": "Drip irrigation ESSENTIAL",
+            "fertilizer_programme": "Acid-forming fertilizers only. Weekly fertigation.",
+            "harvest_season": "August to November (earliest season - premium prices)",
+            "post_harvest": "Cold chain essential. Air-freight to EU/UK.",
+            "economics": "Early-season berries command highest prices (USD 12-18/kg)."
+        }
+    },
+
+    # ============================================================
+    # GREEN BEANS / FINE BEANS - Top Horticultural Export
+    # ============================================================
+    {
+        "crop_name": "Green Beans",
+        "variety_name": "Samantha",
+        "breeder": "Pop Vriend/Hazera",
+        "days_to_maturity": 55,
+        "yield_potential_low": 8.0,
+        "yield_potential_high": 15.0,
+        "description": "Premium fine bean (haricot vert) variety for export. Slim, straight, stringless pods. Zimbabwe's fine beans are a major export to EU supermarkets, earning significant foreign currency.",
+        "characteristics": {
+            "drought_tolerance": "low",
+            "bean_type": "Fine bean (haricot vert) - pod diameter <8mm",
+            "pod_color": "dark green",
+            "stringless": True,
+            "region_suitability": ["Natural Region I", "Natural Region II", "Irrigation"],
+            "planting_method": "Direct seed",
+            "planting_window": "Year-round with irrigation. Peak export windows: March-October (EU winter/spring demand).",
+            "row_spacing_cm": 45,
+            "in_row_spacing_cm": "5-7",
+            "planting_depth_cm": "3-5",
+            "seed_rate_kg_per_ha": "60-80",
+            "soil_requirements": "Well-drained, fertile loams, pH 5.8-6.5. Must be free of contaminants for export.",
+            "optimal_temperature_c": "18-25 (will not set pods above 30C or below 12C)",
+            "irrigation": "Drip irrigation essential for export quality. 25mm per week. Consistent moisture prevents curved/distorted pods.",
+            "fertilizer_basal": "2:3:4 at 400-600 kg/ha at planting",
+            "fertilizer_top_dress": "LAN: 100 kg/ha at flowering. Foliar calcium and boron for pod quality.",
+            "key_pests": ["Bean Fly (CRITICAL first 3 weeks)", "Whitefly", "American Bollworm", "Aphids", "Red Spider Mite", "Thrips"],
+            "key_diseases": ["Rust", "Angular Leaf Spot", "Anthracnose", "Bacterial Blight", "Sclerotinia (White Mould)"],
+            "pest_management": "Bean Fly: Imidacloprid seed dressing ESSENTIAL. Whitefly/Aphids: IPM with yellow sticky traps + Spinosad. EXPORT: Only EU-approved pesticides. Keep spray records. Observe PHIs strictly.",
+            "harvesting": "Pick every 2 days when pods are slim (<8mm diameter for fine beans). Pods must be straight, unblemished, uniform length (10-13cm). Grade in field.",
+            "post_harvest": "COLD CHAIN: Cool to 4-6C within 1 hour. Sort, grade by length/diameter. Pack in approved cartons (1.5kg/4kg). Barcode traceability.",
+            "export_requirements": "GlobalGAP certification mandatory. Sedex/SMETA ethical audit. Pesticide residue testing per shipment. Phytosanitary certificate.",
+            "market_info": "Top export crop. Buyers: Tesco, Marks & Spencer, Waitrose via Zimbabwean exporters. Price: USD 2-4/kg FOB."
+        }
+    },
+    {
+        "crop_name": "Green Beans",
+        "variety_name": "Bronco",
+        "breeder": "Syngenta",
+        "days_to_maturity": 52,
+        "yield_potential_low": 6.0,
+        "yield_potential_high": 12.0,
+        "description": "Bobby bean / standard green bean for fresh market and processing. Thicker pod than fine beans. Good for local market and canning.",
+        "characteristics": {
+            "drought_tolerance": "low",
+            "bean_type": "Bobby/Standard green bean - pod diameter 8-12mm",
+            "pod_color": "medium green",
+            "stringless": True,
+            "region_suitability": ["Natural Region I", "Natural Region II", "Natural Region III"],
+            "planting_window": "Year-round with irrigation. September to April rainfed.",
+            "row_spacing_cm": 45,
+            "in_row_spacing_cm": "7-10",
+            "seed_rate_kg_per_ha": "60-80",
+            "soil_requirements": "Well-drained loams, pH 5.8-6.5",
+            "fertilizer_basal": "Compound D: 300-400 kg/ha",
+            "key_pests": ["Bean Fly", "Whitefly", "Bollworm"],
+            "key_diseases": ["Rust", "Angular Leaf Spot", "Anthracnose"],
+            "harvesting": "Pick every 3-4 days. Thicker pod acceptable for local market."
+        }
+    },
+    {
+        "crop_name": "Green Beans",
+        "variety_name": "Amy",
+        "breeder": "Pop Vriend/Hazera",
+        "days_to_maturity": 55,
+        "yield_potential_low": 8.0,
+        "yield_potential_high": 14.0,
+        "description": "Extra-fine bean for premium export. Very slim pods (<6mm), dark green. Commands highest prices in EU market.",
+        "characteristics": {
+            "drought_tolerance": "low",
+            "bean_type": "Extra-fine bean (haricot vert) - pod diameter <6mm",
+            "pod_color": "dark green",
+            "stringless": True,
+            "region_suitability": ["Natural Region I", "Natural Region II", "Irrigation"],
+            "planting_window": "Year-round with irrigation",
+            "row_spacing_cm": 45,
+            "in_row_spacing_cm": "4-6",
+            "seed_rate_kg_per_ha": "70-90",
+            "soil_requirements": "Fertile, well-drained, pH 5.8-6.5",
+            "irrigation": "Drip essential. Consistent moisture critical.",
+            "fertilizer_basal": "2:3:4 at 500-600 kg/ha",
+            "key_pests": ["Bean Fly", "Whitefly", "Bollworm", "Thrips"],
+            "harvesting": "Pick DAILY. Pods must be <6mm diameter. Extreme grading required.",
+            "post_harvest": "Cold chain within 1 hour. Air-freight to EU.",
+            "export_requirements": "GlobalGAP, GRASP. Premium price: USD 4-6/kg FOB."
+        }
+    },
+
+    # ============================================================
+    # TEA - Eastern Highlands Plantation Crop
+    # ============================================================
+    {
+        "crop_name": "Tea",
+        "variety_name": "SFS 150",
+        "breeder": "Tea Research Foundation (Malawi/Zimbabwe)",
+        "days_to_maturity": 1095,
+        "yield_potential_low": 2.0,
+        "yield_potential_high": 4.5,
+        "description": "Clonal tea variety for Zimbabwe's Eastern Highlands. High yielding with good quality made tea. Grown commercially by Tanganda Tea Company and smallholders in Honde Valley, Chipinge, and Nyanga.",
+        "characteristics": {
+            "crop_type": "Perennial (productive for 50-100+ years)",
+            "region_suitability": ["Eastern Highlands (Honde Valley, Chipinge, Nyanga, Chimanimani)"],
+            "altitude": "900-2000m (>1200m for best quality)",
+            "rainfall_requirement_mm": "1200-2000 per year, well-distributed",
+            "planting_method": "Transplant rooted cuttings (vegetative propagation from clonal material)",
+            "planting_window": "November to February (rainy season)",
+            "row_spacing_m": "1.2-1.5",
+            "in_row_spacing_m": "0.6-0.75",
+            "plants_per_ha": "9000-13000",
+            "soil_requirements": "Deep, well-drained acid soils, pH 4.5-5.5. Red loams ideal. Avoid waterlogging.",
+            "fertilizer_programme": "NPK 2:1:1 at 200-400 kg N/ha/year. Split into 4-6 applications. Use Ammonium Sulphate as N source (maintains acidity).",
+            "pruning": "Prune every 3-4 years to maintain plucking table at 60-75cm. Light skiffing between pruning cycles.",
+            "plucking": "Pluck 'two leaves and a bud' every 7-14 days depending on season. Quality depends on fine plucking.",
+            "key_pests": ["Tea Mosquito Bug (Helopeltis)", "Red Spider Mite", "Termites", "Nematodes"],
+            "key_diseases": ["Blister Blight", "Root Disease (Armillaria)", "Grey Blight"],
+            "processing": "Wither (12-18hrs) -> Roll/CTC -> Oxidise/Ferment (1-2hrs) -> Dry (90-100C) -> Sort/Grade",
+            "yield_timeline": "Year 1-3: establishment, no harvest. Year 4+: light plucking. Year 6+: full production.",
+            "market_info": "Zimbabwe produces ~24,000 tonnes annually. Tanganda Tea is largest producer. Exports to UK, Pakistan, EU.",
+            "economics": "High establishment cost but long productive life. Smallholder outgrower schemes available through Tanganda."
+        }
+    },
+    {
+        "crop_name": "Tea",
+        "variety_name": "PC 108",
+        "breeder": "Tea Research Foundation",
+        "days_to_maturity": 1095,
+        "yield_potential_low": 1.8,
+        "yield_potential_high": 3.5,
+        "description": "Quality-focused clonal tea variety. Produces premium-grade tea with distinctive flavour. Lower yielding but higher quality grades.",
+        "characteristics": {
+            "crop_type": "Perennial",
+            "region_suitability": ["Eastern Highlands"],
+            "altitude": "1200-2000m (high altitude for quality)",
+            "soil_requirements": "Deep, acid soils, pH 4.5-5.5",
+            "planting_window": "November to February",
+            "row_spacing_m": "1.2-1.5",
+            "in_row_spacing_m": "0.6-0.75",
+            "fertilizer_programme": "NPK at 200-350 kg N/ha/year",
+            "plucking": "Two leaves and a bud. Fine plucking for premium grades.",
+            "key_pests": ["Tea Mosquito Bug", "Red Spider Mite"],
+            "market_info": "Premium tea grades for speciality markets"
+        }
+    },
+
+    # ============================================================
+    # SESAME - Growing Export Crop
+    # ============================================================
+    {
+        "crop_name": "Sesame",
+        "variety_name": "Lindi White",
+        "breeder": "ICRISAT/DR&SS",
+        "days_to_maturity": 100,
+        "yield_potential_low": 0.5,
+        "yield_potential_high": 1.2,
+        "description": "White-seeded sesame variety for export. Growing demand globally for sesame oil, tahini, and confectionery. Well-suited to Zimbabwe's lowveld and middleveld regions. Low-input crop ideal for smallholders.",
+        "characteristics": {
+            "drought_tolerance": "very high",
+            "heat_tolerance": "very high",
+            "seed_color": "white (premium export grade)",
+            "region_suitability": ["Natural Region III", "Natural Region IV", "Natural Region V"],
+            "planting_method": "Direct seed",
+            "planting_window": "December to January (needs warm soil >25C)",
+            "row_spacing_cm": 45,
+            "in_row_spacing_cm": "10-15",
+            "planting_depth_cm": "1-2 (very small seed - shallow sowing essential)",
+            "seed_rate_kg_per_ha": "3-5 (mix with sand for even distribution)",
+            "soil_requirements": "Well-drained sandy loams. pH 5.5-7.0. Avoid waterlogging (fatal to sesame).",
+            "optimal_rainfall_mm": "400-600",
+            "fertilizer_basal": "Compound D: 100-200 kg/ha. Low-input crop.",
+            "key_pests": ["Aphids", "Sesame Webworm", "Gall Midge"],
+            "key_diseases": ["Cercospora Leaf Spot", "Bacterial Blight", "Fusarium Wilt", "Charcoal Rot"],
+            "pest_management": "Generally low pest pressure. Rotate with cereals. Avoid fields with history of Fusarium.",
+            "harvesting": "CRITICAL TIMING: Harvest when lower capsules turn brown but before they shatter (sesame shatters easily). Cut plants, stack upright in shocks to dry. Shake seeds onto canvas/tarpaulin.",
+            "post_harvest": "Clean seeds, dry to <6% moisture. Grade by colour (white commands premium). Pack in clean bags.",
+            "market_info": "Growing global demand. Zimbabwe exports to Asia, Middle East, EU. White sesame commands USD 1,200-2,000/tonne. Contracts available through aggregators."
+        }
+    },
+    {
+        "crop_name": "Sesame",
+        "variety_name": "IETC 32",
+        "breeder": "ICRISAT",
+        "days_to_maturity": 90,
+        "yield_potential_low": 0.6,
+        "yield_potential_high": 1.5,
+        "description": "Early maturing sesame with non-shattering capsules. Easier to harvest mechanically. Good oil content.",
+        "characteristics": {
+            "drought_tolerance": "very high",
+            "heat_tolerance": "very high",
+            "seed_color": "white-cream",
+            "capsule_type": "Semi non-shattering (easier harvest)",
+            "region_suitability": ["Natural Region III", "Natural Region IV"],
+            "planting_window": "December to January",
+            "row_spacing_cm": 45,
+            "in_row_spacing_cm": "10-15",
+            "seed_rate_kg_per_ha": "3-5",
+            "soil_requirements": "Well-drained sandy soils, pH 5.5-7.0",
+            "fertilizer_basal": "Compound D: 100-200 kg/ha",
+            "key_pests": ["Aphids", "Webworm"],
+            "harvesting": "Semi non-shattering allows later harvest with less loss",
+            "oil_content": "48-52%"
+        }
+    },
+
+    # ============================================================
+    # CASSAVA - Food Security in Northern Zimbabwe
+    # ============================================================
+    {
+        "crop_name": "Cassava",
+        "variety_name": "Sauti",
+        "breeder": "IITA/DR&SS",
+        "days_to_maturity": 365,
+        "yield_potential_low": 15.0,
+        "yield_potential_high": 35.0,
+        "description": "Improved cassava variety with low cyanide content (sweet type). Important food security crop in northern Zimbabwe (Muzarabani, Guruve, Mt Darwin, Kariba). Produces starchy roots year-round. Extremely drought tolerant once established.",
+        "characteristics": {
+            "crop_type": "Root crop (harvested 9-18 months after planting)",
+            "drought_tolerance": "extremely high",
+            "heat_tolerance": "very high",
+            "cyanide_level": "low (sweet type - safe with minimal processing)",
+            "region_suitability": ["Natural Region III", "Natural Region IV", "Zambezi Valley"],
+            "planting_method": "Stem cuttings (20-30cm mature stems)",
+            "planting_window": "October to December (with first rains)",
+            "row_spacing_cm": 100,
+            "in_row_spacing_cm": "80-100",
+            "planting_depth_cm": "Horizontal or angled, 5-10cm deep. Plant on mounds in wet areas.",
+            "cuttings_per_ha": "10000",
+            "soil_requirements": "Wide range including poor sandy soils. pH 4.5-7.5. Tolerates acid and infertile soils.",
+            "optimal_rainfall_mm": "500-1500 (extremely adaptable)",
+            "fertilizer_basal": "Minimal. Compound D: 100-200 kg/ha if available. Responds well to manure.",
+            "key_pests": ["Cassava Mealy Bug", "Cassava Green Mite", "Whitefly (transmits Mosaic Virus)", "Termites"],
+            "key_diseases": ["Cassava Mosaic Disease (CMD - MAJOR)", "Cassava Brown Streak Disease (CBSD)", "Bacterial Blight"],
+            "pest_management": "CMD: Use CMD-resistant varieties (Sauti is resistant). Never take cuttings from mosaic-infected plants. Biological control of mealybug (Anagyrus parasitoid).",
+            "weeding": "Weed 2-3 times in first 3 months before canopy closure",
+            "harvesting": "Piecemeal harvest from 9 months onwards. Can leave in ground for up to 24 months as 'living storage'.",
+            "post_harvest": "PERISHABLE: Fresh roots deteriorate within 48-72 hours. Process immediately: peel, soak (for bitter types), dry into chips/flour. Cassava flour stores for months.",
+            "processing": "Peel -> Grate -> Soak/ferment (removes cyanide) -> Press -> Dry -> Mill into flour. Or: Peel -> Chip -> Sun-dry -> Mill.",
+            "nutritional_value": "High in carbohydrates/energy. Low in protein and vitamins. Must be supplemented with protein-rich foods (beans, groundnuts).",
+            "food_security": "Ultimate food security crop: produces calories on marginal land, stores in ground, tolerates drought. Critical for Zambezi Valley communities."
+        }
+    },
+    {
+        "crop_name": "Cassava",
+        "variety_name": "Nyalanda",
+        "breeder": "DR&SS Zimbabwe",
+        "days_to_maturity": 365,
+        "yield_potential_low": 12.0,
+        "yield_potential_high": 30.0,
+        "description": "Local improved cassava variety with CMD resistance. Good eating quality. Popular in Mashonaland and Zambezi Valley.",
+        "characteristics": {
+            "crop_type": "Root crop",
+            "drought_tolerance": "extremely high",
+            "cyanide_level": "low (sweet type)",
+            "disease_resistance": ["Cassava Mosaic Disease (resistant)"],
+            "region_suitability": ["Natural Region III", "Natural Region IV", "Zambezi Valley"],
+            "planting_method": "Stem cuttings (20-30cm)",
+            "planting_window": "October to December",
+            "row_spacing_cm": 100,
+            "in_row_spacing_cm": "80-100",
+            "soil_requirements": "Very adaptable. Sandy to clay soils.",
+            "fertilizer_basal": "Minimal or manure",
+            "key_pests": ["Cassava Mealy Bug", "Green Mite"],
+            "harvesting": "Piecemeal from 9 months. In-ground storage up to 24 months.",
+            "processing": "Chip and dry into flour, or boil/roast fresh"
+        }
+    },
+
+    # ============================================================
+    # GARLIC - High-Value Vegetable
+    # ============================================================
+    {
+        "crop_name": "Garlic",
+        "variety_name": "Egyptian White",
+        "breeder": "Open Pollinated",
+        "days_to_maturity": 150,
+        "yield_potential_low": 5.0,
+        "yield_potential_high": 12.0,
+        "description": "Standard white garlic for Zimbabwe market. Strong flavour. High-value crop with good returns for small-scale farmers. Zimbabwe imports significant garlic - local production is a profitable opportunity.",
+        "characteristics": {
+            "drought_tolerance": "moderate",
+            "bulb_type": "Softneck (white skin, stores well)",
+            "region_suitability": ["Natural Region I", "Natural Region II", "Natural Region III"],
+            "planting_method": "Individual cloves (break bulb, plant each clove)",
+            "planting_window": "March to May (cool season - needs cold to bulb properly)",
+            "row_spacing_cm": 20,
+            "in_row_spacing_cm": "10-12",
+            "planting_depth_cm": "3-5 (pointed end up)",
+            "seed_rate_kg_per_ha": "800-1200 (cloves)",
+            "soil_requirements": "Well-drained, fertile loams, pH 6.0-7.0. High organic matter. Never plant after onion/garlic (disease buildup).",
+            "irrigation": "Regular. 20-25mm per week. Stop irrigation 2-3 weeks before harvest for curing.",
+            "fertilizer_basal": "2:3:4 at 600-800 kg/ha at planting",
+            "fertilizer_top_dress": "LAN: 100 kg/ha at 4 and 8 weeks. Stop N after bulbing begins.",
+            "key_pests": ["Thrips", "Nematodes", "Onion Fly"],
+            "key_diseases": ["White Rot (MAJOR - soil-borne, persists for 20+ years)", "Rust", "Downy Mildew", "Basal Rot"],
+            "pest_management": "White Rot: NEVER plant garlic/onion in infected soil. No cure. Rotate fields. Use clean seed cloves.",
+            "harvesting": "Harvest when 50-60% of leaves have dried. Lift carefully with fork.",
+            "curing": "Cure for 2-4 weeks in warm, dry, ventilated shade. Tops can be braided for hanging storage.",
+            "post_harvest": "Stores 3-6 months in cool, dry, ventilated conditions. Premium prices year-round.",
+            "economics": "High value: USD 3-8/kg at retail. Import substitution opportunity. Small area (0.25-1 ha) can generate significant income."
+        }
+    },
+    {
+        "crop_name": "Garlic",
+        "variety_name": "Purple Stripe",
+        "breeder": "Open Pollinated",
+        "days_to_maturity": 160,
+        "yield_potential_low": 4.0,
+        "yield_potential_high": 10.0,
+        "description": "Hardneck garlic with purple-striped skin. Stronger flavour than white types. Larger cloves, easier to peel. Needs more cold.",
+        "characteristics": {
+            "bulb_type": "Hardneck (purple stripes, larger cloves, shorter storage)",
+            "region_suitability": ["Natural Region I (highveld)", "Natural Region II"],
+            "planting_window": "March to April (needs cold exposure for bulbing)",
+            "row_spacing_cm": 20,
+            "in_row_spacing_cm": "12-15",
+            "seed_rate_kg_per_ha": "1000-1500",
+            "soil_requirements": "Well-drained, fertile soils, pH 6.0-7.0",
+            "irrigation": "Regular. Stop 2-3 weeks before harvest.",
+            "fertilizer_basal": "2:3:4 at 600-800 kg/ha",
+            "key_diseases": ["White Rot", "Rust"],
+            "harvesting": "When 50-60% leaves dried. Remove scapes (flower stalks) for larger bulbs - scapes are edible.",
+            "post_harvest": "Stores 2-4 months (shorter than softneck). Premium gourmet market."
+        }
+    },
+
+    # ============================================================
+    # STRAWBERRIES - Growing Export/Premium Market
+    # ============================================================
+    {
+        "crop_name": "Strawberries",
+        "variety_name": "Festival",
+        "breeder": "University of Florida/Licensed",
+        "days_to_maturity": 90,
+        "yield_potential_low": 20.0,
+        "yield_potential_high": 40.0,
+        "description": "Short-day strawberry variety suited to Zimbabwe's highveld. Large, firm, bright red fruit. Growing industry for domestic premium market and limited export. Grown commercially around Harare, Marondera, and Nyanga.",
+        "characteristics": {
+            "crop_type": "Perennial grown as annual (replant each season for best quality)",
+            "drought_tolerance": "low",
+            "berry_size": "large",
+            "firmness": "good",
+            "day_length_response": "Short-day (flowers when days <12 hours - March-September in Zimbabwe)",
+            "region_suitability": ["Natural Region I", "Natural Region II (highveld >1200m)"],
+            "planting_method": "Transplant bare-root runners or plug plants",
+            "planting_window": "March to April (for winter/spring production May-November)",
+            "row_spacing_cm": "30 (on raised beds)",
+            "in_row_spacing_cm": "25-30",
+            "plants_per_ha": "40000-50000",
+            "growing_system": "Raised beds with plastic mulch. Tunnel/greenhouse production for premium quality.",
+            "soil_requirements": "Well-drained sandy loams, pH 5.5-6.5. High organic matter. Fumigated or solarised for disease control.",
+            "irrigation": "Drip irrigation ESSENTIAL. 15-25mm per week. Avoid wetting fruit (Botrytis risk).",
+            "fertilizer_programme": "Fertigation: NPK 12:6:24 weekly. High potassium for fruit quality and flavour.",
+            "key_pests": ["Red Spider Mite (MAJOR)", "Aphids", "Thrips", "Slugs", "Birds"],
+            "key_diseases": ["Botrytis (Grey Mould - MAJOR)", "Powdery Mildew", "Anthracnose", "Phytophthora Crown Rot"],
+            "pest_management": "Red Spider Mite: biological control (Phytoseiulus predatory mite) or Abamectin. Botrytis: ventilation, avoid overhead irrigation, preventative fungicides (Switch/Teldor).",
+            "harvesting": "Pick every 2-3 days when 3/4 red. Handle very gently. Pick into punnets directly.",
+            "post_harvest": "HIGHLY PERISHABLE. Cool to 2-4C within 1 hour. Shelf life 3-5 days. Pack in 250g/500g punnets.",
+            "economics": "Premium domestic prices: USD 5-10/kg. Growing demand from hotels, restaurants, supermarkets."
+        }
+    },
+    {
+        "crop_name": "Strawberries",
+        "variety_name": "Chandler",
+        "breeder": "UC Davis/Introduced",
+        "days_to_maturity": 85,
+        "yield_potential_low": 18.0,
+        "yield_potential_high": 35.0,
+        "description": "Well-known short-day variety with excellent flavour. Large fruit, good for fresh market. Widely available runners.",
+        "characteristics": {
+            "crop_type": "Perennial grown as annual",
+            "berry_size": "large",
+            "flavour": "excellent",
+            "day_length_response": "Short-day",
+            "region_suitability": ["Natural Region I", "Natural Region II"],
+            "planting_window": "March to April",
+            "row_spacing_cm": "30 (raised beds)",
+            "in_row_spacing_cm": "25-30",
+            "soil_requirements": "Well-drained sandy loams, pH 5.5-6.5",
+            "irrigation": "Drip essential",
+            "key_pests": ["Red Spider Mite", "Aphids", "Botrytis"],
+            "harvesting": "Pick every 2-3 days when 3/4 red"
+        }
+    },
+
+    # ============================================================
+    # GREEN PEPPER / SWEET PEPPER
+    # ============================================================
+    {
+        "crop_name": "Green Pepper",
+        "variety_name": "California Wonder",
+        "breeder": "Open Pollinated",
+        "days_to_maturity": 75,
+        "yield_potential_low": 20.0,
+        "yield_potential_high": 40.0,
+        "description": "Standard blocky green pepper. Can be left to ripen to red for premium price. Widely grown in Zimbabwe for fresh market.",
+        "characteristics": {
+            "drought_tolerance": "moderate",
+            "fruit_shape": "blocky, 4-lobed",
+            "fruit_color": "green (ripens to red)",
+            "region_suitability": ["Natural Region I", "Natural Region II", "Natural Region III"],
+            "nursery_sowing": "July-August in seedbeds/trays",
+            "transplanting_window": "September to November (6-8 weeks after sowing)",
+            "row_spacing_cm": 75,
+            "in_row_spacing_cm": "40-50",
+            "soil_requirements": "Well-drained, fertile loams, pH 5.5-6.8. Rich in organic matter.",
+            "irrigation": "Regular. 25-30mm per week. Drip preferred.",
+            "fertilizer_basal": "Compound S: 400-600 kg/ha at transplanting",
+            "fertilizer_top_dress": "LAN: 100-150 kg/ha every 3-4 weeks from flowering. Calcium Nitrate to prevent Blossom End Rot.",
+            "key_pests": ["Aphids", "Fruit Fly", "Bollworm", "Red Spider Mite", "Cutworm"],
+            "key_diseases": ["Bacterial Spot", "Phytophthora Blight", "Mosaic Virus", "Blossom End Rot (calcium deficiency)"],
+            "pest_management": "Aphids: Imidacloprid at transplanting. Remove virus-infected plants. Mulch to maintain even soil moisture (prevents BER).",
+            "staking": "Stake plants for support when fruit-laden. Prevents branches breaking.",
+            "harvesting": "Pick green at full size, or leave to ripen red (commands premium). Multiple harvests over 3-4 months.",
+            "post_harvest": "Grade by size and colour. Pack in crates. Shelf life 1-2 weeks at 7-10C."
+        }
+    },
+    {
+        "crop_name": "Green Pepper",
+        "variety_name": "Star 9011",
+        "breeder": "Starke Ayres",
+        "days_to_maturity": 70,
+        "yield_potential_low": 30.0,
+        "yield_potential_high": 50.0,
+        "description": "High-yielding hybrid sweet pepper. Blocky fruit with thick walls. Excellent for fresh market and export.",
+        "characteristics": {
+            "fruit_shape": "blocky, thick-walled",
+            "fruit_color": "green (ripens to red/yellow depending on type)",
+            "disease_resistance": ["Tobacco Mosaic Virus", "Bacterial Spot (moderate)"],
+            "region_suitability": ["Natural Region I", "Natural Region II"],
+            "nursery_sowing": "July-August",
+            "transplanting_window": "September to November",
+            "row_spacing_cm": 75,
+            "in_row_spacing_cm": "40-50",
+            "soil_requirements": "Fertile, well-drained, pH 5.5-6.8",
+            "irrigation": "Drip preferred. 25-30mm per week.",
+            "fertilizer_basal": "Compound S: 500-700 kg/ha",
+            "key_pests": ["Aphids", "Fruit Fly", "Bollworm"],
+            "harvesting": "Multiple harvests. Pick green or coloured."
+        }
+    },
 ]
 
 

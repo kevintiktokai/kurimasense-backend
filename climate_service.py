@@ -311,7 +311,7 @@ async def calculate_gdd(
     counted towards field GDD accumulation.
     """
     # Transplanted crops - use transplant_date instead of planting_date
-    TRANSPLANTED_CROPS = ['Tomato', 'Cabbage', 'Onion', 'Potato', 'Pepper', 'Eggplant', 'Lettuce', 'Paprika']
+    TRANSPLANTED_CROPS = ['Tomato', 'Cabbage', 'Onion', 'Potato', 'Pepper', 'Eggplant', 'Lettuce', 'Paprika', 'Green Pepper', 'Strawberries', 'Tea', 'Blueberries']
     use_transplant_date = is_transplanted or (crop_type and crop_type in TRANSPLANTED_CROPS)
     
     # Determine effective start date for GDD calculation
@@ -346,6 +346,16 @@ async def calculate_gdd(
         'Sorghum': 10.0,
         'Sugar Beans': 10.0,
         'Wheat': 4.0,           # Cool-season crop
+        'Peas': 4.4,            # Cool-season legume
+        'Snow Peas': 4.4,       # Cool-season, very cold tolerant
+        'Green Beans': 10.0,    # Warm-season bean
+        'Blueberries': 7.0,     # Perennial fruit
+        'Strawberries': 7.0,    # Cool-season fruit
+        'Tea': 12.5,            # Tropical/subtropical perennial
+        'Sesame': 15.0,         # Warm-season oilseed
+        'Cassava': 15.0,        # Tropical root crop
+        'Garlic': 0.0,          # Very cold tolerant, grows in winter
+        'Green Pepper': 12.0,   # Capsicum, warm season
     }
     
     # Use crop-specific base temp if available
