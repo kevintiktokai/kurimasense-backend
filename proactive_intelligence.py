@@ -272,8 +272,8 @@ def _calculate_maize_stage(days: int, maturity: int, days_to_harvest: int, progr
         days_to_harvest=days_to_harvest,
         progress_percent=round(progress, 1),
         description=desc,
-        key_activities=[],  # Populated by AI
-        risks=[]            # Populated by AI
+        key_activities=activities,
+        risks=risks
     )
 
 
@@ -314,8 +314,8 @@ def _calculate_tobacco_stage(days: int, maturity: int, days_to_harvest: int, pro
         days_to_harvest=days_to_harvest,
         progress_percent=round(progress, 1),
         description=desc,
-        key_activities=[], # Populated by AI
-        risks=[]           # Populated by AI
+        key_activities=activities,
+        risks=risks
     )
 
 
@@ -405,8 +405,8 @@ def _calculate_vegetable_stage(days: int, maturity: int, days_to_harvest: int, p
         days_to_harvest=days_to_harvest,
         progress_percent=round(progress, 1),
         description=desc,
-        key_activities=[], # Populated by AI
-        risks=[]           # Populated by AI
+        key_activities=activities,
+        risks=risks
     )
 
 
@@ -457,8 +457,8 @@ def _calculate_soybean_stage(days: int, maturity: int, days_to_harvest: int, pro
         days_to_harvest=days_to_harvest,
         progress_percent=round(progress, 1),
         description=desc,
-        key_activities=[], # Populated by AI
-        risks=[]           # Populated by AI
+        key_activities=activities,
+        risks=risks
     )
 
 
@@ -506,8 +506,8 @@ def _calculate_generic_stage(days: int, maturity: int, days_to_harvest: int, pro
         days_to_harvest=days_to_harvest,
         progress_percent=round(progress, 1),
         description=desc,
-        key_activities=[], # Populated by AI
-        risks=[]           # Populated by AI
+        key_activities=activities,
+        risks=risks
     )
 
 

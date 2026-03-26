@@ -1665,7 +1665,6 @@ async def get_ai_insights(user_id: str = Depends(verify_token)):
     if cached is not None:
         return cached
 
-    import random
     from datetime import datetime, date
     from proactive_intelligence import (
         calculate_growth_stage,
@@ -1724,21 +1723,34 @@ async def get_ai_insights(user_id: str = Depends(verify_token)):
         finally:
             conn.close()
 
-    def _fetch_weather():
+    def _fetch_weather(lat: float = -17.82, lon: float = 31.05):
         try:
             _weather_api_key = os.getenv("WEATHER_API_KEY")
             if _weather_api_key and "your_" not in _weather_api_key:
-                # Default to Harare, Zimbabwe; field-specific coords not available yet
-                return fetch_weather_data(-17.82, 31.05, _weather_api_key)
+                return fetch_weather_data(lat, lon, _weather_api_key)
         except Exception as e:
             print(f"Weather fetch failed: {e}")
         return None
 
-    fields, existing_tasks, weather_data = await asyncio.gather(
+    # Phase 1: fetch fields and tasks in parallel
+    fields, existing_tasks = await asyncio.gather(
         run_in_threadpool(_fetch_fields),
         run_in_threadpool(_fetch_tasks),
-        run_in_threadpool(_fetch_weather),
     )
+
+    # Phase 2: fetch weather using actual field coordinates (not hardcoded Harare)
+    weather_lat, weather_lon = -17.82, 31.05  # Default Harare fallback
+    if fields:
+        coords = fields[0].get('polygon_coordinates')
+        if coords and isinstance(coords, list) and len(coords) > 0:
+            first_coord = coords[0] if isinstance(coords[0], (list, dict)) else coords
+            if isinstance(first_coord, dict):
+                weather_lat = first_coord.get('lat', weather_lat)
+                weather_lon = first_coord.get('lng', first_coord.get('lon', weather_lon))
+            elif isinstance(first_coord, list) and len(first_coord) >= 2:
+                weather_lon, weather_lat = first_coord[0], first_coord[1]
+
+    weather_data = await run_in_threadpool(_fetch_weather, weather_lat, weather_lon)
 
     # Generate context-aware insights
     insights = []
@@ -1786,34 +1798,62 @@ async def get_ai_insights(user_id: str = Depends(verify_token)):
                     "timestamp": time_str
                 })
                 
-            # Pest/Disease Rules (simplified)
-            if humidity > 80 and temp > 20: # Warm & Humid = Fungal Risk
-                risks.append({
-                    "id": "risk-fungal-real",
-                    "type": "disease",
-                    "name": "Gray Leaf Spot Risk",
-                    "risk": 85,
-                    "trend": "rising",
-                    "fieldName": "All Fields"
-                })
-                insights.append({
-                     "id": "alert-fungal",
-                     "type": "disease",
-                     "title": "High Fungal Disease Risk",
-                     "message": "High humidity (>80%) creates favorable conditions for Gray Leaf Spot and Rust.",
-                     "severity": "high",
-                     "actionLabel": "Scout Now"
-                })
-            
-            if temp > 30 and precip_chance < 0.1: # Hot & Dry = Pest Risk (Timeline)
-                 risks.append({
-                    "id": "risk-pest-real",
-                    "type": "pest",
-                    "name": "Fall Armyworm Alert",
-                    "risk": 75,
-                    "trend": "rising",
-                    "fieldName": "Maize Fields"
-                })
+            # Crop-specific weather-driven risks — only generate for crops actually planted
+            field_crops = set(f.get('crop_type', '').lower() for f in fields if f.get('crop_type'))
+
+            if humidity > 80 and temp > 20:
+                # GLS is maize-specific — only show if farmer grows maize
+                if any(c in field_crops for c in ('maize', 'corn')):
+                    risks.append({
+                        "id": "risk-gls-weather",
+                        "type": "disease",
+                        "name": "Gray Leaf Spot Risk",
+                        "risk": min(90, 60 + int((humidity - 80) * 2)),
+                        "trend": "rising",
+                        "fieldName": next((f['name'] for f in fields if (f.get('crop_type') or '').lower() in ('maize', 'corn')), "Maize Fields")
+                    })
+                # Soybean rust favors similar conditions
+                if any(c in field_crops for c in ('soybean', 'soybeans')):
+                    risks.append({
+                        "id": "risk-sbrust-weather",
+                        "type": "disease",
+                        "name": "Soybean Rust Risk",
+                        "risk": min(85, 55 + int((humidity - 75) * 1.5)),
+                        "trend": "rising",
+                        "fieldName": next((f['name'] for f in fields if (f.get('crop_type') or '').lower() in ('soybean', 'soybeans')), "Soybean Fields")
+                    })
+                # Tobacco frog-eye leaf spot
+                if 'tobacco' in field_crops:
+                    risks.append({
+                        "id": "risk-fels-weather",
+                        "type": "disease",
+                        "name": "Frog-Eye Leaf Spot Risk",
+                        "risk": min(80, 50 + int((humidity - 80) * 2)),
+                        "trend": "rising",
+                        "fieldName": next((f['name'] for f in fields if (f.get('crop_type') or '').lower() == 'tobacco'), "Tobacco Fields")
+                    })
+                # Groundnuts early leaf spot
+                if any(c in field_crops for c in ('groundnuts', 'groundnut')):
+                    risks.append({
+                        "id": "risk-els-weather",
+                        "type": "disease",
+                        "name": "Early Leaf Spot Risk",
+                        "risk": min(75, 45 + int((humidity - 75) * 1.5)),
+                        "trend": "rising",
+                        "fieldName": next((f['name'] for f in fields if (f.get('crop_type') or '').lower() in ('groundnuts', 'groundnut')), "Groundnut Fields")
+                    })
+
+            if temp > 30 and precip_chance < 0.1:
+                # FAW is primarily a maize pest
+                if any(c in field_crops for c in ('maize', 'corn')):
+                    risks.append({
+                        "id": "risk-faw-weather",
+                        "type": "pest",
+                        "name": "Fall Armyworm Alert",
+                        "risk": 75,
+                        "trend": "rising",
+                        "fieldName": next((f['name'] for f in fields if (f.get('crop_type') or '').lower() in ('maize', 'corn')), "Maize Fields")
+                    })
         else:
             # Fallback to simulated weather insight if API fails
             insights.append({
@@ -1828,7 +1868,7 @@ async def get_ai_insights(user_id: str = Depends(verify_token)):
         
         # Field-specific insights using proactive_intelligence
         for field in fields[:3]:  # Limit to first 3 fields
-            health_score = field.get('health_score') or random.randint(60, 95)
+            health_score = field.get('health_score')
             crop = field.get('crop_type') or 'Maize'
             field_name = field.get('name') or 'Unknown Field'
             variety_name = field.get('variety')
@@ -1928,8 +1968,8 @@ async def get_ai_insights(user_id: str = Depends(verify_token)):
                 except Exception as pi_error:
                     print(f"⚠️ Proactive intelligence error for {field_name}: {pi_error}")
             
-            # ===== FALLBACK: Health-based insights =====
-            if health_score < 70:
+            # ===== FALLBACK: Health-based insights (only when real satellite data exists) =====
+            if health_score is not None and health_score < 70:
                 insights.append({
                     "id": f"health-{field['id']}",
                     "type": "health",
@@ -1941,36 +1981,11 @@ async def get_ai_insights(user_id: str = Depends(verify_token)):
                     "actionLabel": "Scout Now"
                 })
                 
-            # Market opportunity (Mock for now)
-            if crop.lower() == 'maize':
-                insights.append({
-                    "id": f"market-{field['id']}",
-                    "type": "market",
-                    "title": "Maize Prices Stable",
-                    "message": f"Regional maize prices holding at $240/ton. Monitor for post-harvest dip.",
-                    "severity": "low",
-                    "fieldName": field_name,
-                    "timestamp": time_str
-                })
+            # Market insights removed — hardcoded prices mislead farmers.
+            # Real market data flows through /market/prices endpoint instead.
         
-        # Default Risks if no weather data generated them
-        if not risks:
-             risks = [
-                {
-                    "id": "risk-pest-sim",
-                    "type": "pest",
-                    "name": "Fall Armyworm",
-                    "risk": random.randint(20, 45),
-                    "trend": "stable",
-                },
-                {
-                    "id": "risk-weather-sim",
-                    "type": "weather",
-                    "name": "Drought Stress",
-                    "risk": random.randint(10, 40),
-                    "trend": "falling"
-                }
-            ]
+        # No fabricated fallback risks — if we have no data, show none.
+        # The frontend RiskRadar already shows "All Clear!" when risks list is empty.
         
         # PREPARE ACTIONS
         if existing_tasks:
@@ -1988,42 +2003,65 @@ async def get_ai_insights(user_id: str = Depends(verify_token)):
                     "estimatedTime": task.get('estimated_time', '30 min')
                 })
         else:
-            # Generate dynamic actions using AgronomistBrain if none exist
-            brain = AgronomistBrain()
-            
-            # Prepare context for the brain
-            # Typically we'd pass real weather and field data here
-            # For now, we'll generate variety-aware suggestions based on the user's primary field
+            # Generate crop- and stage-aware actions from proactive intelligence
             primary_field = fields[0] if fields else None
-            
+
             generated_actions = []
-            
+
             if primary_field:
-                # Mock variety-aware suggestions until we fully wire up the brain's internal logic
-                # in this specific path
-                variety_name = primary_field.get('variety', 'SC 727')
-                generated_actions = [
-                    {
-                        "title": f"Scout {variety_name} for GLS",
-                        "description": f"Check for Grey Leaf Spot symptoms, common in {variety_name} at this stage.",
-                        "priority": "high",
-                        "type": "scout",
-                        "field_id": primary_field['id'],
-                    },
-                    {
-                        "title": "Monitor Soil Moisture",
-                        "description": "Variety sensitive to moisture stress during vegetative growth.",
-                        "priority": "normal",
-                        "type": "irrigate",
-                        "field_id": primary_field['id'],
-                    }
-                ]
+                crop = primary_field.get('crop_type') or 'Maize'
+                variety_name = primary_field.get('variety')
+                planting_date_val = primary_field.get('planting_date')
+                field_name = primary_field.get('name', 'Field')
+
+                # Use growth stage activities if planting date is available
+                if planting_date_val and variety_name:
+                    try:
+                        p_date = planting_date_val if isinstance(planting_date_val, date) else date.fromisoformat(str(planting_date_val)[:10])
+                        gs = calculate_growth_stage(
+                            planting_date=p_date,
+                            variety_name=variety_name,
+                            crop_type=crop,
+                            transplant_date=primary_field.get('transplant_date'),
+                            is_transplanted=primary_field.get('is_transplanted', False)
+                        )
+                        # Create actions from growth stage activities
+                        for i, activity in enumerate(gs.key_activities[:2]):
+                            generated_actions.append({
+                                "title": activity,
+                                "description": f"{variety_name} at {gs.stage_name} ({gs.days_since_planting} days). {gs.description[:100]}",
+                                "priority": "high" if i == 0 else "normal",
+                                "type": "scout",
+                                "field_id": primary_field['id'],
+                            })
+                        # Add risk-based action if applicable
+                        if gs.risks:
+                            generated_actions.append({
+                                "title": f"Watch for: {gs.risks[0]}",
+                                "description": f"Key risk at {gs.stage_name} for {crop}.",
+                                "priority": "normal",
+                                "type": "scout",
+                                "field_id": primary_field['id'],
+                            })
+                    except Exception as gs_err:
+                        print(f"⚠️ Growth stage action gen failed: {gs_err}")
+
+                # If no stage-based actions, generate crop-aware general ones
+                if not generated_actions:
+                    generated_actions = [
+                        {
+                            "title": f"Scout {field_name} ({crop})",
+                            "description": f"Routine scouting for pests and disease in your {crop} field.",
+                            "priority": "normal",
+                            "type": "scout",
+                            "field_id": primary_field['id'],
+                        }
+                    ]
             else:
-                # Fallback generic actions
                 generated_actions = [
                     {
-                        "title": "Check Weather Forecast",
-                        "description": "Plan your week's activities based on upcoming rainfall.",
+                        "title": "Add your first field",
+                        "description": "Register a field with crop type and planting date to receive tailored recommendations.",
                         "priority": "normal",
                         "type": "general",
                     }
