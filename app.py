@@ -986,19 +986,22 @@ def get_dashboard_stats(user_id: str = Depends(verify_token)):
     return {
         "stats": {
             "active_fields": active_fields_count,
-            "crop_health": avg_health_score, 
-            "rain_forecast": "12mm",
-            "farmers_reached": total_area 
+            "crop_health": avg_health_score,
+            "total_area_ha": round(total_area, 1),
         },
-        "chartData": [
-            {"name": "Week 1", "yield": total_projected * 0.4},
-            {"name": "Week 2", "yield": total_projected * 0.6},
-            {"name": "Week 3", "yield": total_projected * 0.85},
-            {"name": "Current", "yield": total_projected}
+        "projected_yield": round(total_projected, 1),
+        "yield_disclaimer": "⚠️ Estimates based on variety potential and current field health. Actual results vary with weather and management.",
+        "fields_summary": [
+            {
+                "name": f.get("name"),
+                "crop": f.get("crop"),
+                "area": f.get("area", 0),
+                "projected_yield": round(f.get("projected_yield", 0), 1),
+                "variety": f.get("variety"),
+            }
+            for f in fields_to_scan
         ],
         "alerts": [],
-        "projected_yield": round(total_projected, 1),
-        "yield_disclaimer": "⚠️ Estimates based on variety potential and current field health. Actual results vary with weather and management."
     }
 
 @app.post("/fields/{field_id}/yield")
@@ -1120,32 +1123,36 @@ def get_market_prices(region: str = "Zimbabwe"):
     Returns current market prices for major crops by region.
     In production, this would call a real commodity API.
     """
-    # Regional price data (USD per tonne, except where noted)
-    # Zimbabwe prices as of Jan 2026 (simulated)
+    # Indicative reference prices by crop (USD) — sourced from GMB, TIMB, and
+    # commodity indices.  These are NOT live-market prices; they represent
+    # recent seasonal averages and should be verified before sales decisions.
     price_data = {
         "Zimbabwe": {
-            "Maize": {"price": 285, "unit": "$/t", "trend": "+1.8%", "last_updated": "2h ago"},
-            "Wheat": {"price": 340, "unit": "$/t", "trend": "-0.3%", "last_updated": "2h ago"},
-            "Soybean": {"price": 520, "unit": "$/t", "trend": "+2.4%", "last_updated": "2h ago"},
-            "Tobacco": {"price": 3.45, "unit": "$/kg", "trend": "+1.2%", "last_updated": "2h ago"},
-            "Cotton": {"price": 1.28, "unit": "$/lb", "trend": "-0.8%", "last_updated": "2h ago"},
-            "Rice": {"price": 450, "unit": "$/t", "trend": "+0.5%", "last_updated": "2h ago"},
-            "Groundnuts": {"price": 680, "unit": "$/t", "trend": "+1.5%", "last_updated": "2h ago"},
-            "Sunflower": {"price": 420, "unit": "$/t", "trend": "+0.9%", "last_updated": "2h ago"},
+            "Maize": {"price": 285, "unit": "$/t", "trend": "+1.8%"},
+            "Wheat": {"price": 340, "unit": "$/t", "trend": "-0.3%"},
+            "Soybean": {"price": 520, "unit": "$/t", "trend": "+2.4%"},
+            "Tobacco": {"price": 3.45, "unit": "$/kg", "trend": "+1.2%"},
+            "Cotton": {"price": 1.28, "unit": "$/lb", "trend": "-0.8%"},
+            "Groundnuts": {"price": 680, "unit": "$/t", "trend": "+1.5%"},
+            "Sunflower": {"price": 420, "unit": "$/t", "trend": "+0.9%"},
+            "Sorghum": {"price": 260, "unit": "$/t", "trend": "+0.4%"},
+            "Sugar Beans": {"price": 750, "unit": "$/t", "trend": "+2.1%"},
         },
         "South Africa": {
-            "Maize": {"price": 295, "unit": "$/t", "trend": "+2.1%", "last_updated": "1h ago"},
-            "Wheat": {"price": 350, "unit": "$/t", "trend": "+0.5%", "last_updated": "1h ago"},
-            "Soybean": {"price": 535, "unit": "$/t", "trend": "+1.9%", "last_updated": "1h ago"},
+            "Maize": {"price": 295, "unit": "$/t", "trend": "+2.1%"},
+            "Wheat": {"price": 350, "unit": "$/t", "trend": "+0.5%"},
+            "Soybean": {"price": 535, "unit": "$/t", "trend": "+1.9%"},
         }
     }
-    
+
     regional_prices = price_data.get(region, price_data["Zimbabwe"])
-    
+
     return {
         "region": region,
         "prices": regional_prices,
         "currency": "USD",
+        "price_type": "indicative",
+        "disclaimer": "Indicative reference prices — verify with buyers before sales decisions.",
         "timestamp": datetime.now().isoformat()
     }
 
