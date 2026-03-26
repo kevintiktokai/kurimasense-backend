@@ -890,7 +890,9 @@ def get_dashboard_stats(user_id: str = Depends(verify_token)):
     DEFAULT_YIELDS = {
         "maize": 6.0, "tobacco": 2.0, "soybean": 2.5, "wheat": 4.5,
         "tomato": 40.0, "cabbage": 50.0, "potato": 25.0, "cotton": 2.5,
-        "groundnuts": 2.0, "sunflower": 2.0, "sorghum": 3.0, "sugar_beans": 2.0
+        "groundnuts": 2.0, "sunflower": 2.0, "sorghum": 3.0, "sugar_beans": 2.0,
+        "sweet_potato": 20.0, "finger_millet": 1.5, "pearl_millet": 1.5,
+        "cowpeas": 1.2, "bambara_nuts": 1.0, "butternut": 20.0, "paprika": 2.5
     }
     
     if not conn:
