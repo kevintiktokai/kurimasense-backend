@@ -1908,17 +1908,19 @@ async def get_ai_insights(user_id: str = Depends(verify_token)):
                         "actionLabel": "View Field"
                     })
                     
-                    # Add top activity as action
-                    if growth_stage.key_activities:
+                    # Add top activities as actions — these will be persisted below
+                    for ka_idx, ka_activity in enumerate(growth_stage.key_activities[:2]):
                         actions.append({
-                            "id": f"action-stage-{field['id']}",
-                            "title": growth_stage.key_activities[0],
-                            "description": f"{variety_name} at {growth_stage.stage_name} requires attention.",
-                            "priority": "high" if growth_stage.days_to_harvest < 14 else "normal",
+                            "id": f"action-stage-{field['id']}-{ka_idx}",
+                            "title": ka_activity,
+                            "description": f"{variety_name} at {growth_stage.stage_name} ({growth_stage.days_since_planting} days). {growth_stage.description[:120]}",
+                            "priority": "high" if growth_stage.days_to_harvest < 14 else ("high" if ka_idx == 0 else "normal"),
                             "type": "scout",
                             "fieldName": field_name,
-                            "dueDate": "This Week",
-                            "estimatedTime": "30 min"
+                            "fieldId": str(field['id']),
+                            "dueDate": "Today",
+                            "estimatedTime": "30 min",
+                            "_needs_persist": True  # Flag for persistence below
                         })
                     
                     # Generate harvest alerts
@@ -1992,9 +1994,12 @@ async def get_ai_insights(user_id: str = Depends(verify_token)):
         # No fabricated fallback risks — if we have no data, show none.
         # The frontend RiskRadar already shows "All Clear!" when risks list is empty.
         
-        # PREPARE ACTIONS
+        # ============================================================
+        # PREPARE ACTIONS: Merge existing DB tasks + persist new ones
+        # ============================================================
+        # 1. Add existing DB tasks to the actions list
+        existing_task_titles = set()
         if existing_tasks:
-            # Format existing tasks to match the actions structure
             for task in existing_tasks:
                 actions.append({
                     "id": str(task['id']),
@@ -2002,108 +2007,66 @@ async def get_ai_insights(user_id: str = Depends(verify_token)):
                     "description": task['description'],
                     "priority": task['priority'],
                     "type": task['activity_type'],
-                    "fieldName": task.get('field_name'), # Using the joined field_name
+                    "fieldName": task.get('field_name'),
                     "completed": task['completed'],
                     "dueDate": "Today",
                     "estimatedTime": task.get('estimated_time', '30 min')
                 })
-        else:
-            # Generate crop- and stage-aware actions from proactive intelligence
-            primary_field = fields[0] if fields else None
+                existing_task_titles.add(task['title'].lower().strip())
 
-            generated_actions = []
-
-            if primary_field:
-                crop = primary_field.get('crop_type') or 'Maize'
-                variety_name = primary_field.get('variety')
-                planting_date_val = primary_field.get('planting_date')
-                field_name = primary_field.get('name', 'Field')
-
-                # Use growth stage activities if planting date is available
-                if planting_date_val and variety_name:
-                    try:
-                        p_date = planting_date_val if isinstance(planting_date_val, date) else date.fromisoformat(str(planting_date_val)[:10])
-                        gs = calculate_growth_stage(
-                            planting_date=p_date,
-                            variety_name=variety_name,
-                            crop_type=crop,
-                            transplant_date=primary_field.get('transplant_date'),
-                            is_transplanted=primary_field.get('is_transplanted', False)
-                        )
-                        # Create actions from growth stage activities
-                        for i, activity in enumerate(gs.key_activities[:2]):
-                            generated_actions.append({
-                                "title": activity,
-                                "description": f"{variety_name} at {gs.stage_name} ({gs.days_since_planting} days). {gs.description[:100]}",
-                                "priority": "high" if i == 0 else "normal",
-                                "type": "scout",
-                                "field_id": primary_field['id'],
-                            })
-                        # Add risk-based action if applicable
-                        if gs.risks:
-                            generated_actions.append({
-                                "title": f"Watch for: {gs.risks[0]}",
-                                "description": f"Key risk at {gs.stage_name} for {crop}.",
-                                "priority": "normal",
-                                "type": "scout",
-                                "field_id": primary_field['id'],
-                            })
-                    except Exception as gs_err:
-                        print(f"⚠️ Growth stage action gen failed: {gs_err}")
-
-                # If no stage-based actions, generate crop-aware general ones
-                if not generated_actions:
-                    generated_actions = [
-                        {
-                            "title": f"Scout {field_name} ({crop})",
-                            "description": f"Routine scouting for pests and disease in your {crop} field.",
-                            "priority": "normal",
-                            "type": "scout",
-                            "field_id": primary_field['id'],
-                        }
-                    ]
-            else:
-                generated_actions = [
-                    {
-                        "title": "Add your first field",
-                        "description": "Register a field with crop type and planting date to receive tailored recommendations.",
-                        "priority": "normal",
-                        "type": "general",
-                    }
-                ]
-            
-            # Persist generated actions to DB
+        # 2. Persist any new stage-based actions that don't already exist in DB
+        #    (these were flagged with _needs_persist in the proactive intelligence loop)
+        actions_to_persist = [a for a in actions if a.get('_needs_persist')]
+        if actions_to_persist:
             _persist_conn = get_db_connection()
             if _persist_conn:
                 try:
                     cursor = _persist_conn.cursor(cursor_factory=RealDictCursor)
-                    for ga in generated_actions:
+                    for action in actions_to_persist:
+                        # Deduplicate: skip if a task with the same title exists today
+                        if action['title'].lower().strip() in existing_task_titles:
+                            continue
+
                         cursor.execute("""
                             INSERT INTO farm_tasks (user_id, field_id, title, description, activity_type, priority, is_ai_generated)
                             VALUES (%s, %s, %s, %s, %s, %s, TRUE)
                             RETURNING *
-                        """, (user_id, ga.get('field_id'), ga['title'], ga['description'], ga['type'], ga['priority']))
+                        """, (
+                            user_id,
+                            action.get('fieldId'),
+                            action['title'][:200],
+                            (action.get('description') or '')[:500],
+                            action.get('type', 'scout'),
+                            action.get('priority', 'normal')
+                        ))
                         new_task = cursor.fetchone()
-                        
-                        # Fetch the field name for the newly created task
-                        field_name = primary_field['name'] if primary_field and ga.get('field_id') == primary_field['id'] else None
-                        
-                        actions.append({
-                            "id": str(new_task['id']),
-                            "title": new_task['title'],
-                            "description": new_task['description'],
-                            "priority": new_task['priority'],
-                            "type": new_task['activity_type'],
-                            "fieldName": field_name,
-                            "completed": False,
-                            "dueDate": "Today"
-                        })
+                        # Replace the synthetic ID with the real DB ID
+                        action['id'] = str(new_task['id'])
+                        action['completed'] = False
+                        existing_task_titles.add(action['title'].lower().strip())
+
                     _persist_conn.commit()
                     cursor.close()
                 except Exception as e:
-                    print(f"⚠️ Error persisting generated tasks: {e}")
+                    print(f"⚠️ Error persisting stage-based tasks: {e}")
                 finally:
                     _persist_conn.close()
+
+        # 3. If no actions at all (no fields, no existing tasks), add a starter
+        if not actions and not fields:
+            actions.append({
+                "id": "starter-action",
+                "title": "Add your first field",
+                "description": "Register a field with crop type and planting date to receive tailored recommendations.",
+                "priority": "normal",
+                "type": "general",
+                "dueDate": "Today"
+            })
+
+        # Clean up internal flags before returning
+        for a in actions:
+            a.pop('_needs_persist', None)
+            a.pop('fieldId', None)
     
     result = {
         "insights": insights[:5],
