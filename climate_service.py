@@ -24,11 +24,22 @@ _WEATHER_TTL = 60 * 5  # 5 minutes
 def _get_http() -> httpx.AsyncClient:
     global _http
     if _http is None:
-        _http = httpx.AsyncClient(timeout=httpx.Timeout(connect=3.0, read=6.0, write=6.0, pool=6.0))
+        _http = httpx.AsyncClient(timeout=httpx.Timeout(connect=5.0, read=15.0, write=10.0, pool=10.0))
     return _http
 
 def _cache_key(lat: float, lon: float) -> str:
     return f"{round(lat,3)}:{round(lon,3)}"
+
+
+def _join_params(params: Dict[str, Any]) -> Dict[str, str]:
+    """Convert list params to comma-separated strings for Open-Meteo API compatibility."""
+    out = {}
+    for k, v in params.items():
+        if isinstance(v, list):
+            out[k] = ",".join(str(x) for x in v)
+        else:
+            out[k] = v
+    return out
 
 
 async def get_current_weather(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON) -> Dict[str, Any]:
@@ -42,12 +53,12 @@ async def get_current_weather(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON
     if cached and (now - cached[0]) < _WEATHER_TTL:
         return cached[1]
 
-    params = {
+    params = _join_params({
         "latitude": lat,
         "longitude": lon,
         "current": [
             "temperature_2m",
-            "relative_humidity_2m", 
+            "relative_humidity_2m",
             "apparent_temperature",
             "precipitation",
             "weather_code",
@@ -58,15 +69,15 @@ async def get_current_weather(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON
             "pressure_msl"
         ],
         "timezone": "auto"
-    }
-    
+    })
+
     client = _get_http()
     response = await client.get(FORECAST_URL, params=params)
+    response.raise_for_status()
     data = response.json()
 
-        
     current = data.get("current", {})
-    
+
     result = {
         "temperature": current.get("temperature_2m"),
         "feels_like": current.get("apparent_temperature"),
@@ -93,7 +104,7 @@ async def get_hourly_forecast(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON
     """
     Get hourly forecast for next N hours (max 168 = 7 days).
     """
-    params = {
+    params = _join_params({
         "latitude": lat,
         "longitude": lon,
         "hourly": [
@@ -107,11 +118,12 @@ async def get_hourly_forecast(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON
         ],
         "forecast_hours": min(hours, 168),
         "timezone": "auto"
-    }
-    
-    async with httpx.AsyncClient() as client:
-        response = await client.get(FORECAST_URL, params=params, timeout=15.0)
-        data = response.json()
+    })
+
+    client = _get_http()
+    response = await client.get(FORECAST_URL, params=params)
+    response.raise_for_status()
+    data = response.json()
     
     hourly = data.get("hourly", {})
     times = hourly.get("time", [])
@@ -140,7 +152,7 @@ async def get_daily_forecast(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON,
     """
     Get daily forecast for next N days (max 16).
     """
-    params = {
+    params = _join_params({
         "latitude": lat,
         "longitude": lon,
         "daily": [
@@ -159,11 +171,12 @@ async def get_daily_forecast(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON,
         ],
         "forecast_days": min(days, 16),
         "timezone": "auto"
-    }
-    
-    async with httpx.AsyncClient() as client:
-        response = await client.get(FORECAST_URL, params=params, timeout=15.0)
-        data = response.json()
+    })
+
+    client = _get_http()
+    response = await client.get(FORECAST_URL, params=params)
+    response.raise_for_status()
+    data = response.json()
     
     daily = data.get("daily", {})
     times = daily.get("time", [])
@@ -200,7 +213,7 @@ async def get_agricultural_metrics(lat: float = DEFAULT_LAT, lon: float = DEFAUL
     """
     Get agricultural-specific metrics: soil moisture, soil temperature, evapotranspiration.
     """
-    params = {
+    params = _join_params({
         "latitude": lat,
         "longitude": lon,
         "hourly": [
@@ -218,11 +231,12 @@ async def get_agricultural_metrics(lat: float = DEFAULT_LAT, lon: float = DEFAUL
         ],
         "forecast_days": 7,
         "timezone": "auto"
-    }
-    
-    async with httpx.AsyncClient() as client:
-        response = await client.get(FORECAST_URL, params=params, timeout=15.0)
-        data = response.json()
+    })
+
+    client = _get_http()
+    response = await client.get(FORECAST_URL, params=params)
+    response.raise_for_status()
+    data = response.json()
     
     hourly = data.get("hourly", {})
     daily = data.get("daily", {})
@@ -387,18 +401,19 @@ async def calculate_gdd(
 
     end_date = datetime.now().strftime("%Y-%m-%d")
     
-    params = {
+    params = _join_params({
         "latitude": lat,
         "longitude": lon,
         "start_date": effective_start_date,
         "end_date": end_date,
         "daily": ["temperature_2m_max", "temperature_2m_min"],
         "timezone": "auto"
-    }
-    
-    async with httpx.AsyncClient() as client:
-        response = await client.get(HISTORICAL_URL, params=params, timeout=30.0)
-        data = response.json()
+    })
+
+    client = _get_http()
+    response = await client.get(HISTORICAL_URL, params=params)
+    response.raise_for_status()
+    data = response.json()
     
     daily = data.get("daily", {})
     dates = daily.get("time", [])
@@ -680,7 +695,7 @@ async def get_historical_comparison(lat: float = DEFAULT_LAT, lon: float = DEFAU
     historical_start = (today - timedelta(days=365)).strftime("%Y-%m-%d")
     historical_end = (today - timedelta(days=365) + timedelta(days=7)).strftime("%Y-%m-%d")
     
-    params = {
+    params = _join_params({
         "latitude": lat,
         "longitude": lon,
         "start_date": historical_start,
@@ -691,12 +706,13 @@ async def get_historical_comparison(lat: float = DEFAULT_LAT, lon: float = DEFAU
             "precipitation_sum"
         ],
         "timezone": "auto"
-    }
-    
+    })
+
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(HISTORICAL_URL, params=params, timeout=30.0)
-            historical_data = response.json()
+        client = _get_http()
+        response = await client.get(HISTORICAL_URL, params=params)
+        response.raise_for_status()
+        historical_data = response.json()
         
         hist_daily = historical_data.get("daily", {})
         hist_temps_max = [t for t in hist_daily.get("temperature_2m_max", []) if t is not None]
