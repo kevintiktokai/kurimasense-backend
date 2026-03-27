@@ -828,37 +828,48 @@ Respond with a JSON object:
 
     async def generate_field_insight(self, metrics: Dict[str, Any], crop_type: str = "Crop") -> str:
         """
-        Generate a concise, agronomic insight based on field metrics.
+        Generate a concise, crop-specific agronomic insight based on field metrics.
         Used for the 'Agronomist Insight' card after satellite analysis.
         """
-        prompt = f"""
-        You are an expert AI Agronomist on a farm dashboard. 
-        Analyze these metrics for a {crop_type} field and provide a SINGLE, actionable insight sentence (max 25 words).
-        
-        Metrics:
-        - NDVI: {metrics.get('ndvi', 'N/A')} (Range: -1 to 1. >0.6 is good)
+        stage_info = ""
+        if metrics.get('stage'):
+            stage_info = f"\n        - Growth Stage: {metrics['stage']} ({metrics.get('days_since_planting', 0)} days after planting)"
+            if metrics.get('water_kc'):
+                stage_info += f"\n        - Water Demand (Kc): {metrics['water_kc']} — needs ~{metrics.get('water_mm_per_week', 'N/A')}mm/week"
+
+        weather_info = ""
+        if metrics.get('temperature') is not None:
+            weather_info = f"\n        - Temperature: {metrics['temperature']}°C, Humidity: {metrics.get('humidity', 'N/A')}%"
+            if metrics.get('weather'):
+                weather_info += f" ({metrics['weather']})"
+
+        prompt = f"""You are an expert AI Agronomist specialising in {crop_type} production in Zimbabwe.
+        Analyze these field metrics and provide ONE actionable insight sentence (max 30 words).
+        Be specific to {crop_type} — reference the growth stage if known and give concrete advice.
+
+        Field Metrics:
+        - Crop: {crop_type} {f'({metrics.get("variety")})' if metrics.get('variety') else ''}
+        - NDVI: {metrics.get('ndvi', 'N/A')} (vegetation index)
         - Soil Moisture: {metrics.get('soil_moisture', 'N/A')}%
-        - Health Score: {metrics.get('health_score', 'N/A')}
-        - EVI: {metrics.get('evi', 'N/A')}
-        
-        Focus on status + immediate action.
-        Examples:
-        "Vegetation index is strong; continue monitoring nitrogen levels."
-        "Moisture levels are low; consider scheduling irrigation for tomorrow morning."
-        "NDVI indicates potential stress; scout for pests or nutrient deficiency."
+        - Health Score: {metrics.get('health_score', 'N/A')}{stage_info}{weather_info}
+
+        Rules:
+        - Be crop-specific, not generic
+        - Include a concrete action (irrigate, scout, apply, monitor)
+        - If NDVI or moisture is low, say what to do about it for THIS crop at THIS stage
         """
-        
+
         try:
-             response = await self.llm_router.generate(
+            response = await self.llm_router.generate(
                 messages=[{"role": "user", "content": prompt}],
                 model="gpt-4o-mini",
-                max_tokens=50,
+                max_tokens=80,
                 temperature=0.3
             )
-             return response.strip().strip('"')
+            return response.strip().strip('"')
         except Exception as e:
             print(f"Insight generation failed: {e}")
-            return "Analysis complete. Monitor field conditions closely."
+            raise  # Let caller handle with crop-specific deterministic fallback
 
     async def generate_ai_priorities_and_risks(self, 
                                                context_data: Dict[str, Any]) -> Dict[str, Any]:

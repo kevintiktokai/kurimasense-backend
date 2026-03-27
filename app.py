@@ -579,8 +579,9 @@ async def get_field_insight(field_id: str, user_id: str = Depends(verify_token))
     """Generate a real-time AI agronomist insight for a specific field."""
     conn = get_db_connection()
     if not conn:
-        return {"insight": "Add your field data to receive personalized agronomist insights."}
+        return {"insight": "Database unavailable. Please try again shortly.", "source": "error"}
 
+    row = None
     try:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute("""
@@ -597,91 +598,161 @@ async def get_field_insight(field_id: str, user_id: str = Depends(verify_token))
         """, (field_id, user_id))
         row = cursor.fetchone()
         cursor.close()
-        conn.close()
-
-        if not row:
-            return {"insight": "Field not found."}
-
-        # If we have a recent insight (< 6 hours old), return it
-        if row.get('insight_text') and row.get('log_date'):
-            from datetime import datetime, timedelta
-            log_date = row['log_date']
-            if hasattr(log_date, 'date'):
-                age = (datetime.now().date() - log_date).days if hasattr(log_date, 'days') else 0
-            else:
-                age = 0
-            if age < 1 and row['insight_text']:
-                return {"insight": row['insight_text'], "source": "cached", "date": str(row.get('log_date'))}
-
-        # Generate fresh insight using AI brain
-        crop = row.get('crop_type', 'Maize')
-        ndvi = float(row.get('ndvi') or 0)
-        moisture = float(row.get('soil_moisture') or 0)
-        health = float(row.get('health_score') or 0)
-
-        # Get weather context
-        lat, lon = -17.82, 31.05
-        coords = row.get('polygon_coordinates')
-        if coords and isinstance(coords, list) and len(coords) > 0:
-            lats = [p['lat'] for p in coords]
-            lons = [p['lon'] for p in coords]
-            lat, lon = sum(lats) / len(lats), sum(lons) / len(lons)
-
-        weather = {}
+    except Exception as e:
+        print(f"Insight DB query error: {e}")
+    finally:
         try:
-            weather = await climate_service.get_current_weather(lat, lon)
+            conn.close()
         except Exception:
             pass
 
-        # Build context and generate insight
-        brain = get_brain()
-        metrics = {
-            "crop": crop,
-            "variety": row.get('variety'),
-            "ndvi": ndvi,
-            "soil_moisture": moisture,
-            "health_score": health,
-            "planting_date": str(row.get('planting_date')) if row.get('planting_date') else None,
-            "temperature": weather.get("temperature"),
-            "humidity": weather.get("humidity"),
-            "weather": weather.get("weather_description"),
-        }
+    if not row:
+        return {"insight": "Field not found. Add field data to receive insights.", "source": "error"}
 
+    # If we have a recent cached insight (< 1 day old), return it
+    if row.get('insight_text') and row.get('log_date'):
         try:
-            insight_text = await brain.generate_field_insight(metrics)
-            return {"insight": insight_text, "source": "ai", "metrics": metrics}
-        except Exception as e:
-            print(f"AI insight generation error: {e}")
-            # Build a deterministic insight from the data we have
-            parts = []
-            if ndvi > 0.6:
-                parts.append(f"{crop} vegetation is healthy (NDVI {ndvi:.2f}).")
-            elif ndvi > 0.3:
-                parts.append(f"{crop} shows moderate vigour (NDVI {ndvi:.2f}). Scout for stress signs.")
-            elif ndvi > 0:
-                parts.append(f"{crop} vegetation is under stress (NDVI {ndvi:.2f}). Investigate immediately.")
+            from datetime import datetime
+            log_date = row['log_date']
+            age_days = 0
+            if hasattr(log_date, 'date'):
+                age_days = (datetime.now().date() - log_date.date()).days
+            if age_days < 1 and row['insight_text']:
+                return {"insight": row['insight_text'], "source": "cached", "date": str(log_date)}
+        except Exception:
+            pass
 
-            if moisture > 0:
-                if moisture < 25:
-                    parts.append(f"Soil moisture critically low at {moisture:.0f}% — irrigate urgently.")
-                elif moisture < 40:
-                    parts.append(f"Soil moisture at {moisture:.0f}% — consider irrigation within 48h.")
-                else:
-                    parts.append(f"Soil moisture adequate at {moisture:.0f}%.")
+    crop = row.get('crop_type', 'Maize')
+    ndvi = float(row.get('ndvi') or 0)
+    moisture = float(row.get('soil_moisture') or 0)
+    health = float(row.get('health_score') or 0)
+    variety = row.get('variety', '')
+    planting_date = row.get('planting_date')
 
-            if weather.get("temperature"):
-                temp = weather["temperature"]
-                if temp > 35:
-                    parts.append(f"Heat stress risk at {temp:.0f}°C — avoid midday field work.")
-                elif temp < 10:
-                    parts.append(f"Cool conditions at {temp:.0f}°C — watch for frost risk.")
+    # Compute days since planting
+    days_since_planting = 0
+    if planting_date:
+        try:
+            from datetime import datetime, date
+            pd = planting_date.date() if hasattr(planting_date, 'date') else datetime.strptime(str(planting_date), '%Y-%m-%d').date()
+            days_since_planting = (date.today() - pd).days
+        except Exception:
+            pass
 
-            return {"insight": " ".join(parts) if parts else "Analysis pending — run a satellite scan to get insights.", "source": "deterministic", "metrics": metrics}
-    except Exception as e:
-        print(f"Field insight error: {e}")
-        return {"insight": "Unable to generate insight. Try running a new analysis."}
-    finally:
+    # Get field coordinates
+    lat, lon = -17.82, 31.05
+    coords = row.get('polygon_coordinates')
+    if coords and isinstance(coords, list) and len(coords) > 0:
+        try:
+            lats = [p['lat'] for p in coords]
+            lons = [p['lon'] for p in coords]
+            lat, lon = sum(lats) / len(lats), sum(lons) / len(lons)
+        except Exception:
+            pass
+
+    # Get weather (non-blocking)
+    weather = {}
+    try:
+        weather = await climate_service.get_current_weather(lat, lon)
+    except Exception:
         pass
+
+    # Get crop-specific context from knowledge engine
+    crop_stage = None
+    crop_profile = None
+    try:
+        from crop_knowledge import get_crop_profile, get_current_stage_for_crop
+        crop_profile = get_crop_profile(crop)
+        if days_since_planting > 0:
+            crop_stage = get_current_stage_for_crop(crop, days_since_planting)
+    except Exception:
+        pass
+
+    metrics = {
+        "crop": crop,
+        "variety": variety,
+        "ndvi": ndvi,
+        "soil_moisture": moisture,
+        "health_score": health,
+        "planting_date": str(planting_date) if planting_date else None,
+        "days_since_planting": days_since_planting,
+        "stage": crop_stage.stage_name if crop_stage else None,
+        "stage_code": crop_stage.stage_code if crop_stage else None,
+        "water_kc": crop_stage.water_kc if crop_stage else None,
+        "water_mm_per_week": crop_stage.water_mm_per_week if crop_stage else None,
+        "temperature": weather.get("temperature"),
+        "humidity": weather.get("humidity"),
+        "weather": weather.get("weather_description"),
+    }
+
+    # Attempt AI-powered insight
+    try:
+        brain = get_brain()
+        insight_text = await brain.generate_field_insight(metrics, crop_type=crop)
+        if insight_text and len(insight_text) > 10:
+            return {"insight": insight_text, "source": "ai", "metrics": metrics}
+    except Exception as e:
+        print(f"AI insight generation error: {e}")
+
+    # Deterministic crop-specific fallback
+    parts = []
+
+    # Crop-specific NDVI thresholds
+    _ndvi_t = {
+        "Maize": (0.7, 0.5, 0.35), "Soybean": (0.65, 0.45, 0.3),
+        "Tobacco": (0.6, 0.4, 0.25), "Groundnuts": (0.6, 0.4, 0.25),
+    }
+    exc, good, mod = _ndvi_t.get(crop, (0.6, 0.45, 0.3))
+
+    if ndvi > 0:
+        if ndvi >= exc:
+            parts.append(f"{crop} canopy is excellent (NDVI {ndvi:.2f}). Maintain current management.")
+        elif ndvi >= good:
+            parts.append(f"{crop} shows good vigour (NDVI {ndvi:.2f}).")
+        elif ndvi >= mod:
+            parts.append(f"{crop} shows moderate stress (NDVI {ndvi:.2f}). Scout for nutrient deficiency or pest pressure.")
+        else:
+            parts.append(f"{crop} vegetation is critically stressed (NDVI {ndvi:.2f}). Investigate immediately — check for drought, disease, or pest damage.")
+
+    # Crop-specific moisture thresholds
+    _moist_t = {
+        "Maize": (50, 30, 20), "Soybean": (40, 25, 15),
+        "Tobacco": (45, 30, 20), "Groundnuts": (35, 20, 12),
+    }
+    adeq, low, crit = _moist_t.get(crop, (40, 25, 15))
+
+    if moisture > 0:
+        if moisture < crit:
+            parts.append(f"Soil moisture critically low at {moisture:.0f}% for {crop} — irrigate urgently.")
+        elif moisture < low:
+            parts.append(f"Soil moisture at {moisture:.0f}% — approaching stress threshold for {crop}. Plan irrigation within 48h.")
+        elif moisture >= adeq:
+            parts.append(f"Soil moisture adequate at {moisture:.0f}% for {crop}.")
+
+    # Stage-specific advice
+    if crop_stage:
+        if crop_stage.key_activities:
+            parts.append(f"At {crop_stage.stage_name}: {crop_stage.key_activities[0]}")
+        if crop_stage.risks:
+            parts.append(f"Watch for: {crop_stage.risks[0]}")
+
+    if weather.get("temperature"):
+        temp = weather["temperature"]
+        if crop_profile:
+            if temp > crop_profile.critical_temp_high:
+                parts.append(f"Heat stress risk at {temp:.0f}°C (threshold: {crop_profile.critical_temp_high}°C for {crop}).")
+            elif temp < crop_profile.critical_temp_low:
+                parts.append(f"Cold stress at {temp:.0f}°C — {crop} vulnerable below {crop_profile.critical_temp_low}°C.")
+        elif temp > 35:
+            parts.append(f"Heat stress risk at {temp:.0f}°C.")
+        elif temp < 10:
+            parts.append(f"Cool conditions at {temp:.0f}°C — watch for frost risk.")
+
+    return {
+        "insight": " ".join(parts) if parts else f"Run a satellite analysis to get crop-specific insights for your {crop} field.",
+        "source": "deterministic",
+        "metrics": metrics,
+    }
 
 @app.get("/fields/{field_id}/history")
 async def get_field_history(field_id: str, user_id: str = Depends(verify_token)):
