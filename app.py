@@ -697,10 +697,28 @@ async def get_field_insight(field_id: str, user_id: str = Depends(verify_token))
     # Deterministic crop-specific fallback
     parts = []
 
-    # Crop-specific NDVI thresholds
+    # Crop-specific NDVI thresholds: (excellent, good, moderate)
     _ndvi_t = {
-        "Maize": (0.7, 0.5, 0.35), "Soybean": (0.65, 0.45, 0.3),
-        "Tobacco": (0.6, 0.4, 0.25), "Groundnuts": (0.6, 0.4, 0.25),
+        # Cereals & Grains
+        "Maize": (0.7, 0.5, 0.35), "Wheat": (0.65, 0.45, 0.3),
+        "Sorghum": (0.65, 0.45, 0.3), "Finger Millet": (0.55, 0.4, 0.25),
+        "Pearl Millet": (0.55, 0.4, 0.25),
+        # Cash Crops
+        "Tobacco": (0.6, 0.4, 0.25), "Cotton": (0.65, 0.45, 0.3),
+        "Sunflower": (0.6, 0.4, 0.25), "Paprika": (0.55, 0.35, 0.2),
+        "Sesame": (0.55, 0.35, 0.2), "Tea": (0.7, 0.55, 0.4),
+        # Legumes & Oilseeds
+        "Soybean": (0.65, 0.45, 0.3), "Soybeans": (0.65, 0.45, 0.3),
+        "Groundnuts": (0.6, 0.4, 0.25), "Sugar Beans": (0.6, 0.4, 0.25),
+        "Cowpeas": (0.55, 0.35, 0.2), "Bambara Nuts": (0.5, 0.35, 0.2),
+        "Peas": (0.6, 0.4, 0.25), "Green Beans": (0.6, 0.4, 0.25),
+        # Vegetables & Root Crops
+        "Potato": (0.6, 0.4, 0.25), "Sweet Potato": (0.6, 0.4, 0.25),
+        "Cassava": (0.55, 0.35, 0.2), "Tomato": (0.6, 0.4, 0.25),
+        "Onion": (0.45, 0.3, 0.2), "Cabbage": (0.55, 0.4, 0.25),
+        "Butternut": (0.6, 0.4, 0.25), "Green Pepper": (0.55, 0.4, 0.25),
+        "Garlic": (0.45, 0.3, 0.2), "Strawberries": (0.55, 0.35, 0.2),
+        "Blueberries": (0.55, 0.35, 0.2), "Snow Peas": (0.55, 0.4, 0.25),
     }
     exc, good, mod = _ndvi_t.get(crop, (0.6, 0.45, 0.3))
 
@@ -714,10 +732,28 @@ async def get_field_insight(field_id: str, user_id: str = Depends(verify_token))
         else:
             parts.append(f"{crop} vegetation is critically stressed (NDVI {ndvi:.2f}). Investigate immediately — check for drought, disease, or pest damage.")
 
-    # Crop-specific moisture thresholds
+    # Crop-specific moisture thresholds: (adequate, low, critical)
     _moist_t = {
-        "Maize": (50, 30, 20), "Soybean": (40, 25, 15),
-        "Tobacco": (45, 30, 20), "Groundnuts": (35, 20, 12),
+        # Cereals & Grains
+        "Maize": (50, 30, 20), "Wheat": (45, 25, 15),
+        "Sorghum": (35, 20, 10), "Finger Millet": (30, 18, 10),
+        "Pearl Millet": (30, 18, 10),
+        # Cash Crops
+        "Tobacco": (45, 30, 20), "Cotton": (40, 25, 15),
+        "Sunflower": (35, 20, 12), "Paprika": (45, 30, 18),
+        "Sesame": (30, 18, 10), "Tea": (55, 40, 30),
+        # Legumes & Oilseeds
+        "Soybean": (40, 25, 15), "Soybeans": (40, 25, 15),
+        "Groundnuts": (35, 20, 12), "Sugar Beans": (40, 25, 15),
+        "Cowpeas": (30, 18, 10), "Bambara Nuts": (25, 15, 8),
+        "Peas": (45, 28, 15), "Green Beans": (45, 30, 18),
+        # Vegetables & Root Crops
+        "Potato": (55, 35, 22), "Sweet Potato": (40, 25, 15),
+        "Cassava": (30, 18, 10), "Tomato": (55, 35, 22),
+        "Onion": (50, 30, 18), "Cabbage": (55, 35, 22),
+        "Butternut": (40, 25, 15), "Green Pepper": (50, 32, 20),
+        "Garlic": (45, 28, 15), "Strawberries": (55, 35, 22),
+        "Blueberries": (50, 32, 20), "Snow Peas": (45, 28, 15),
     }
     adeq, low, crit = _moist_t.get(crop, (40, 25, 15))
 
