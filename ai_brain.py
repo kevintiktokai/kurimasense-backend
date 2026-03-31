@@ -24,7 +24,7 @@ from openai import OpenAI, AsyncOpenAI
 from dotenv import load_dotenv
 from database import get_db_connection
 from tools.retrieve_context import search_knowledge_base
-from crop_knowledge import (
+from crop_profiles import (
     get_crop_profile, build_crop_context_for_ai,
     get_diseases_for_conditions, get_pests_for_stage,
     get_current_stage_for_crop,

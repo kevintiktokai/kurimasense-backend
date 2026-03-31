@@ -19,6 +19,7 @@ import json
 
 from database import get_db_connection
 from proactive_intelligence import get_variety_info, calculate_growth_stage
+from crop_constants import CROP_BASE_TEMPS as _CANONICAL_BASE_TEMPS, CROP_WATER_REQUIREMENTS as _CANONICAL_WATER
 
 
 @dataclass
@@ -47,20 +48,8 @@ NATURAL_REGION_MULTIPLIERS = {
     "V": {"maize": 0.3, "tobacco": 0.2, "soybean": 0.35, "default": 0.3}
 }
 
-# Crop-specific base temperatures for GDD calculation
-CROP_BASE_TEMPS = {
-    "maize": 10.0,
-    "tobacco": 10.0,
-    "soybean": 10.0,
-    "wheat": 4.4,
-    "tomato": 10.0,
-    "cabbage": 4.4,
-    "potato": 7.0,
-    "cotton": 15.6,
-    "groundnuts": 13.0,
-    "sunflower": 8.0,
-    "sorghum": 10.0
-}
+# Crop base temps — imported from crop_constants (single source of truth)
+CROP_BASE_TEMPS = _CANONICAL_BASE_TEMPS
 
 # Standard yield disclaimer
 YIELD_DISCLAIMER = """
@@ -182,24 +171,8 @@ def calculate_water_factor(
     
     Returns (factor, explanation)
     """
-    # Crop water requirements (mm for full season)
-    CROP_WATER_REQUIREMENTS = {
-        "maize": 500,
-        "tobacco": 450,
-        "soybean": 450,
-        "wheat": 400,
-        "tomato": 600,
-        "cabbage": 400,
-        "potato": 500,
-        "cotton": 700,
-        "groundnuts": 400,
-        "sunflower": 600,
-        "sorghum": 400,
-        "default": 500
-    }
-    
     crop_lower = crop.lower()
-    total_requirement = CROP_WATER_REQUIREMENTS.get(crop_lower, 500)
+    total_requirement = _CANONICAL_WATER.get(crop_lower, 500)
     
     # Expected water received by current growth stage
     expected_water = total_requirement * (growth_stage_percent / 100)

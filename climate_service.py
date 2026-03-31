@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List, Tuple
 import asyncio
 from database import get_db_connection
+from crop_constants import CROP_BASE_TEMPS as _CANONICAL_BASE_TEMPS, TRANSPLANTED_CROPS as _CANONICAL_TRANSPLANTED
 
 # Open-Meteo API base URLs
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
@@ -325,8 +326,7 @@ async def calculate_gdd(
     counted towards field GDD accumulation.
     """
     # Transplanted crops - use transplant_date instead of planting_date
-    TRANSPLANTED_CROPS = ['Tomato', 'Cabbage', 'Onion', 'Potato', 'Pepper', 'Eggplant', 'Lettuce', 'Paprika', 'Green Pepper', 'Strawberries', 'Tea', 'Blueberries']
-    use_transplant_date = is_transplanted or (crop_type and crop_type in TRANSPLANTED_CROPS)
+    use_transplant_date = is_transplanted or (crop_type and crop_type in _CANONICAL_TRANSPLANTED)
     
     # Determine effective start date for GDD calculation
     effective_start_date = start_date
@@ -337,40 +337,9 @@ async def calculate_gdd(
     if effective_start_date is None:
         effective_start_date = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
     
-    # Crop-specific base temperatures (°C)
-    CROP_BASE_TEMPS = {
-        'Tomato': 10.0,
-        'Cabbage': 4.4,    # Cool-season crop, lower base temp
-        'Onion': 4.4,      # Cool-season crop
-        'Potato': 7.0,
-        'Maize': 10.0,
-        'Soybean': 10.0,
-        'Soybeans': 10.0,
-        'Tobacco': 13.0,   # Warm-season, higher base
-        'Sweet Potato': 15.0,   # Tropical root crop, needs warm soil
-        'Finger Millet': 12.0,  # Warm-season small grain
-        'Pearl Millet': 12.0,   # Most heat-tolerant cereal
-        'Cowpeas': 10.0,        # Warm-season legume
-        'Bambara Nuts': 12.0,   # Tropical legume
-        'Butternut': 10.0,      # Cucurbit, warm season
-        'Paprika': 12.0,        # Capsicum, warm season
-        'Cotton': 15.0,         # Needs warm soil for germination
-        'Groundnuts': 10.0,
-        'Sunflower': 6.0,       # Cool-tolerant at germination
-        'Sorghum': 10.0,
-        'Sugar Beans': 10.0,
-        'Wheat': 4.0,           # Cool-season crop
-        'Peas': 4.4,            # Cool-season legume
-        'Snow Peas': 4.4,       # Cool-season, very cold tolerant
-        'Green Beans': 10.0,    # Warm-season bean
-        'Blueberries': 7.0,     # Perennial fruit
-        'Strawberries': 7.0,    # Cool-season fruit
-        'Tea': 12.5,            # Tropical/subtropical perennial
-        'Sesame': 15.0,         # Warm-season oilseed
-        'Cassava': 15.0,        # Tropical root crop
-        'Garlic': 0.0,          # Very cold tolerant, grows in winter
-        'Green Pepper': 12.0,   # Capsicum, warm season
-    }
+    # Crop base temps — from crop_constants (single source of truth)
+    # _CANONICAL_BASE_TEMPS uses lowercase keys; build Title-case lookup for backward compat
+    CROP_BASE_TEMPS = {k.title(): v for k, v in _CANONICAL_BASE_TEMPS.items()}
     
     # Use crop-specific base temp if available
     if crop_type and crop_type in CROP_BASE_TEMPS:

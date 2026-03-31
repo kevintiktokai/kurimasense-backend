@@ -1156,12 +1156,10 @@ def get_dashboard_stats(user_id: str = Depends(verify_token)):
     total_area = 0
     fields_to_scan = []
     
-    # Default yield potentials by crop (conservative midpoints in t/ha)
-    DEFAULT_YIELDS = {
-        "maize": 6.0, "tobacco": 2.0, "soybean": 2.5, "wheat": 4.5,
-        "tomato": 40.0, "cabbage": 50.0, "potato": 25.0, "cotton": 2.5,
-        "groundnuts": 2.0, "sunflower": 2.0, "sorghum": 3.0, "sugar_beans": 2.0
-    }
+    # Default yields — imported from crop_constants (single source of truth)
+    from crop_constants import DEFAULT_YIELDS as _YIELDS
+    # Build underscore-keyed lookup for backward compat with crop.replace(' ', '_')
+    DEFAULT_YIELDS = {k.replace(' ', '_'): v for k, v in _YIELDS.items()}
     
     if not conn:
         fields_to_scan = MOCK_FIELDS
@@ -3586,7 +3584,7 @@ from agronomic_engine import (
     get_irrigation_advice,
     check_harvest_readiness,
 )
-from crop_knowledge import (
+from crop_profiles import (
     get_crop_profile, get_all_crop_names, build_crop_context_for_ai,
     get_diseases_for_conditions, get_pests_for_stage,
 )

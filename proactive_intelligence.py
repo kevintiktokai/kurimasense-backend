@@ -18,7 +18,7 @@ import json
 
 from database import get_db_connection
 from ai_brain import get_brain
-from crop_knowledge import (
+from crop_profiles import (
     get_crop_profile, get_diseases_for_conditions, get_pests_for_stage,
     get_current_stage_for_crop as ck_get_stage,
 )

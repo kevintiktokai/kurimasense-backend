@@ -19,7 +19,7 @@ import json
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-from crop_knowledge import (
+from crop_profiles import (
     CropProfile,
     get_crop_profile,
     get_current_stage_for_crop,
