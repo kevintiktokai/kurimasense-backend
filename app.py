@@ -208,6 +208,37 @@ async def cors_general_exception_handler(request: Request, exc: Exception):
 
 # Auth (verify_token), caching, mock data, and helpers are all imported from deps.py above.
 
+# ========== SERVER-SIDE RESPONSE CACHE ==========
+# Per-user, TTL-based in-memory cache for expensive AI endpoints.
+# Eliminates redundant LLM/subprocess calls when the same user hits
+# the dashboard within the cache window.
+
+import threading
+
+_response_cache: dict[str, dict] = {}
+_cache_lock = threading.Lock()
+
+def _cache_get(key: str, ttl_seconds: int):
+    """Return cached value if fresh, else None."""
+    with _cache_lock:
+        entry = _response_cache.get(key)
+        if entry and (time.time() - entry["ts"]) < ttl_seconds:
+            return entry["data"]
+    return None
+
+def _cache_set(key: str, data):
+    """Store a value in the cache."""
+    with _cache_lock:
+        _response_cache[key] = {"data": data, "ts": time.time()}
+
+def _cache_invalidate(prefix: str):
+    """Invalidate all cache entries starting with a prefix."""
+    with _cache_lock:
+        keys_to_delete = [k for k in _response_cache if k.startswith(prefix)]
+        for k in keys_to_delete:
+            del _response_cache[k]
+
+
 @app.get("/health")
 def health_check():
     """
@@ -1277,13 +1308,15 @@ def post_generate_yield(field_id: str, user_id: str = Depends(verify_token)):
     """
     Generates yield projection using AI based on field parameters.
     """
+    # Check cache first (30-minute TTL)
+    cache_key = f"yield:{user_id}:{field_id}"
+    cached = _cache_get(cache_key, 1800)
+    if cached is not None:
+        print(f"✅ Cache HIT for yield projection field={field_id[:8]}...")
+        return cached
+
     # Log usage
     log_user_event(user_id, "feature_usage", "yield_projection", {"field_id": field_id})
-
-    cache_key = f"yield:{user_id}:{field_id}"
-    cached = _cache_get(cache_key)
-    if cached is not None:
-        return cached
 
     # 1. Fetch Field Data from Database first
     field = None
@@ -1429,6 +1462,35 @@ def get_market_prices(region: str = "Zimbabwe"):
         "timestamp": datetime.now().isoformat()
     }
 
+# ========== COMBINED DASHBOARD INIT ==========
+
+@app.get("/dashboard/init")
+def dashboard_init(user_id: str = Depends(verify_token)):
+    """
+    Combined endpoint that returns dashboard stats, fields, and market prices
+    in a single round-trip. This eliminates 2 extra HTTP requests from the frontend.
+    Cached per-user for 2 minutes.
+    """
+    cache_key = f"dashboard_init:{user_id}"
+    cached = _cache_get(cache_key, 120)
+    if cached is not None:
+        return cached
+
+    # Re-use the existing endpoint functions
+    stats = get_dashboard_stats(user_id=user_id)
+    fields_data = get_fields(user_id=user_id)
+    market = get_market_prices(region="Zimbabwe")
+
+    result = {
+        "stats": stats,
+        "fields": fields_data,
+        "market": market,
+    }
+
+    _cache_set(cache_key, result)
+    return result
+
+
 # ========== FIELD ENDPOINTS ==========
 
 @app.post("/router")
@@ -1549,13 +1611,29 @@ def get_chat_history(limit: int = 50, user_id: str = Depends(verify_token)):
 @app.post("/proactive")
 def proactive_endpoint(payload: dict, user_id: str = Depends(verify_token)):
     seeds = payload.get("seeds") or []
+
+    # Build a cache key from seed locations + intents (15-minute TTL)
+    loc_parts = []
+    for s in seeds:
+        loc = s.get("location", {})
+        intent = s.get("intent_classification", "")
+        loc_parts.append(f"{loc.get('lat','')},{loc.get('lon','')},{intent}")
+    cache_key = f"proactive:{':'.join(loc_parts)}"
+
+    cached = _cache_get(cache_key, 900)
+    if cached is not None:
+        return cached
+
     results = []
     for seed in seeds:
         try:
             results.append(route(seed))
         except Exception as exc:
             results.append({"error": str(exc), "seed": seed})
-    return {"results": results}
+
+    response = {"results": results}
+    _cache_set(cache_key, response)
+    return response
 
 
 # ========== AI BRAIN ENHANCED ENDPOINTS ==========
@@ -1933,11 +2011,14 @@ async def get_ai_insights(user_id: str = Depends(verify_token)):
     - Calculates growth stage alerts
     - Generates variety-aware recommendations
     """
+    # Check cache first (10-minute TTL)
     cache_key = f"insights:{user_id}"
-    cached = _cache_get(cache_key)
+    cached = _cache_get(cache_key, 600)
     if cached is not None:
+        print(f"✅ Cache HIT for ai/insights user={user_id[:8]}...")
         return cached
 
+    print(f"⏳ Cache MISS for ai/insights user={user_id[:8]}... generating fresh")
     from datetime import datetime, date
     from proactive_intelligence import (
         calculate_growth_stage,
