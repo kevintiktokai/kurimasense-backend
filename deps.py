@@ -44,30 +44,90 @@ SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY") or os.environ.get("SUPAB
 
 # ---------------------------------------------------------------------------
 # In-memory response cache (stdlib only, no Redis required)
+#
+# Single source of truth — both deps.py and app.py read/write this dict.
+# Entries are dicts with {"data", "expires_at", "etag"} so we can serve
+# 304 Not Modified responses on conditional GETs.
+#
+# Eviction strategy: lazy TTL — we drop entries on read after expiry.  A
+# soft cap (_MAX_ENTRIES) prevents unbounded growth on cache key explosion;
+# the oldest 25% are dropped when the cap is exceeded.
 # ---------------------------------------------------------------------------
+import threading as _threading
+
 _response_cache: dict = {}
+_cache_lock = _threading.Lock()
 _token_cache: dict = {}
+_MAX_ENTRIES = 5000
+
+
+def _make_etag(data) -> str:
+    """Stable hash for cache payloads (used as ETag)."""
+    try:
+        blob = json.dumps(data, default=str, sort_keys=True).encode()
+    except Exception:
+        blob = repr(data).encode()
+    return hashlib.md5(blob).hexdigest()[:16]
 
 
 def cache_get(key: str):
-    entry = _response_cache.get(key)
-    if not entry:
-        return None
-    data, expires_at = entry
-    if time.time() > expires_at:
-        del _response_cache[key]
-        return None
-    return data
+    """Return the cached payload (without ETag) or None on miss/expiry."""
+    with _cache_lock:
+        entry = _response_cache.get(key)
+        if not entry:
+            return None
+        if time.time() > entry["expires_at"]:
+            _response_cache.pop(key, None)
+            return None
+        return entry["data"]
 
 
-def cache_set(key: str, data, ttl_seconds: int = 300):
-    _response_cache[key] = (data, time.time() + ttl_seconds)
+def cache_get_with_meta(key: str):
+    """Return (data, etag) or (None, None). Used by ETag-aware endpoints."""
+    with _cache_lock:
+        entry = _response_cache.get(key)
+        if not entry:
+            return None, None
+        if time.time() > entry["expires_at"]:
+            _response_cache.pop(key, None)
+            return None, None
+        return entry["data"], entry.get("etag")
+
+
+def cache_set(key: str, data, ttl_seconds: int = 300, etag: Optional[str] = None):
+    """Store a value in the cache with an optional precomputed ETag."""
+    if etag is None:
+        etag = _make_etag(data)
+    with _cache_lock:
+        # Soft cap to avoid unbounded growth.  When tripped, evict the
+        # oldest 25% of entries by expiry timestamp.
+        if len(_response_cache) >= _MAX_ENTRIES:
+            sorted_keys = sorted(
+                _response_cache.items(),
+                key=lambda kv: kv[1].get("expires_at", 0),
+            )
+            for k, _ in sorted_keys[: _MAX_ENTRIES // 4]:
+                _response_cache.pop(k, None)
+        _response_cache[key] = {
+            "data": data,
+            "expires_at": time.time() + ttl_seconds,
+            "etag": etag,
+        }
 
 
 def cache_invalidate_prefix(prefix: str):
-    keys = [k for k in _response_cache if k.startswith(prefix)]
-    for k in keys:
-        del _response_cache[k]
+    with _cache_lock:
+        keys = [k for k in _response_cache if k.startswith(prefix)]
+        for k in keys:
+            _response_cache.pop(k, None)
+
+
+def cache_stats() -> dict:
+    """Diagnostics for /health style endpoints."""
+    with _cache_lock:
+        now = time.time()
+        live = sum(1 for e in _response_cache.values() if now <= e["expires_at"])
+        return {"size": len(_response_cache), "live": live, "max": _MAX_ENTRIES}
 
 
 # ---------------------------------------------------------------------------

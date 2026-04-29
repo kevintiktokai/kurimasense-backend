@@ -19,8 +19,45 @@ DEFAULT_LAT = -17.82
 DEFAULT_LON = 31.05
 
 _http: Optional[httpx.AsyncClient] = None
-_weather_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
-_WEATHER_TTL = 60 * 5  # 5 minutes
+
+# ---------------------------------------------------------------------------
+# Module-local TTL cache for upstream Open-Meteo responses
+#
+# Keyed on (cache-namespace, lat rounded to 2dp, lon rounded to 2dp, *extras).
+# 2dp ≈ 1.1 km, finer than Open-Meteo's grid resolution but coarse enough
+# to deliver a high cache hit rate across users in the same area.
+#
+# A single client makes O(N) Open-Meteo calls per page visit (current,
+# forecast, agricultural, alerts, spray-window, historical, gdd).  The
+# cluster cache turns repeat visits within the TTL into near-zero-latency
+# hits; cross-user calls in the same village also hit the same entry.
+#
+# TTLs are chosen so we re-fetch when source data actually changes:
+#   current      ->  5 min  (Open-Meteo updates hourly anyway)
+#   hourly       -> 10 min
+#   daily        -> 10 min
+#   agricultural -> 30 min  (soil temp/moisture move slowly)
+#   alerts       -> 15 min  (derived from forecast)
+#   spray        -> 15 min
+#   historical   -> 24 hour (year-ago data does not change)
+#   gdd          -> 60 min  (cumulative; one new day per request)
+# ---------------------------------------------------------------------------
+_cluster_cache: Dict[str, Tuple[float, Any]] = {}
+_weather_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}  # legacy
+_WEATHER_TTL = 60 * 5
+
+CLIMATE_TTLS = {
+    "current": 60 * 5,
+    "hourly": 60 * 10,
+    "daily": 60 * 10,
+    "agricultural": 60 * 30,
+    "alerts": 60 * 15,
+    "spray": 60 * 15,
+    "historical": 60 * 60 * 24,
+    "gdd": 60 * 60,
+    "full": 60 * 5,
+}
+
 
 def _get_http() -> httpx.AsyncClient:
     global _http
@@ -28,8 +65,37 @@ def _get_http() -> httpx.AsyncClient:
         _http = httpx.AsyncClient(timeout=httpx.Timeout(connect=5.0, read=15.0, write=10.0, pool=10.0))
     return _http
 
-def _cache_key(lat: float, lon: float) -> str:
-    return f"{round(lat,3)}:{round(lon,3)}"
+
+def _cache_key(lat: float, lon: float, *extras: Any) -> str:
+    """2-decimal rounded geo key plus optional extra discriminators."""
+    base = f"{round(lat, 2)}:{round(lon, 2)}"
+    if extras:
+        base += ":" + ":".join("" if e is None else str(e) for e in extras)
+    return base
+
+
+def _cluster_get(namespace: str, key: str, ttl: int) -> Optional[Any]:
+    entry = _cluster_cache.get(f"{namespace}:{key}")
+    if not entry:
+        return None
+    ts, data = entry
+    if time.time() - ts > ttl:
+        _cluster_cache.pop(f"{namespace}:{key}", None)
+        return None
+    return data
+
+
+def _cluster_set(namespace: str, key: str, data: Any) -> None:
+    _cluster_cache[f"{namespace}:{key}"] = (time.time(), data)
+    # Soft cap to avoid unbounded growth on cache key explosion.
+    if len(_cluster_cache) > 5000:
+        items = sorted(_cluster_cache.items(), key=lambda kv: kv[1][0])
+        for k, _ in items[:1250]:
+            _cluster_cache.pop(k, None)
+
+
+def cluster_cache_stats() -> Dict[str, int]:
+    return {"size": len(_cluster_cache)}
 
 
 def _join_params(params: Dict[str, Any]) -> Dict[str, str]:
@@ -105,6 +171,11 @@ async def get_hourly_forecast(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON
     """
     Get hourly forecast for next N hours (max 168 = 7 days).
     """
+    cache_key = _cache_key(lat, lon, hours)
+    cached = _cluster_get("hourly", cache_key, CLIMATE_TTLS["hourly"])
+    if cached is not None:
+        return cached
+
     params = _join_params({
         "latitude": lat,
         "longitude": lon,
@@ -142,17 +213,24 @@ async def get_hourly_forecast(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON
             "uv_index": hourly.get("uv_index", [])[i] if i < len(hourly.get("uv_index", [])) else None,
         })
     
-    return {
+    result = {
         "location": {"lat": lat, "lon": lon},
         "timezone": data.get("timezone"),
         "hourly": forecast
     }
+    _cluster_set("hourly", cache_key, result)
+    return result
 
 
 async def get_daily_forecast(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON, days: int = 7) -> Dict[str, Any]:
     """
     Get daily forecast for next N days (max 16).
     """
+    cache_key = _cache_key(lat, lon, days)
+    cached = _cluster_get("daily", cache_key, CLIMATE_TTLS["daily"])
+    if cached is not None:
+        return cached
+
     params = _join_params({
         "latitude": lat,
         "longitude": lon,
@@ -203,17 +281,24 @@ async def get_daily_forecast(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON,
             "evapotranspiration": daily.get("et0_fao_evapotranspiration", [])[i] if i < len(daily.get("et0_fao_evapotranspiration", [])) else None,
         })
     
-    return {
+    result = {
         "location": {"lat": lat, "lon": lon},
         "timezone": data.get("timezone"),
         "daily": forecast
     }
+    _cluster_set("daily", cache_key, result)
+    return result
 
 
 async def get_agricultural_metrics(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON) -> Dict[str, Any]:
     """
     Get agricultural-specific metrics: soil moisture, soil temperature, evapotranspiration.
     """
+    cache_key = _cache_key(lat, lon)
+    cached = _cluster_get("agricultural", cache_key, CLIMATE_TTLS["agricultural"])
+    if cached is not None:
+        return cached
+
     params = _join_params({
         "latitude": lat,
         "longitude": lon,
@@ -265,7 +350,7 @@ async def get_agricultural_metrics(lat: float = DEFAULT_LAT, lon: float = DEFAUL
     # Convert soil moisture from m³/m³ to percentage (roughly)
     soil_moisture_pct = round((current_soil_moisture_shallow or 0) * 100, 1) if current_soil_moisture_shallow else None
     
-    return {
+    result = {
         "location": {"lat": lat, "lon": lon},
         "soil_temperature": {
             "surface": current_soil_temp_surface,
@@ -293,6 +378,8 @@ async def get_agricultural_metrics(lat: float = DEFAULT_LAT, lon: float = DEFAUL
             "irrigation_recommendation": get_irrigation_recommendation(water_balance, soil_moisture_pct)
         }
     }
+    _cluster_set("agricultural", cache_key, result)
+    return result
 
 
 async def calculate_gdd(
@@ -325,9 +412,23 @@ async def calculate_gdd(
     from transplant_date, not planting_date. The nursery period (4-6 weeks) is not
     counted towards field GDD accumulation.
     """
+    # Cache GDD results — they only change with the next day's weather.
+    # Key includes everything that materially affects the result so two
+    # different fields with the same params share the cache.
+    today_bucket = datetime.now().strftime("%Y-%m-%d")
+    gdd_cache_key = _cache_key(
+        lat, lon,
+        round(base_temp, 1), start_date or "auto",
+        crop_gdd_requirement, variety or "", transplant_date or "",
+        is_transplanted, crop_type or "", today_bucket,
+    )
+    _gdd_cached = _cluster_get("gdd", gdd_cache_key, CLIMATE_TTLS["gdd"])
+    if _gdd_cached is not None:
+        return _gdd_cached
+
     # Transplanted crops - use transplant_date instead of planting_date
     use_transplant_date = is_transplanted or (crop_type and crop_type in _CANONICAL_TRANSPLANTED)
-    
+
     # Determine effective start date for GDD calculation
     effective_start_date = start_date
     if use_transplant_date and transplant_date:
@@ -413,7 +514,7 @@ async def calculate_gdd(
     if days_to_maturity:
         estimated_maturity_date = (datetime.now() + timedelta(days=days_to_maturity)).strftime("%Y-%m-%d")
     
-    return {
+    gdd_result = {
         "location": {"lat": lat, "lon": lon},
         "base_temperature": base_temp,
         "start_date": effective_start_date,
@@ -427,10 +528,12 @@ async def calculate_gdd(
         "daily_avg_gdd": round(recent_daily_avg, 1),
         "days_to_maturity": days_to_maturity,
         "estimated_maturity_date": estimated_maturity_date,
-        "daily_breakdown": daily_gdd[-14:],  # Last 14 days for chart
+        "daily_breakdown": daily_gdd[-14:],
         "status": get_gdd_status(progress_pct),
-        "tracking_from": "transplant_date" if use_transplant_date else "planting_date"
+        "tracking_from": "transplant_date" if use_transplant_date else "planting_date",
     }
+    _cluster_set("gdd", gdd_cache_key, gdd_result)
+    return gdd_result
 
 
 async def get_weather_alerts(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON) -> Dict[str, Any]:
@@ -439,8 +542,17 @@ async def get_weather_alerts(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON)
     Checks for: frost risk, heat stress, high winds, heavy rain, drought conditions.
     Uses AI-backed professional agronomist recommendations.
     """
-    forecast = await get_daily_forecast(lat, lon, days=7)
-    hourly = await get_hourly_forecast(lat, lon, hours=72)
+    cache_key = _cache_key(lat, lon)
+    cached = _cluster_get("alerts", cache_key, CLIMATE_TTLS["alerts"])
+    if cached is not None:
+        return cached
+
+    # Concurrent under-the-hood fetch — both functions are themselves
+    # cached now, so back-to-back calls re-use in-memory data.
+    forecast, hourly = await asyncio.gather(
+        get_daily_forecast(lat, lon, days=7),
+        get_hourly_forecast(lat, lon, hours=72),
+    )
     
     alerts = []
     
@@ -546,25 +658,32 @@ async def get_weather_alerts(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON)
     severity_order = {"high": 0, "medium": 1, "low": 2}
     alerts.sort(key=lambda x: (severity_order.get(x["severity"], 2), x["date"]))
     
-    return {
+    result = {
         "location": {"lat": lat, "lon": lon},
         "generated_at": datetime.now().isoformat(),
         "alert_count": len(alerts),
         "has_critical": any(a["severity"] == "high" for a in alerts),
         "alerts": alerts[:10]  # Limit to top 10 alerts
     }
+    _cluster_set("alerts", cache_key, result)
+    return result
 
 
 async def get_spray_window(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON, hours: int = 72) -> Dict[str, Any]:
     """
     Calculate optimal spray windows based on weather conditions.
-    
+
     Ideal conditions:
     - Wind speed: 3-10 km/h (too low = poor coverage, too high = drift)
     - No rain in next 6 hours
     - Temperature: 15-28°C
     - Humidity: 40-80%
     """
+    cache_key = _cache_key(lat, lon, hours)
+    cached = _cluster_get("spray", cache_key, CLIMATE_TTLS["spray"])
+    if cached is not None:
+        return cached
+
     hourly_data = await get_hourly_forecast(lat, lon, hours=hours)
     hourly = hourly_data.get("hourly", [])
     
@@ -637,7 +756,7 @@ async def get_spray_window(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON, h
             "status": "ideal"
         })
     
-    return {
+    result = {
         "location": {"lat": lat, "lon": lon},
         "generated_at": datetime.now().isoformat(),
         "ideal_conditions": {
@@ -646,9 +765,11 @@ async def get_spray_window(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON, h
             "humidity": "40-80%",
             "precipitation_probability": "<30%"
         },
-        "ideal_windows": ideal_windows[:5],  # Top 5 ideal windows
+        "ideal_windows": ideal_windows[:5],
         "hourly_breakdown": windows
     }
+    _cluster_set("spray", cache_key, result)
+    return result
 
 
 async def get_historical_comparison(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON) -> Dict[str, Any]:
@@ -656,6 +777,13 @@ async def get_historical_comparison(lat: float = DEFAULT_LAT, lon: float = DEFAU
     Compare current conditions with historical averages for the same period.
     Uses data from 1 year ago for comparison (more relevant for year-over-year performance).
     """
+    # 24-hour TTL — year-ago data does not change.  Bucket by date so a
+    # midnight rollover invalidates yesterday's entry.
+    cache_key = _cache_key(lat, lon, datetime.now().strftime("%Y-%m-%d"))
+    cached = _cluster_get("historical", cache_key, CLIMATE_TTLS["historical"])
+    if cached is not None:
+        return cached
+
     current = await get_current_weather(lat, lon)
     daily = await get_daily_forecast(lat, lon, days=7)
     
@@ -716,7 +844,7 @@ async def get_historical_comparison(lat: float = DEFAULT_LAT, lon: float = DEFAU
     if current_avg_precip is not None and hist_avg_precip is not None and hist_avg_precip > 0:
         precip_deviation = round(((current_avg_precip - hist_avg_precip) / hist_avg_precip) * 100, 1)
     
-    return {
+    result = {
         "location": {"lat": lat, "lon": lon},
         "comparison_period": f"Same week, 1 year ago ({historical_start})",
         "current": {
@@ -737,6 +865,8 @@ async def get_historical_comparison(lat: float = DEFAULT_LAT, lon: float = DEFAU
             "precipitation_text": get_precip_deviation_text(precip_deviation)
         }
     }
+    _cluster_set("historical", cache_key, result)
+    return result
 
 
 # ==================== HELPER FUNCTIONS ====================
@@ -929,9 +1059,20 @@ def get_precip_deviation_text(deviation: Optional[float]) -> str:
 async def get_full_climate_data(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON) -> Dict[str, Any]:
     """
     Get comprehensive climate data in a single call for the dashboard.
-    Combines current weather, forecast, agricultural metrics, and alerts.
+
+    The frontend should prefer this endpoint (mapped to /climate/full) over
+    the six individual ones — it returns the same payload but in one HTTP
+    round-trip and one logical fan-out.
+
+    Each underlying function is independently cached.  Within the 5-minute
+    "full" TTL we serve the entire bundle from this top-level cache so we
+    don't even pay for the asyncio.gather scheduling overhead.
     """
-    # Run all API calls concurrently
+    cache_key = _cache_key(lat, lon)
+    cached = _cluster_get("full", cache_key, CLIMATE_TTLS["full"])
+    if cached is not None:
+        return cached
+
     current, hourly, daily, agricultural, alerts, historical = await asyncio.gather(
         get_current_weather(lat, lon),
         get_hourly_forecast(lat, lon, hours=48),
@@ -941,12 +1082,11 @@ async def get_full_climate_data(lat: float = DEFAULT_LAT, lon: float = DEFAULT_L
         get_historical_comparison(lat, lon),
         return_exceptions=True
     )
-    
-    # Handle any exceptions gracefully
+
     def safe_result(result, default=None):
         return result if not isinstance(result, Exception) else default
-    
-    return {
+
+    result = {
         "current": safe_result(current, {}),
         "hourly": safe_result(hourly, {"hourly": []}),
         "daily": safe_result(daily, {"daily": []}),
@@ -955,6 +1095,8 @@ async def get_full_climate_data(lat: float = DEFAULT_LAT, lon: float = DEFAULT_L
         "historical": safe_result(historical, {}),
         "generated_at": datetime.now().isoformat()
     }
+    _cluster_set("full", cache_key, result)
+    return result
 
 
 # ==================== AI-POWERED AGRONOMIST RECOMMENDATIONS ====================

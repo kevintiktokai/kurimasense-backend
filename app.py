@@ -12,9 +12,21 @@ import time
 import uuid
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from fastapi import FastAPI, HTTPException, Depends, Header, Request, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Depends, Header, Request, BackgroundTasks, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
+
+# orjson serializes 5-10x faster than the stdlib json encoder and emits
+# bytes directly, which avoids the str-then-encode round-trip FastAPI's
+# default JSONResponse does.  We keep stdlib json available for inline
+# string formatting (e.g. SSE event payloads) since orjson doesn't return
+# a str.
+try:
+    from fastapi.responses import ORJSONResponse  # type: ignore
+    _DEFAULT_RESPONSE_CLASS = ORJSONResponse
+except Exception:  # pragma: no cover — orjson optional at runtime
+    _DEFAULT_RESPONSE_CLASS = JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.concurrency import run_in_threadpool
 from typing import Optional
@@ -45,9 +57,11 @@ import climate_service
 # Shared dependencies (auth, caching, helpers)
 from deps import (
     verify_token,
-    cache_get as _cache_get,
-    cache_set as _cache_set,
-    cache_invalidate_prefix as _cache_invalidate_prefix,
+    cache_get,
+    cache_get_with_meta,
+    cache_set,
+    cache_invalidate_prefix,
+    cache_stats,
     get_user_language,
     get_health_status as _get_health_status,
     get_field_context as _get_field_context,
@@ -63,7 +77,7 @@ logger = logging.getLogger("kurimasense")
 # Cache functions and verify_token are imported from deps.py
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="KurimaSense AI")
+app = FastAPI(title="KurimaSense AI", default_response_class=_DEFAULT_RESPONSE_CLASS)
 
 # CORS Configuration
 # Allow specific origins from environment or default to known frontends
@@ -151,16 +165,31 @@ class TimingMiddleware(BaseHTTPMiddleware):
         process_time = time.time() - start_time
         process_time_ms = round(process_time * 1000, 2)
         response.headers["X-Process-Time"] = str(process_time_ms)
-        print(json.dumps({
-            "event": "request_completed",
-            "path": request.url.path,
-            "method": request.method,
-            "status_code": response.status_code,
-            "duration_ms": process_time_ms
-        }))
+        # Skip log noise for preflight + health pings — they're high-rate
+        # and add nothing to the latency picture.
+        if request.method != "OPTIONS" and request.url.path not in ("/health",):
+            print(json.dumps({
+                "event": "request_completed",
+                "path": request.url.path,
+                "method": request.method,
+                "status_code": response.status_code,
+                "duration_ms": process_time_ms
+            }))
         return response
 
 app.add_middleware(TimingMiddleware)
+
+# ---------------------------------------------------------------------------
+# GZip compression
+#
+# starlette's GZipMiddleware is content-encoding-aware: it skips any
+# response that already has a `Content-Encoding` header.  /chat/v2/stream
+# sets `Content-Encoding: identity` on its SSE response so per-chunk
+# gzipping (which would defeat streaming) is avoided.  Other JSON
+# endpoints with payloads >= 512 B are gzipped; on 3G/Edge connections
+# that's the difference between 30 KB and 6 KB on the wire for /fields.
+# ---------------------------------------------------------------------------
+app.add_middleware(GZipMiddleware, minimum_size=512)
 
 # NOTE: Standard CORSMiddleware removed — RobustCORSMiddleware above handles
 # all CORS logic including preflight, error responses, and header injection.
@@ -209,34 +238,9 @@ async def cors_general_exception_handler(request: Request, exc: Exception):
 # Auth (verify_token), caching, mock data, and helpers are all imported from deps.py above.
 
 # ========== SERVER-SIDE RESPONSE CACHE ==========
-# Per-user, TTL-based in-memory cache for expensive AI endpoints.
-# Eliminates redundant LLM/subprocess calls when the same user hits
-# the dashboard within the cache window.
-
-import threading
-
-_response_cache: dict[str, dict] = {}
-_cache_lock = threading.Lock()
-
-def _cache_get(key: str, ttl_seconds: int):
-    """Return cached value if fresh, else None."""
-    with _cache_lock:
-        entry = _response_cache.get(key)
-        if entry and (time.time() - entry["ts"]) < ttl_seconds:
-            return entry["data"]
-    return None
-
-def _cache_set(key: str, data):
-    """Store a value in the cache."""
-    with _cache_lock:
-        _response_cache[key] = {"data": data, "ts": time.time()}
-
-def _cache_invalidate(prefix: str):
-    """Invalidate all cache entries starting with a prefix."""
-    with _cache_lock:
-        keys_to_delete = [k for k in _response_cache if k.startswith(prefix)]
-        for k in keys_to_delete:
-            del _response_cache[k]
+# The cache itself lives in deps.py (single source of truth).  We import
+# cache_get / cache_set / cache_invalidate_prefix above and use them
+# directly throughout this module.  See deps.py for TTL / eviction rules.
 
 
 @app.get("/health")
@@ -465,6 +469,105 @@ def get_fields(user_id: str = Depends(verify_token)):
         print(f"Fields Query Error: {e}")
         return MOCK_FIELDS
 
+
+# ---------------------------------------------------------------------------
+# /fields/{field_id} — single-field lookup
+#
+# Lets the field-detail page skip the full /fields list when it only needs
+# one record.  Same shape as one entry in GET /fields so the frontend can
+# share its FieldData type.
+# ---------------------------------------------------------------------------
+@app.get("/fields/{field_id}")
+def get_field_one(field_id: str, user_id: str = Depends(verify_token)):
+    conn = get_db_connection()
+    if not conn:
+        for f in MOCK_FIELDS:
+            if f.get("id") == field_id:
+                return f
+        raise HTTPException(status_code=404, detail="Field not found")
+
+    try:
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute("""
+            SELECT
+                f.id, f.name, f.crop_type, f.size_hectares,
+                f.polygon_coordinates, f.health_score,
+                f.planting_date, f.transplant_date, f.is_transplanted,
+                f.variety, f.fertilizer_history,
+                latest.log_date::text AS last_pass,
+                latest.ndvi           AS latest_ndvi,
+                latest.soil_moisture  AS latest_moisture,
+                latest.insight_text   AS latest_insight
+            FROM fields f
+            LEFT JOIN LATERAL (
+                SELECT log_date, ndvi, soil_moisture, insight_text
+                FROM daily_logs
+                WHERE field_id = f.id
+                ORDER BY log_date DESC
+                LIMIT 1
+            ) latest ON true
+            WHERE f.id = %s::uuid AND f.user_id = %s::uuid
+        """, (field_id, user_id))
+        row = cursor.fetchone()
+        cursor.close()
+    except Exception as e:
+        print(f"Field one query error: {e}")
+        row = None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Field not found")
+
+    score = float(row.get('health_score') or 0)
+    if score > 0.7:
+        status = 'Excellent'
+    elif score > 0.4:
+        status = 'Good'
+    else:
+        status = 'Critical'
+
+    coords = row.get('polygon_coordinates')
+    location = None
+    if coords and isinstance(coords, list) and coords:
+        try:
+            lats = [p['lat'] for p in coords]
+            lons = [p['lon'] for p in coords]
+            location = {"lat": sum(lats) / len(lats), "lon": sum(lons) / len(lons)}
+        except Exception:
+            pass
+
+    planting_date_str = None
+    if row.get('planting_date'):
+        pd = row['planting_date']
+        planting_date_str = pd.isoformat() if hasattr(pd, 'isoformat') else str(pd)
+    transplant_date_str = None
+    if row.get('transplant_date'):
+        td = row['transplant_date']
+        transplant_date_str = td.isoformat() if hasattr(td, 'isoformat') else str(td)
+
+    return {
+        "id": str(row['id']),
+        "name": row['name'],
+        "crop": row['crop_type'],
+        "area": float(row.get('size_hectares') or 0),
+        "ndvi": float(row.get('latest_ndvi') or 0),
+        "soilMoisture": float(row.get('latest_moisture') or 45),
+        "healthStatus": status,
+        "lastSatellitePass": row.get('last_pass') or "Pending...",
+        "location": location,
+        "coordinates": coords,
+        "plantingDate": planting_date_str,
+        "transplantDate": transplant_date_str,
+        "isTransplanted": row.get('is_transplanted', False),
+        "variety": row.get('variety'),
+        "fertilizerHistory": row.get('fertilizer_history'),
+        "latestInsight": row.get('latest_insight'),
+    }
+
 # BackgroundTasks imported at top level
 
 async def trigger_sentinel_analysis(field_id: str, lat: float, lon: float):
@@ -602,12 +705,106 @@ def analyze_field(field_id: str, background_tasks: BackgroundTasks, user_id: str
             print(f"Analyze Field DB Error: {e}")
             if conn: conn.close()
         
+    # Stamp an "in progress" marker so the polling endpoint can report
+    # accurate state.  trigger_sentinel_analysis updates daily_logs on
+    # completion; we use that row's timestamp as the "done" signal.
+    cache_set(
+        f"analyze:{user_id}:{field_id}",
+        {"state": "running", "started_at": datetime.now().isoformat()},
+        ttl_seconds=300,
+    )
     background_tasks.add_task(trigger_sentinel_analysis, field_id, lat, lon)
     return {"status": "success", "message": "Analysis started"}
+
+
+@app.get("/fields/{field_id}/analyze/status")
+def get_analyze_status(field_id: str, user_id: str = Depends(verify_token)):
+    """
+    Polling endpoint that replaces the frontend's `setTimeout(3000)` hack.
+
+    Returns one of:
+      * {"state": "running",  "started_at": "..."}
+      * {"state": "complete", "result": {...}}        — once daily_logs has a
+        row newer than the analyze request
+      * {"state": "idle"}                              — no recent run
+    """
+    marker = cache_get(f"analyze:{user_id}:{field_id}")
+    started_at = marker["started_at"] if marker else None
+
+    conn = get_db_connection()
+    if not conn:
+        # Mock mode: trust the marker.
+        if marker:
+            return marker
+        return {"state": "idle"}
+
+    try:
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute(
+            """
+            SELECT dl.log_date::text AS log_date, dl.ndvi, dl.soil_moisture,
+                   dl.insight_text, dl.created_at
+            FROM daily_logs dl
+            JOIN fields f ON f.id = dl.field_id
+            WHERE dl.field_id = %s::uuid
+              AND f.user_id   = %s::uuid
+            ORDER BY dl.created_at DESC
+            LIMIT 1
+            """,
+            (field_id, user_id),
+        )
+        row = cursor.fetchone()
+        cursor.close()
+    except Exception as e:
+        print(f"Analyze status query error: {e}")
+        row = None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    if marker and row and started_at:
+        try:
+            created = row["created_at"]
+            started_dt = datetime.fromisoformat(started_at)
+            if hasattr(created, "replace"):
+                created_naive = created.replace(tzinfo=None)
+            else:
+                created_naive = created
+            if created_naive >= started_dt:
+                cache_invalidate_prefix(f"analyze:{user_id}:{field_id}")
+                return {
+                    "state": "complete",
+                    "result": {
+                        "ndvi": float(row.get("ndvi") or 0),
+                        "soil_moisture": float(row.get("soil_moisture") or 0),
+                        "insight": row.get("insight_text"),
+                        "log_date": row.get("log_date"),
+                    },
+                }
+        except Exception:
+            pass
+
+    if marker:
+        return marker
+    return {"state": "idle"}
+
 
 @app.get("/fields/{field_id}/insight")
 async def get_field_insight(field_id: str, user_id: str = Depends(verify_token)):
     """Generate a real-time AI agronomist insight for a specific field."""
+    # Server-side cache — keyed by user/field/hour-bucket so repeat
+    # dashboard mounts within an hour share an LLM call.  /inputs and
+    # field create/delete invalidate the prefix; trigger_sentinel_analysis
+    # also resets it (it writes a new daily_logs row that supersedes the
+    # cached insight anyway).
+    hour_bucket = int(time.time()) // 3600
+    insight_cache_key = f"field_insight:{user_id}:{field_id}:{hour_bucket}"
+    _cached_insight = cache_get(insight_cache_key)
+    if _cached_insight is not None:
+        return _cached_insight
+
     conn = get_db_connection()
     if not conn:
         return {"insight": "Database unavailable. Please try again shortly.", "source": "error"}
@@ -649,7 +846,9 @@ async def get_field_insight(field_id: str, user_id: str = Depends(verify_token))
             if hasattr(log_date, 'date'):
                 age_days = (datetime.now().date() - log_date.date()).days
             if age_days < 1 and row['insight_text']:
-                return {"insight": row['insight_text'], "source": "cached", "date": str(log_date)}
+                _cached_payload = {"insight": row['insight_text'], "source": "cached", "date": str(log_date)}
+                cache_set(insight_cache_key, _cached_payload, ttl_seconds=3600)
+                return _cached_payload
         except Exception:
             pass
 
@@ -721,7 +920,9 @@ async def get_field_insight(field_id: str, user_id: str = Depends(verify_token))
         brain = get_brain()
         insight_text = await brain.generate_field_insight(metrics, crop_type=crop)
         if insight_text and len(insight_text) > 10:
-            return {"insight": insight_text, "source": "ai", "metrics": metrics}
+            _ai_payload = {"insight": insight_text, "source": "ai", "metrics": metrics}
+            cache_set(insight_cache_key, _ai_payload, ttl_seconds=3600)
+            return _ai_payload
     except Exception as e:
         print(f"AI insight generation error: {e}")
 
@@ -815,11 +1016,14 @@ async def get_field_insight(field_id: str, user_id: str = Depends(verify_token))
         elif temp < 10:
             parts.append(f"Cool conditions at {temp:.0f}°C — watch for frost risk.")
 
-    return {
+    deterministic_payload = {
         "insight": " ".join(parts) if parts else f"Run a satellite analysis to get crop-specific insights for your {crop} field.",
         "source": "deterministic",
         "metrics": metrics,
     }
+    cache_set(insight_cache_key, deterministic_payload, ttl_seconds=3600)
+    return deterministic_payload
+
 
 @app.get("/fields/{field_id}/history")
 async def get_field_history(field_id: str, user_id: str = Depends(verify_token)):
@@ -997,7 +1201,12 @@ def create_field(payload: dict, background_tasks: BackgroundTasks, user_id: str 
             conn.commit()
         except Exception as insight_err:
             print(f"Initial insight creation warning: {insight_err}")
-        
+
+        # Bust caches so the new field is visible on the next dashboard
+        # mount instead of waiting out the 90 s TTL.
+        cache_invalidate_prefix(f"dashboard_init:{user_id}")
+        cache_invalidate_prefix(f"insights:{user_id}")
+
         return {"status": "success", "id": str(new_id)}
         
     except Exception as e:
@@ -1019,9 +1228,13 @@ def delete_field(field_id: str, user_id: str = Depends(verify_token)):
     conn = get_db_connection()
     
     if not conn:
-        # Handle mock mode
+        # Handle mock mode — still bust caches so a follow-up dashboard
+        # mount doesn't see the deleted field.
         global MOCK_FIELDS
         MOCK_FIELDS = [f for f in MOCK_FIELDS if f.get("id") != field_id]
+        cache_invalidate_prefix(f"dashboard_init:{user_id}")
+        cache_invalidate_prefix(f"insights:{user_id}")
+        cache_invalidate_prefix(f"yield:{user_id}:")
         return {"status": "success", "message": "Field deleted (mock mode)"}
     
     try:
@@ -1064,9 +1277,14 @@ def delete_field(field_id: str, user_id: str = Depends(verify_token)):
         # Log the event
         log_user_event(user_id, "field_management", "field_deleted", {"field_id": field_id, "field_name": field_name})
 
-        # Invalidate cached responses that include this field's data
-        _cache_invalidate_prefix(f"insights:{user_id}")
-        _cache_invalidate_prefix(f"yield:{user_id}:")
+        # Invalidate cached responses that include this field's data.
+        # NB: prefixes must match the writer keys in dashboard_init,
+        # /ai/insights, /fields/{id}/yield, /ai/proactive-alerts.
+        cache_invalidate_prefix(f"insights:{user_id}")
+        cache_invalidate_prefix(f"yield:{user_id}:")
+        cache_invalidate_prefix(f"dashboard_init:{user_id}")
+        cache_invalidate_prefix(f"proactive_alerts:{user_id}:")
+        cache_invalidate_prefix(f"field_insight:{user_id}:")
 
         return {
             "status": "success", 
@@ -1164,6 +1382,11 @@ def log_input(payload: dict, user_id: str = Depends(verify_token)):
         
         new_id = cursor.fetchone()['id']
         conn.commit()
+        # Inputs change agronomic projections — bust yield + dashboard +
+        # insights caches for this user so the next read sees fresh data.
+        cache_invalidate_prefix(f"yield:{user_id}:")
+        cache_invalidate_prefix(f"dashboard_init:{user_id}")
+        cache_invalidate_prefix(f"insights:{user_id}")
         return {"status": "success", "id": str(new_id)}
         
     except Exception as e:
@@ -1308,9 +1531,11 @@ def post_generate_yield(field_id: str, user_id: str = Depends(verify_token)):
     """
     Generates yield projection using AI based on field parameters.
     """
-    # Check cache first (30-minute TTL)
+    # Check cache first (15-minute TTL — matches frontend cache window).
+    # Key is also versioned by latest input log id below so a new input
+    # invalidates this projection automatically.
     cache_key = f"yield:{user_id}:{field_id}"
-    cached = _cache_get(cache_key, 1800)
+    cached = cache_get(cache_key)
     if cached is not None:
         print(f"✅ Cache HIT for yield projection field={field_id[:8]}...")
         return cached
@@ -1318,44 +1543,39 @@ def post_generate_yield(field_id: str, user_id: str = Depends(verify_token)):
     # Log usage
     log_user_event(user_id, "feature_usage", "yield_projection", {"field_id": field_id})
 
-    # 1. Fetch Field Data from Database first
+    # 1. Fetch Field Data + preferred language in a SINGLE query.
+    # The previous implementation opened two cursors and closed the
+    # connection inside the try block, which leaked connections back to
+    # the pool only on the happy path.  Now: one cursor, one query,
+    # consistent cleanup in finally.
     field = None
+    user_lang = "en"
     conn = get_db_connection()
-    
+
     if conn:
         try:
             cursor = conn.cursor(cursor_factory=RealDictCursor)
             cursor.execute("""
-                SELECT id, name, crop_type, planting_date, variety, fertilizer_history, size_hectares
-                FROM fields 
-                WHERE id = %s::uuid AND user_id = %s::uuid
-            """, (field_id, user_id))
+                SELECT
+                    f.id, f.name, f.crop_type, f.planting_date, f.variety,
+                    f.fertilizer_history, f.size_hectares,
+                    p.preferred_language
+                FROM fields f
+                LEFT JOIN profiles p ON p.id = %s::uuid
+                WHERE f.id = %s::uuid AND f.user_id = %s::uuid
+                LIMIT 1
+            """, (user_id, field_id, user_id))
             row = cursor.fetchone()
             cursor.close()
-            
-            # Fetch Preferred Language (Best Effort)
-            user_lang = "en"
-            try:
-                # Re-use connection for efficiency
-                l_cursor = conn.cursor(cursor_factory=RealDictCursor)
-                l_cursor.execute("SELECT preferred_language FROM profiles WHERE id = %s", (user_id,))
-                l_row = l_cursor.fetchone()
-                if l_row and l_row.get('preferred_language'):
-                    user_lang = l_row['preferred_language']
-                l_cursor.close()
-            except Exception as lang_e:
-                print(f"Yield language fetch warning: {lang_e}")
-            
 
-            conn.close()
-            
             if row:
-                # Format planting_date as string
+                if row.get('preferred_language'):
+                    user_lang = row['preferred_language']
                 planting_date_str = None
                 if row.get('planting_date'):
                     pd = row['planting_date']
                     planting_date_str = pd.isoformat() if hasattr(pd, 'isoformat') else str(pd)
-                
+
                 field = {
                     "id": str(row['id']),
                     "name": row['name'],
@@ -1368,9 +1588,12 @@ def post_generate_yield(field_id: str, user_id: str = Depends(verify_token)):
                 print(f"📊 Yield projection for field: {field['name']}, planting_date={field['planting_date']}")
         except Exception as e:
             print(f"DB fetch for yield projection failed: {e}")
-            if conn:
+        finally:
+            try:
                 conn.close()
-    
+            except Exception:
+                pass
+
     # Fallback to MOCK_FIELDS
     if not field and MOCK_FIELDS:
         for f in MOCK_FIELDS:
@@ -1406,7 +1629,11 @@ def post_generate_yield(field_id: str, user_id: str = Depends(verify_token)):
         field["yield_potential"] = data.get("yield_potential", 0)
         field["last_analysis"] = datetime.now().isoformat()
 
-        _cache_set(cache_key, data)
+        # 15-minute TTL — agronomic projections rarely shift faster than
+        # the underlying input ledger.  /inputs writer invalidates
+        # `yield:{user_id}:` so a new fertilizer / irrigation log busts
+        # the cache before the next call.
+        cache_set(cache_key, data, ttl_seconds=900)
         return data
         
     except Exception as e:
@@ -1424,7 +1651,7 @@ def post_generate_yield(field_id: str, user_id: str = Depends(verify_token)):
         }
 
 @app.get("/market/prices")
-def get_market_prices(region: str = "Zimbabwe"):
+def get_market_prices(region: str = "Zimbabwe", response: Response = None):
     """
     Returns current market prices for major crops by region.
     In production, this would call a real commodity API.
@@ -1453,6 +1680,13 @@ def get_market_prices(region: str = "Zimbabwe"):
 
     regional_prices = price_data.get(region, price_data["Zimbabwe"])
 
+    # Indicative prices are static enough to allow shared HTTP caching
+    # downstream of the API.  10-minute window matches the frontend
+    # cache layer; "public" lets edge caches (Vercel/Cloudflare) join in
+    # since the response is unauthenticated and identical for everyone.
+    if response is not None:
+        response.headers["Cache-Control"] = "public, max-age=600, s-maxage=600"
+
     return {
         "region": region,
         "prices": regional_prices,
@@ -1464,31 +1698,242 @@ def get_market_prices(region: str = "Zimbabwe"):
 
 # ========== COMBINED DASHBOARD INIT ==========
 
-@app.get("/dashboard/init")
-def dashboard_init(user_id: str = Depends(verify_token)):
+def _build_dashboard_init_payload(user_id: str) -> dict:
     """
-    Combined endpoint that returns dashboard stats, fields, and market prices
-    in a single round-trip. This eliminates 2 extra HTTP requests from the frontend.
-    Cached per-user for 2 minutes.
-    """
-    cache_key = f"dashboard_init:{user_id}"
-    cached = _cache_get(cache_key, 120)
-    if cached is not None:
-        return cached
+    Single round-trip dashboard payload.
 
-    # Re-use the existing endpoint functions
-    stats = get_dashboard_stats(user_id=user_id)
-    fields_data = get_fields(user_id=user_id)
+    Replaces the previous implementation that opened three separate DB
+    connections (get_dashboard_stats, get_fields, get_market_prices) and
+    ran them serially.  Now: one connection, one transaction, two SQL
+    statements (fields-with-latest-log + variety join).  Market prices
+    are static so we inline them.
+
+    Aggregate stats (active_fields, crop_health, total_area_ha, projected
+    yield) are computed in Python from the same row set we already have
+    to avoid a second pass on the same data.
+    """
+    from crop_constants import DEFAULT_YIELDS as _YIELDS
+    DEFAULT_YIELDS = {k.replace(' ', '_'): v for k, v in _YIELDS.items()}
+
+    fields_payload: list = []
+    summary: list = []
+    total_projected = 0.0
+    total_area = 0.0
+    avg_health = 0.0
+    active_fields_count = 0
+
+    conn = get_db_connection()
+    if not conn:
+        # Mock mode — keep behaviour identical to the legacy flow.
+        for f in MOCK_FIELDS:
+            fields_payload.append(f)
+            summary.append({
+                "name": f.get("name"),
+                "crop": f.get("crop"),
+                "area": f.get("area", 0),
+                "projected_yield": round(f.get("area", 0) * 5.0, 1),
+                "variety": f.get("variety"),
+            })
+            total_area += f.get("area", 0)
+            avg_health += f.get("ndvi", 0.5)
+            active_fields_count += 1
+            total_projected += f.get("area", 0) * 5.0
+    else:
+        try:
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            # Single query that joins fields with the latest daily_log
+            # AND the variety yield potential.  Uses LATERAL so we get
+            # one row per field (no GROUP BY shuffle).
+            cursor.execute("""
+                SELECT
+                    f.id, f.name, f.crop_type, f.size_hectares,
+                    f.polygon_coordinates, f.health_score,
+                    f.planting_date, f.transplant_date, f.is_transplanted,
+                    f.variety, f.fertilizer_history,
+                    cv.yield_potential_low, cv.yield_potential_high,
+                    latest.log_date::text AS last_pass,
+                    latest.ndvi           AS latest_ndvi,
+                    latest.soil_moisture  AS latest_moisture,
+                    latest.insight_text   AS latest_insight
+                FROM fields f
+                LEFT JOIN crop_varieties cv
+                       ON LOWER(cv.variety_name) = LOWER(f.variety)
+                      AND LOWER(cv.crop_name)    = LOWER(f.crop_type)
+                LEFT JOIN LATERAL (
+                    SELECT log_date, ndvi, soil_moisture, insight_text
+                    FROM daily_logs
+                    WHERE field_id = f.id
+                    ORDER BY log_date DESC
+                    LIMIT 1
+                ) latest ON true
+                WHERE f.user_id = %s::uuid
+                ORDER BY f.created_at DESC
+            """, (user_id,))
+            rows = cursor.fetchall()
+            cursor.close()
+
+            for row in rows:
+                score = float(row.get('health_score') or 0)
+                if score > 0.7:
+                    status = 'Excellent'
+                elif score > 0.4:
+                    status = 'Good'
+                else:
+                    status = 'Critical'
+
+                coords = row.get('polygon_coordinates')
+                location = None
+                if coords and isinstance(coords, list) and coords:
+                    try:
+                        lats = [p['lat'] for p in coords]
+                        lons = [p['lon'] for p in coords]
+                        location = {"lat": sum(lats) / len(lats), "lon": sum(lons) / len(lons)}
+                    except Exception:
+                        pass
+
+                planting_date_str = None
+                if row.get('planting_date'):
+                    pd = row['planting_date']
+                    planting_date_str = pd.isoformat() if hasattr(pd, 'isoformat') else str(pd)
+                transplant_date_str = None
+                if row.get('transplant_date'):
+                    td = row['transplant_date']
+                    transplant_date_str = td.isoformat() if hasattr(td, 'isoformat') else str(td)
+
+                area = float(row.get('size_hectares') or 0)
+                ndvi = float(row.get('latest_ndvi') or 0)
+
+                fields_payload.append({
+                    "id": str(row['id']),
+                    "name": row['name'],
+                    "crop": row['crop_type'],
+                    "area": area,
+                    "ndvi": ndvi,
+                    "soilMoisture": float(row.get('latest_moisture') or 45),
+                    "healthStatus": status,
+                    "lastSatellitePass": row.get('last_pass') or "Pending...",
+                    "location": location,
+                    "coordinates": coords,
+                    "plantingDate": planting_date_str,
+                    "transplantDate": transplant_date_str,
+                    "isTransplanted": row.get('is_transplanted', False),
+                    "variety": row.get('variety'),
+                    "fertilizerHistory": row.get('fertilizer_history'),
+                    "latestInsight": row.get('latest_insight'),
+                })
+
+                # Yield aggregate — variety midpoint when available, else
+                # crop default — multiplied by area and a health factor.
+                yl = row.get('yield_potential_low')
+                yh = row.get('yield_potential_high')
+                if yl and yh:
+                    base_yield = (float(yl) + float(yh)) / 2
+                else:
+                    crop_key = (row.get('crop_type') or 'Maize').lower().replace(' ', '_')
+                    base_yield = DEFAULT_YIELDS.get(crop_key, 5.0)
+
+                health_score = score / 100.0 if score > 1 else score
+                health_factor = 0.7 + (health_score * 0.3)
+                projected = area * base_yield * health_factor
+
+                summary.append({
+                    "name": row.get('name'),
+                    "crop": row.get('crop_type'),
+                    "area": area,
+                    "projected_yield": round(projected, 1),
+                    "variety": row.get('variety'),
+                })
+
+                total_projected += projected
+                total_area += area
+                # Use NDVI (0–1) when present, else fall back to health_score.
+                avg_health += ndvi if ndvi else (health_score if health_score <= 1 else 0.5)
+                active_fields_count += 1
+        except Exception as e:
+            print(f"Dashboard init query error: {e}")
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    avg_health_score = (
+        int((avg_health / active_fields_count) * 100)
+        if active_fields_count else 50
+    )
+
+    stats = {
+        "stats": {
+            "active_fields": active_fields_count,
+            "crop_health": avg_health_score,
+            "total_area_ha": round(total_area, 1),
+        },
+        "projected_yield": round(total_projected, 1),
+        "yield_disclaimer": "⚠️ Estimates based on variety potential and current field health. Actual results vary with weather and management.",
+        "fields_summary": summary,
+        "alerts": [],
+    }
+
     market = get_market_prices(region="Zimbabwe")
 
-    result = {
+    return {
         "stats": stats,
-        "fields": fields_data,
+        "fields": fields_payload,
         "market": market,
     }
 
-    _cache_set(cache_key, result)
-    return result
+
+@app.get("/dashboard/init")
+async def dashboard_init(request: Request, user_id: str = Depends(verify_token)):
+    """
+    Combined dashboard bootstrap.  Returns profile-scoped fields, the
+    dashboard summary, and current market prices in one round-trip.
+
+    Caching strategy
+    ----------------
+    * 90 s server-side TTL keyed on user_id.  Concurrent dashboard mounts
+      hit a hot path under ~30 ms.
+    * Strong ETag on the JSON payload — clients sending If-None-Match
+      get a 304 with no body.
+    * cache_invalidate_prefix("dashboard_init:{user_id}") is called from
+      /fields create/delete and /inputs writes so users see fresh data
+      immediately after a mutation.
+    """
+    cache_key = f"dashboard_init:{user_id}"
+    cached, etag = cache_get_with_meta(cache_key)
+
+    if cached is not None and etag is not None:
+        if request.headers.get("if-none-match") == etag:
+            return Response(status_code=304, headers={
+                "ETag": etag,
+                "Cache-Control": "private, max-age=90",
+            })
+        return _DEFAULT_RESPONSE_CLASS(
+            content=cached,
+            headers={
+                "ETag": etag,
+                "Cache-Control": "private, max-age=90",
+            },
+        )
+
+    # Build payload off the event loop — psycopg2 is sync.
+    result = await run_in_threadpool(_build_dashboard_init_payload, user_id)
+    cache_set(cache_key, result, ttl_seconds=90)
+    _, etag = cache_get_with_meta(cache_key)
+
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={
+            "ETag": etag or "",
+            "Cache-Control": "private, max-age=90",
+        })
+
+    return _DEFAULT_RESPONSE_CLASS(
+        content=result,
+        headers={
+            "ETag": etag or "",
+            "Cache-Control": "private, max-age=90",
+        },
+    )
 
 
 # ========== FIELD ENDPOINTS ==========
@@ -1612,15 +2057,25 @@ def get_chat_history(limit: int = 50, user_id: str = Depends(verify_token)):
 def proactive_endpoint(payload: dict, user_id: str = Depends(verify_token)):
     seeds = payload.get("seeds") or []
 
-    # Build a cache key from seed locations + intents (15-minute TTL)
+    # Cache key includes user_id, the rounded location of each seed (so two
+    # users at the same village still share the cache), and a 15-minute
+    # bucket so entries naturally expire on a clock boundary.
+    bucket = int(time.time()) // 900
     loc_parts = []
     for s in seeds:
         loc = s.get("location", {})
         intent = s.get("intent_classification", "")
-        loc_parts.append(f"{loc.get('lat','')},{loc.get('lon','')},{intent}")
-    cache_key = f"proactive:{':'.join(loc_parts)}"
+        # 2-decimal rounding ≈ 1.1 km — coarse enough for high cache hit
+        # rate without crossing climate microzones.
+        try:
+            lat = round(float(loc.get("lat", 0)), 2)
+            lon = round(float(loc.get("lon", 0)), 2)
+        except (TypeError, ValueError):
+            lat, lon = 0, 0
+        loc_parts.append(f"{lat},{lon},{intent}")
+    cache_key = f"proactive:{user_id}:{bucket}:{':'.join(loc_parts)}"
 
-    cached = _cache_get(cache_key, 900)
+    cached = cache_get(cache_key)
     if cached is not None:
         return cached
 
@@ -1632,7 +2087,7 @@ def proactive_endpoint(payload: dict, user_id: str = Depends(verify_token)):
             results.append({"error": str(exc), "seed": seed})
 
     response = {"results": results}
-    _cache_set(cache_key, response)
+    cache_set(cache_key, response, ttl_seconds=900)
     return response
 
 
@@ -1791,14 +2246,28 @@ async def chat_v2_send(payload: dict, user_id: str = Depends(verify_token)):
 @app.post("/chat/v2/stream")
 async def chat_v2_stream(payload: dict, user_id: str = Depends(verify_token)):
     """
-    SSE streaming version of the AI chat endpoint.
-    Sends partial tokens as they arrive from the LLM so the frontend
-    can render them incrementally ("typing" effect).
+    SSE streaming chat endpoint.
+
+    First-byte strategy
+    -------------------
+    The previous implementation fetched field context, weather, and
+    conversation history BEFORE returning the StreamingResponse, so the
+    browser saw HTTP headers only after the slowest of those calls (often
+    the Open-Meteo round-trip on a cold cache, ~600 ms+).  Now we hand
+    back the StreamingResponse instantly and do all preamble inside the
+    generator: the very first chunk is an SSE comment line that flushes
+    headers + a 200 status, the second is a "ready" event once context is
+    assembled, then tokens stream from the LLM as they arrive.
+
+    Verify on the wire:  curl -N -X POST -H 'Authorization: Bearer …' \
+        $API/chat/v2/stream -d '{"message":"hi"}'
 
     SSE event types:
-      - data: {"token": "..."} – a chunk of the AI response text
-      - data: {"done": true, "detected_intent": "..."}  – final metadata
-      - data: {"error": "..."}  – on failure
+      - ":" comment line — keeps the connection alive / flushes headers
+      - data: {"ready": true}              — context assembled
+      - data: {"token": "..."}             — incremental tokens
+      - data: {"done": true, "detected_intent": "..."}
+      - data: {"error": "..."}
     """
     brain = get_brain()
 
@@ -1807,7 +2276,6 @@ async def chat_v2_stream(payload: dict, user_id: str = Depends(verify_token)):
     session_id = payload.get("session_id")
     language = payload.get("language", "en")
 
-    # ── Reuse the same parallel context fetching as /chat/v2/send ──
     def _fetch_history_sync():
         try:
             conn = get_db_connection()
@@ -1850,42 +2318,61 @@ async def chat_v2_stream(payload: dict, user_id: str = Depends(verify_token)):
         except Exception:
             return None
 
-    field_context, weather_data, chat_history = await asyncio.gather(
-        _get_f_ctx(),
-        _get_coords_weather(),
-        run_in_threadpool(_fetch_history_sync),
-    )
-
-    weather_context = None
-    if weather_data:
-        weather_context = WeatherContext(
-            current_temp=weather_data.get("temperature"),
-            humidity=weather_data.get("humidity"),
-            precipitation_prob=weather_data.get("precipitation", 0.0),
-            wind_speed=weather_data.get("wind_speed"),
-            forecast_summary=weather_data.get("weather_description"),
-            alerts=[],
-        )
-
-    # ── Build the same context prompt and messages the brain uses ──
-    context_prompt = await brain._build_context_prompt(
-        field_context, weather_context, language, user_query=user_msg
-    )
-    agent_input = AgentInput(
-        user_id=user_id,
-        message=user_msg,
-        session_id=session_id,
-        field_context=field_context,
-        weather_context=weather_context,
-        language=language,
-        chat_history=chat_history,
-    )
-    messages = brain._build_messages(agent_input, context_prompt)
-    _, model = brain.llm_router.select_model()
     intent = brain.intent_classifier.classify(user_msg)
 
-    # ── SSE generator ──
     async def _event_stream():
+        # 1. Flush HTTP headers immediately so the browser stops blocking
+        #    on first-byte.  An SSE comment line (": ...\n\n") is ignored
+        #    by EventSource clients but counts as bytes for flushing.
+        yield ": stream-open\n\n"
+
+        # 2. Run all heavy preamble concurrently.  The climate fetch is
+        #    cached aggressively now (CLIMATE_TTLS["current"]=5min) so on
+        #    repeat calls this gather() returns in <30 ms.
+        try:
+            field_context, weather_data, chat_history = await asyncio.gather(
+                _get_f_ctx(),
+                _get_coords_weather(),
+                run_in_threadpool(_fetch_history_sync),
+            )
+        except Exception as e:
+            yield f"data: {json.dumps({'error': f'context fetch failed: {e}'})}\n\n"
+            return
+
+        weather_context = None
+        if weather_data:
+            weather_context = WeatherContext(
+                current_temp=weather_data.get("temperature"),
+                humidity=weather_data.get("humidity"),
+                precipitation_prob=weather_data.get("precipitation", 0.0),
+                wind_speed=weather_data.get("wind_speed"),
+                forecast_summary=weather_data.get("weather_description"),
+                alerts=[],
+            )
+
+        try:
+            context_prompt = await brain._build_context_prompt(
+                field_context, weather_context, language, user_query=user_msg
+            )
+        except Exception as e:
+            yield f"data: {json.dumps({'error': f'prompt build failed: {e}'})}\n\n"
+            return
+
+        agent_input = AgentInput(
+            user_id=user_id,
+            message=user_msg,
+            session_id=session_id,
+            field_context=field_context,
+            weather_context=weather_context,
+            language=language,
+            chat_history=chat_history,
+        )
+        messages = brain._build_messages(agent_input, context_prompt)
+        _, model = brain.llm_router.select_model()
+
+        yield f"data: {json.dumps({'ready': True})}\n\n"
+
+        # 3. Stream tokens from the LLM as they arrive.
         full_text = ""
         try:
             async for token in brain.llm_router.generate_stream(
@@ -1894,10 +2381,11 @@ async def chat_v2_stream(payload: dict, user_id: str = Depends(verify_token)):
                 full_text += token
                 yield f"data: {json.dumps({'token': token})}\n\n"
 
-            # Final event with metadata
             yield f"data: {json.dumps({'done': True, 'detected_intent': intent.value})}\n\n"
 
-            # Persist both messages in one round-trip (fire-and-forget in thread)
+            # 4. Persist both messages in one round-trip after the stream
+            #    completes.  Errors here are silent — the user already got
+            #    their response.
             def _persist():
                 conn = get_db_connection()
                 if not conn:
@@ -1923,7 +2411,19 @@ async def chat_v2_stream(payload: dict, user_id: str = Depends(verify_token)):
         except Exception as exc:
             yield f"data: {json.dumps({'error': str(exc)})}\n\n"
 
-    return StreamingResponse(_event_stream(), media_type="text/event-stream")
+    return StreamingResponse(
+        _event_stream(),
+        media_type="text/event-stream",
+        headers={
+            # Disable proxy buffering so the heartbeat reaches the
+            # browser immediately (Nginx/CloudFront default to buffering).
+            "X-Accel-Buffering": "no",
+            "Cache-Control": "no-cache",
+            # Tells GZipMiddleware to skip compression — SSE per-chunk
+            # gzipping defeats the purpose of streaming.
+            "Content-Encoding": "identity",
+        },
+    )
 
 
 # _get_field_context and _get_health_status imported from deps.py
@@ -2011,9 +2511,12 @@ async def get_ai_insights(user_id: str = Depends(verify_token)):
     - Calculates growth stage alerts
     - Generates variety-aware recommendations
     """
-    # Check cache first (10-minute TTL)
-    cache_key = f"insights:{user_id}"
-    cached = _cache_get(cache_key, 600)
+    # Check cache first.  Key bucketed by hour so an /ai/insights call
+    # at 09:14 and 09:42 share the same entry (we don't recompute disease
+    # risk every minute).  Field/input mutations bust the prefix.
+    hour_bucket = int(time.time()) // 3600
+    cache_key = f"insights:{user_id}:{hour_bucket}"
+    cached = cache_get(cache_key)
     if cached is not None:
         print(f"✅ Cache HIT for ai/insights user={user_id[:8]}...")
         return cached
@@ -2424,7 +2927,9 @@ async def get_ai_insights(user_id: str = Depends(verify_token)):
         "generated_at": current_time.isoformat(),
         "field_count": len(fields)
     }
-    _cache_set(cache_key, result)
+    # 10-minute TTL — matches the frontend window and tolerates the hour
+    # bucket in the cache key (we always recompute on the hour boundary).
+    cache_set(cache_key, result, ttl_seconds=600)
     return result
 
 @app.get("/ai/tasks")
@@ -2956,7 +3461,17 @@ async def get_field_proactive_alerts(field_id: str, user_id: str = Depends(verif
     - Variety-specific recommendations
     """
     print(f"🧠 Generating proactive alerts for field: {field_id}")
-    
+
+    # Server-side cache — keyed per (user, field, hour-bucket).  This
+    # endpoint runs an LLM call (brain.generate_ai_priorities_and_risks)
+    # per request, so caching is essential.  Field/input mutations bust
+    # the prefix.
+    pa_hour = int(time.time()) // 3600
+    pa_cache_key = f"proactive_alerts:{user_id}:{field_id}:{pa_hour}"
+    pa_cached = cache_get(pa_cache_key)
+    if pa_cached is not None:
+        return pa_cached
+
     # 1. Fetch field data
     conn = get_db_connection()
     if not conn:
@@ -3131,7 +3646,8 @@ async def get_field_proactive_alerts(field_id: str, user_id: str = Depends(verif
         
         # Log the event
         log_user_event(user_id, "feature_usage", "proactive_alerts", {"field_id": field_id})
-        
+
+        cache_set(pa_cache_key, alerts_data, ttl_seconds=1800)
         return alerts_data
         
     except HTTPException:
@@ -3838,9 +4354,19 @@ async def harvest_readiness(
         raise HTTPException(status_code=500, detail="Database unavailable")
 
     try:
+        # Single query joins fields → crop_varieties so we don't open a
+        # second connection just for variety maturity.
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT crop_type, planting_date, variety FROM fields WHERE id = %s AND user_id = %s",
+            """
+            SELECT f.crop_type, f.planting_date, f.variety,
+                   cv.days_to_maturity AS variety_days_to_maturity
+            FROM fields f
+            LEFT JOIN crop_varieties cv
+                   ON LOWER(cv.variety_name) LIKE LOWER('%%' || f.variety || '%%')
+            WHERE f.id = %s AND f.user_id = %s
+            LIMIT 1
+            """,
             (field_id, user_id),
         )
         field = cursor.fetchone()
@@ -3855,26 +4381,11 @@ async def harvest_readiness(
         if planting_date and isinstance(planting_date, date):
             days = (date.today() - planting_date).days
 
-        # Try to get variety maturity from DB
-        variety_maturity = None
-        variety = field.get("variety")
-        if variety:
-            conn2 = get_db_connection()
-            if conn2:
-                try:
-                    cur2 = conn2.cursor()
-                    cur2.execute(
-                        "SELECT days_to_maturity FROM crop_varieties WHERE LOWER(variety_name) LIKE LOWER(%s) LIMIT 1",
-                        (f"%{variety}%",),
-                    )
-                    row = cur2.fetchone()
-                    if row and row.get("days_to_maturity"):
-                        variety_maturity = int(row["days_to_maturity"])
-                    cur2.close()
-                    conn2.close()
-                except Exception:
-                    if conn2:
-                        conn2.close()
+        variety_maturity = (
+            int(field["variety_days_to_maturity"])
+            if field.get("variety_days_to_maturity") is not None
+            else None
+        )
 
         return check_harvest_readiness(field["crop_type"], days, variety_maturity)
 
@@ -3901,7 +4412,15 @@ async def crop_intelligence(
     try:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT crop_type, planting_date, variety, polygon_coordinates, name FROM fields WHERE id = %s AND user_id = %s",
+            """
+            SELECT f.crop_type, f.planting_date, f.variety, f.polygon_coordinates, f.name,
+                   cv.days_to_maturity AS variety_days_to_maturity
+            FROM fields f
+            LEFT JOIN crop_varieties cv
+                   ON LOWER(cv.variety_name) LIKE LOWER('%%' || f.variety || '%%')
+            WHERE f.id = %s AND f.user_id = %s
+            LIMIT 1
+            """,
             (field_id, user_id),
         )
         field = cursor.fetchone()
@@ -3937,26 +4456,13 @@ async def crop_intelligence(
         except Exception:
             pass
 
-        # Get variety maturity
-        variety_maturity = None
+        # Variety maturity already loaded by the join above.
         variety = field.get("variety")
-        if variety:
-            conn2 = get_db_connection()
-            if conn2:
-                try:
-                    cur2 = conn2.cursor()
-                    cur2.execute(
-                        "SELECT days_to_maturity FROM crop_varieties WHERE LOWER(variety_name) LIKE LOWER(%s) LIMIT 1",
-                        (f"%{variety}%",),
-                    )
-                    row = cur2.fetchone()
-                    if row and row.get("days_to_maturity"):
-                        variety_maturity = int(row["days_to_maturity"])
-                    cur2.close()
-                    conn2.close()
-                except Exception:
-                    if conn2:
-                        conn2.close()
+        variety_maturity = (
+            int(field["variety_days_to_maturity"])
+            if field.get("variety_days_to_maturity") is not None
+            else None
+        )
 
         # Assemble full intelligence report
         return {

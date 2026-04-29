@@ -219,12 +219,25 @@ def init_db():
                 )
             """)
             
-            # Performance indexes — created once, idempotent via IF NOT EXISTS
+            # Performance indexes — created once, idempotent via IF NOT EXISTS.
+            # Mirrors db/migrations/002_perf_indexes.sql so a fresh deploy gets
+            # the same hot-path coverage even if the migration is not applied
+            # out-of-band.
             cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_fields_user_id      ON fields(user_id);
-                CREATE INDEX IF NOT EXISTS idx_daily_logs_field_id ON daily_logs(field_id);
-                CREATE INDEX IF NOT EXISTS idx_daily_logs_field_date ON daily_logs(field_id, log_date DESC);
-                CREATE INDEX IF NOT EXISTS idx_farm_tasks_user_date ON farm_tasks(user_id, task_date);
+                CREATE INDEX IF NOT EXISTS idx_fields_user_id          ON fields(user_id);
+                CREATE INDEX IF NOT EXISTS idx_fields_user_created     ON fields(user_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_fields_id_user          ON fields(id, user_id);
+                CREATE INDEX IF NOT EXISTS idx_daily_logs_field_id     ON daily_logs(field_id);
+                CREATE INDEX IF NOT EXISTS idx_daily_logs_field_date   ON daily_logs(field_id, log_date DESC);
+                CREATE INDEX IF NOT EXISTS idx_field_inputs_field_date ON field_inputs(field_id, input_date DESC);
+                CREATE INDEX IF NOT EXISTS idx_field_inputs_user_id    ON field_inputs(user_id);
+                CREATE INDEX IF NOT EXISTS idx_chat_logs_user_created  ON chat_logs(user_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_chat_logs_user_field    ON chat_logs(user_id, field_context_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_farm_tasks_user_date    ON farm_tasks(user_id, task_date);
+                CREATE INDEX IF NOT EXISTS idx_farm_tasks_field        ON farm_tasks(field_id);
+                CREATE INDEX IF NOT EXISTS idx_farm_tasks_user_completed_priority
+                    ON farm_tasks(user_id, completed, priority);
+                CREATE INDEX IF NOT EXISTS idx_user_events_user_id     ON user_events(user_id, created_at DESC);
             """)
 
             conn.commit()
