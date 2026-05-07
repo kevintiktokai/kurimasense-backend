@@ -9,3 +9,5 @@ tiktoken
 PyJWT
 httpx
 cryptography
+shapely
+pyproj
