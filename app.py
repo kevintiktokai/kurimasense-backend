@@ -162,6 +162,10 @@ class TimingMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(TimingMiddleware)
 
+# B2B portfolio API (X-API-Key auth, scoped to api_keys.tenant_id).
+from routers.portfolio import router as portfolio_router
+app.include_router(portfolio_router)
+
 # NOTE: Standard CORSMiddleware removed — RobustCORSMiddleware above handles
 # all CORS logic including preflight, error responses, and header injection.
 # Having two CORS middlewares caused duplicate headers and unpredictable behavior.

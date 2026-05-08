@@ -112,3 +112,96 @@ class UpdateFarmTaskRequest(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     priority: Optional[str] = None
+
+
+# ========== Portfolio (B2B) Schemas ==========
+
+class ConfidenceBand(BaseModel):
+    low: float
+    mid: float
+    high: float
+
+
+class DistrictForecast(BaseModel):
+    district_name: str
+    n_fields: int
+    total_area_ha: float
+    projected_yield_tonnes_per_ha: float
+    confidence_score: float
+    confidence_band: ConfidenceBand
+
+
+class PortfolioYieldForecastResponse(BaseModel):
+    tenant_id: str
+    crop: str
+    districts: List[DistrictForecast]
+
+
+class RiskDistribution(BaseModel):
+    low: int
+    medium: int
+    high: int
+    critical: int
+
+
+class FieldAlert(BaseModel):
+    field_id: str
+    risk_level: str
+    primary_concern: str
+
+
+class PortfolioRiskSummaryResponse(BaseModel):
+    tenant_id: str
+    total_fields: int
+    risk_distribution: RiskDistribution
+    fields_with_alerts: List[FieldAlert]
+
+
+class FieldAnomaly(BaseModel):
+    field_id: str
+    index: str
+    days_back: int
+    earlier_mean: float
+    recent_mean: float
+    drop: float
+
+
+class PortfolioAnomaliesResponse(BaseModel):
+    tenant_id: str
+    threshold: float
+    days_back: int
+    anomalies: List[FieldAnomaly]
+
+
+class IndicesHistoryPoint(BaseModel):
+    log_date: date
+    ndvi: Optional[float] = None
+    evi: Optional[float] = None
+    ndre: Optional[float] = None
+    ndmi: Optional[float] = None
+    savi: Optional[float] = None
+    vv_db: Optional[float] = None
+    vh_db: Optional[float] = None
+    cloud_pct: Optional[float] = None
+    observation_quality: Optional[str] = None
+
+
+class IndicesHistoryResponse(BaseModel):
+    field_id: str
+    start_date: date
+    end_date: date
+    points: List[IndicesHistoryPoint]
+
+
+class RiskScoreRequest(BaseModel):
+    field_ids: List[str] = Field(..., min_length=1, max_length=500)
+
+
+class FieldRiskScore(BaseModel):
+    score: float = Field(..., ge=0.0, le=1.0)
+    primary_factors: List[str]
+
+
+class RiskScoreResponse(BaseModel):
+    tenant_id: str
+    scores: Dict[str, FieldRiskScore]
