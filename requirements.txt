@@ -11,3 +11,5 @@ httpx
 cryptography
 shapely
 pyproj
+tqdm
+earthengine-api
