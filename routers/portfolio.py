@@ -1,16 +1,16 @@
 """
 B2B portfolio API.
 
-All endpoints are scoped to a tenant_id and require an X-API-Key header.
-The key is hashed (SHA-256) and matched against the api_keys table; the row
-must be active, unexpired, and bound to the tenant in the URL.
+All endpoints require an X-API-Key header. The key is parsed, looked up
+in api_keys (by key_id_hex), and bcrypt-verified; the resolved
+ApiKeyContext.tenant_id must equal the tenant_id in the URL — see
+services.auth.api_key_auth.get_api_key_context for the full flow.
 
 Pure-Python helpers (e.g. risk classification, anomaly diff math) live in
 this module so tests can exercise them without spinning up FastAPI.
 """
 from __future__ import annotations
 
-import hashlib
 import logging
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
@@ -36,6 +36,7 @@ from schemas import (
     RiskScoreRequest,
     RiskScoreResponse,
 )
+from services.auth import ApiKeyContext, get_api_key_context
 
 logger = logging.getLogger(__name__)
 
@@ -43,60 +44,20 @@ router = APIRouter(tags=["portfolio"])
 
 
 # --------------------------------------------------------------------------- #
-# Auth
+# Auth — wrap the shared dependency with a tenant-id path-match check
 # --------------------------------------------------------------------------- #
 
-def _hash_api_key(raw: str) -> str:
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
-
-def _now_utc() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def verify_api_key(
+def require_tenant_match(
     tenant_id: str = Path(..., description="Tenant UUID this key must be bound to"),
-    x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
-) -> str:
-    """
-    FastAPI dependency. Returns the validated tenant_id, or raises 401.
-    """
-    if not x_api_key:
+    ctx: ApiKeyContext = Depends(get_api_key_context),
+) -> ApiKeyContext:
+    """Enforces that the key's tenant matches the tenant_id in the URL."""
+    if str(ctx.tenant_id) != str(tenant_id):
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing X-API-Key header",
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="API key does not match tenant",
         )
-    conn = get_db_connection()
-    if conn is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Database unavailable",
-        )
-    try:
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
-        cursor.execute(
-            """
-            SELECT tenant_id, expires_at, is_active
-            FROM api_keys
-            WHERE key_hash = %s
-            """,
-            (_hash_api_key(x_api_key),),
-        )
-        row = cursor.fetchone()
-        cursor.close()
-    finally:
-        conn.close()
-
-    if not row:
-        raise HTTPException(401, "Invalid API key")
-    if not row.get("is_active"):
-        raise HTTPException(401, "API key is disabled")
-    expires_at = row.get("expires_at")
-    if expires_at is not None and expires_at < _now_utc():
-        raise HTTPException(401, "API key has expired")
-    if str(row.get("tenant_id")) != str(tenant_id):
-        raise HTTPException(403, "API key does not match tenant")
-    return tenant_id
+    return ctx
 
 
 # --------------------------------------------------------------------------- #
@@ -341,7 +302,7 @@ def yield_forecast(
     tenant_id: str = Path(...),
     crop: Optional[str] = Query(default=None),
     as_of_date: Optional[date] = Query(default=None),
-    _auth: str = Depends(verify_api_key),
+    _ctx: ApiKeyContext = Depends(require_tenant_match),
 ) -> PortfolioYieldForecastResponse:
     """Aggregate per-district yield projection for a tenant."""
     conn = get_db_connection()
@@ -402,7 +363,7 @@ def yield_forecast(
 )
 def risk_summary(
     tenant_id: str = Path(...),
-    _auth: str = Depends(verify_api_key),
+    _ctx: ApiKeyContext = Depends(require_tenant_match),
 ) -> PortfolioRiskSummaryResponse:
     conn = get_db_connection()
     if conn is None:
@@ -444,7 +405,7 @@ def anomalies(
     tenant_id: str = Path(...),
     days_back: int = Query(default=14, ge=2, le=90),
     threshold: float = Query(default=0.15, gt=0.0, le=1.0),
-    _auth: str = Depends(verify_api_key),
+    _ctx: ApiKeyContext = Depends(require_tenant_match),
 ) -> PortfolioAnomaliesResponse:
     conn = get_db_connection()
     if conn is None:
@@ -487,39 +448,26 @@ def field_indices_history(
     field_id: str = Path(...),
     start_date: date = Query(...),
     end_date: date = Query(...),
-    x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
+    ctx: ApiKeyContext = Depends(get_api_key_context),
 ) -> IndicesHistoryResponse:
     """
-    Field endpoint isn't tenant-scoped in the URL, so we authenticate the key
-    and require that the field belongs to the key's tenant.
+    Field endpoint isn't tenant-scoped in the URL, so we authenticate via
+    the shared dependency and then require that the field belongs to the
+    key's tenant before returning any data.
     """
-    if not x_api_key:
-        raise HTTPException(401, "Missing X-API-Key header")
     conn = get_db_connection()
     if conn is None:
         raise HTTPException(503, "Database unavailable")
     try:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute(
-            """
-            SELECT a.tenant_id, a.is_active, a.expires_at, f.user_id
-            FROM api_keys a
-            LEFT JOIN fields f ON f.id = %s::uuid
-            WHERE a.key_hash = %s
-            """,
-            (field_id, _hash_api_key(x_api_key)),
+            "SELECT user_id FROM fields WHERE id = %s::uuid",
+            (field_id,),
         )
         row = cursor.fetchone()
-        if not row:
-            raise HTTPException(401, "Invalid API key")
-        if not row.get("is_active"):
-            raise HTTPException(401, "API key is disabled")
-        expires_at = row.get("expires_at")
-        if expires_at is not None and expires_at < _now_utc():
-            raise HTTPException(401, "API key has expired")
-        if row.get("user_id") is None:
+        if row is None:
             raise HTTPException(404, "Field not found")
-        if str(row["user_id"]) != str(row["tenant_id"]):
+        if str(row["user_id"]) != str(ctx.tenant_id):
             raise HTTPException(403, "Field does not belong to API key tenant")
 
         rows = _fetch_field_indices_history(cursor, field_id, start_date, end_date)
@@ -543,7 +491,7 @@ def field_indices_history(
 def risk_score(
     body: RiskScoreRequest,
     tenant_id: str = Path(...),
-    _auth: str = Depends(verify_api_key),
+    _ctx: ApiKeyContext = Depends(require_tenant_match),
 ) -> RiskScoreResponse:
     """Per-field risk scores for a list of field IDs (bank-facing)."""
     conn = get_db_connection()

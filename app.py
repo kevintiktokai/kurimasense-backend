@@ -162,9 +162,40 @@ class TimingMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(TimingMiddleware)
 
-# B2B portfolio API (X-API-Key auth, scoped to api_keys.tenant_id).
+# B2B portfolio API (X-API-Key auth, scoped to api_keys.tenant_id) +
+# admin endpoints for issuing/revoking keys, plus per-key rate limiting.
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from starlette.requests import Request as _StarletteRequest
+from starlette.responses import JSONResponse as _SlowapiJSONResponse
+
+from services.auth import (
+    DEFAULT_PER_DAY,
+    DEFAULT_PER_MINUTE,
+    api_key_rate_limit_key,
+)
 from routers.portfolio import router as portfolio_router
+from routers.admin_api_keys import router as admin_api_keys_router
+
+api_key_limiter = Limiter(
+    key_func=api_key_rate_limit_key,
+    default_limits=[f"{DEFAULT_PER_MINUTE}/minute", f"{DEFAULT_PER_DAY}/day"],
+)
+app.state.limiter = api_key_limiter
+
+
+def _rate_limit_handler(request: _StarletteRequest, exc: RateLimitExceeded) -> _SlowapiJSONResponse:
+    return _SlowapiJSONResponse(
+        status_code=429,
+        content={"detail": f"Rate limit exceeded: {exc.detail}"},
+    )
+
+
+app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
+app.add_middleware(SlowAPIMiddleware)
 app.include_router(portfolio_router)
+app.include_router(admin_api_keys_router)
 
 # NOTE: Standard CORSMiddleware removed — RobustCORSMiddleware above handles
 # all CORS logic including preflight, error responses, and header injection.

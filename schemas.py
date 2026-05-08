@@ -205,3 +205,42 @@ class FieldRiskScore(BaseModel):
 class RiskScoreResponse(BaseModel):
     tenant_id: str
     scores: Dict[str, FieldRiskScore]
+
+
+# ========== Admin: API key management ==========
+
+class CreateApiKeyRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    expires_days: Optional[int] = Field(default=None, gt=0, le=3650)
+    rate_limit_per_minute: Optional[int] = Field(default=None, gt=0, le=100_000)
+    rate_limit_per_day: Optional[int] = Field(default=None, gt=0, le=10_000_000)
+
+
+class CreateApiKeyResponse(BaseModel):
+    key_id: str
+    tenant_id: str
+    name: str
+    raw_key: str  # shown ONCE; never reproducible after this response
+    expires_at: Optional[str] = None
+
+
+class ApiKeyMetadata(BaseModel):
+    id: str
+    tenant_id: str
+    name: str
+    created_at: Optional[str] = None
+    expires_at: Optional[str] = None
+    last_used_at: Optional[str] = None
+    is_active: bool
+    rate_limit_override: Optional[Dict[str, Any]] = None
+    key_id_hex: Optional[str] = None
+
+
+class ListApiKeysResponse(BaseModel):
+    tenant_id: str
+    keys: List[ApiKeyMetadata]
+
+
+class RevokeApiKeyResponse(BaseModel):
+    key_id: str
+    revoked: bool

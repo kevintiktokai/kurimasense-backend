@@ -13,3 +13,5 @@ shapely
 pyproj
 tqdm
 earthengine-api
+bcrypt
+slowapi
