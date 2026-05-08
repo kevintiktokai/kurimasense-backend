@@ -77,16 +77,30 @@ class SentinelHubClient:
         base_delay: float = DEFAULT_BASE_DELAY,
         max_delay: float = DEFAULT_MAX_DELAY,
     ) -> None:
-        self._client_id = client_id or os.environ.get("SH_CLIENT_ID")
-        self._client_secret = client_secret or os.environ.get("SH_CLIENT_SECRET")
+        # Canonical env var names match the wider backend (SATELLITE_API_*).
+        # SH_* are kept as a fallback for back-compat with earlier deployments.
+        self._client_id = (
+            client_id
+            or os.environ.get("SATELLITE_API_CLIENT_ID")
+            or os.environ.get("SH_CLIENT_ID")
+        )
+        self._client_secret = (
+            client_secret
+            or os.environ.get("SATELLITE_API_CLIENT_SECRET")
+            or os.environ.get("SH_CLIENT_SECRET")
+        )
         if not self._client_id or not self._client_secret:
             raise SentinelHubAuthError(
-                "SH_CLIENT_ID and SH_CLIENT_SECRET must be set in the environment "
-                "or passed explicitly to SentinelHubClient."
+                "SATELLITE_API_CLIENT_ID and SATELLITE_API_CLIENT_SECRET "
+                "(or the legacy SH_CLIENT_ID / SH_CLIENT_SECRET) must be set "
+                "in the environment or passed explicitly to SentinelHubClient."
             )
 
         if monthly_pu_quota is None:
-            monthly_pu_quota = float(os.environ.get("SH_MONTHLY_PU_QUOTA", "30000"))
+            monthly_pu_quota = float(
+                os.environ.get("SATELLITE_API_MONTHLY_PU_QUOTA")
+                or os.environ.get("SH_MONTHLY_PU_QUOTA", "30000")
+            )
         self._monthly_pu_quota = monthly_pu_quota
 
         self._http = http_client

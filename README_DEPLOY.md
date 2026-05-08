@@ -70,9 +70,9 @@ The daily worker (`workers/daily_ingestion.py`) pulls Sentinel Hub statistics fo
 | Variable | Required | Notes |
 |----------|----------|-------|
 | `DATABASE_URL` | yes | Same Supabase pooler URL the API uses. |
-| `SH_CLIENT_ID` | yes | Sentinel Hub OAuth2 client id. |
-| `SH_CLIENT_SECRET` | yes | Sentinel Hub OAuth2 client secret. |
-| `SH_MONTHLY_PU_QUOTA` | no | Defaults to `30000`. Worker raises `SentinelHubQuotaError` once usage exceeds 80 %. |
+| `SATELLITE_API_CLIENT_ID` | yes | Sentinel Hub OAuth2 client id. (Legacy name `SH_CLIENT_ID` also accepted.) |
+| `SATELLITE_API_CLIENT_SECRET` | yes | Sentinel Hub OAuth2 client secret. (Legacy name `SH_CLIENT_SECRET` also accepted.) |
+| `SATELLITE_API_MONTHLY_PU_QUOTA` | no | Defaults to `30000`. Worker raises `SentinelHubQuotaError` once usage exceeds 80 %. (Legacy name `SH_MONTHLY_PU_QUOTA` also accepted.) |
 | `GEE_SERVICE_ACCOUNT_KEY` | optional | Path to a service-account JSON. Only needed for the on-demand backfill (`workers/backfill_ingestion.py`); not used by the daily worker. |
 
 ### Option A — Cron (in-container)
@@ -99,13 +99,13 @@ For deployments running directly on a Linux host, use the systemd unit + timer i
 sudo cp deployment/systemd/kurima-ingestion.service /etc/systemd/system/
 sudo cp deployment/systemd/kurima-ingestion.timer   /etc/systemd/system/
 
-# Service env file (chmod 600 to protect SH_CLIENT_SECRET)
+# Service env file (chmod 600 to protect SATELLITE_API_CLIENT_SECRET)
 sudo install -m 600 /dev/null /etc/default/kurima-ingestion
 sudo tee /etc/default/kurima-ingestion >/dev/null <<'EOF'
 DATABASE_URL=postgres://...
-SH_CLIENT_ID=...
-SH_CLIENT_SECRET=...
-SH_MONTHLY_PU_QUOTA=30000
+SATELLITE_API_CLIENT_ID=...
+SATELLITE_API_CLIENT_SECRET=...
+SATELLITE_API_MONTHLY_PU_QUOTA=30000
 EOF
 
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin kurima || true

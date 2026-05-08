@@ -8,9 +8,11 @@
 #
 # Required environment variables (placed in /etc/cron.d via root crontab or
 # loaded from /etc/default/kurima-ingestion):
-#   DATABASE_URL, SH_CLIENT_ID, SH_CLIENT_SECRET
+#   DATABASE_URL, SATELLITE_API_CLIENT_ID, SATELLITE_API_CLIENT_SECRET
 # Optional:
-#   SH_MONTHLY_PU_QUOTA  (default 30000)
+#   SATELLITE_API_MONTHLY_PU_QUOTA  (default 30000)
+# Legacy names SH_CLIENT_ID / SH_CLIENT_SECRET / SH_MONTHLY_PU_QUOTA are
+# also accepted as a fallback.
 
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin

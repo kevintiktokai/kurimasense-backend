@@ -76,8 +76,13 @@ EVALSCRIPT = "// dummy"
 # --------------------------------------------------------------------------- #
 
 def test_missing_credentials_raises(monkeypatch):
-    monkeypatch.delenv("SH_CLIENT_ID", raising=False)
-    monkeypatch.delenv("SH_CLIENT_SECRET", raising=False)
+    for var in (
+        "SATELLITE_API_CLIENT_ID",
+        "SATELLITE_API_CLIENT_SECRET",
+        "SH_CLIENT_ID",
+        "SH_CLIENT_SECRET",
+    ):
+        monkeypatch.delenv(var, raising=False)
     with pytest.raises(SentinelHubAuthError):
         SentinelHubClient()
 
