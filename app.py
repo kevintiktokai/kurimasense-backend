@@ -177,6 +177,7 @@ from services.auth import (
 )
 from routers.portfolio import router as portfolio_router
 from routers.admin_api_keys import router as admin_api_keys_router
+from routers.health import router as health_router
 
 api_key_limiter = Limiter(
     key_func=api_key_rate_limit_key,
@@ -196,6 +197,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
 app.add_middleware(SlowAPIMiddleware)
 app.include_router(portfolio_router)
 app.include_router(admin_api_keys_router)
+app.include_router(health_router)
 
 # NOTE: Standard CORSMiddleware removed — RobustCORSMiddleware above handles
 # all CORS logic including preflight, error responses, and header injection.

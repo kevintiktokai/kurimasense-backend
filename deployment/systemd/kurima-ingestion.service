@@ -1,0 +1,25 @@
+[Unit]
+Description=KurimaSense daily satellite ingestion worker
+Documentation=https://github.com/kevintiktokai/kurimasense-backend/blob/main/README_DEPLOY.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Drop privileges to a non-root service user. Create with:
+#   sudo useradd --system --no-create-home --shell /usr/sbin/nologin kurima
+User=kurima
+Group=kurima
+WorkingDirectory=/app
+EnvironmentFile=/etc/default/kurima-ingestion
+ExecStart=/usr/bin/python /app/workers/daily_ingestion.py
+StandardOutput=append:/var/log/kurima_ingestion.log
+StandardError=append:/var/log/kurima_ingestion.log
+# Hardening
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+ReadWritePaths=/var/log
+# Surface non-zero exits in `systemctl status`
+RemainAfterExit=no

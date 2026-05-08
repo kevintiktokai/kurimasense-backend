@@ -1,0 +1,15 @@
+[Unit]
+Description=Run KurimaSense satellite ingestion daily at 03:00 UTC
+Documentation=https://github.com/kevintiktokai/kurimasense-backend/blob/main/README_DEPLOY.md
+
+[Timer]
+# OnCalendar uses the system time zone; force UTC explicitly.
+OnCalendar=*-*-* 03:00:00 UTC
+# If the machine was off at 03:00, run it as soon as it comes back up.
+Persistent=true
+# Avoid every node firing simultaneously across a fleet.
+RandomizedDelaySec=300
+Unit=kurima-ingestion.service
+
+[Install]
+WantedBy=timers.target

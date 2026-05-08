@@ -1,0 +1,19 @@
+# KurimaSense daily satellite ingestion.
+#
+# Runs every day at 03:00 UTC. Logs are appended to
+# /var/log/kurima_ingestion.log; rotate via /etc/logrotate.d/kurima-ingestion
+# (see README_DEPLOY.md). The worker is idempotent — it skips fields whose
+# last successful ingestion is < 12 hours old, so a missed run is recovered
+# automatically on the next invocation.
+#
+# Required environment variables (placed in /etc/cron.d via root crontab or
+# loaded from /etc/default/kurima-ingestion):
+#   DATABASE_URL, SH_CLIENT_ID, SH_CLIENT_SECRET
+# Optional:
+#   SH_MONTHLY_PU_QUOTA  (default 30000)
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MAILTO=""
+
+0 3 * * * /usr/bin/python /app/workers/daily_ingestion.py >> /var/log/kurima_ingestion.log 2>&1
