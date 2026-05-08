@@ -197,3 +197,93 @@ def get_water_requirement(crop_name: str, default: float = 500.0) -> float:
 def is_transplanted(crop_name: str) -> bool:
     """Check if a crop is transplanted (vs direct-seeded)."""
     return crop_name.strip() in TRANSPLANTED_CROPS
+
+
+# ---------------------------------------------------------------------------
+# Per-crop / per-stage weights for the satellite index ensemble used by the
+# yield model. Indices: ndvi, evi, ndre, ndmi, savi, sar.
+#
+# Stages (bucketed from growth_stage_percent):
+#   - vegetative   : 0   ≤ pct < 40
+#   - reproductive : 40  ≤ pct < 70
+#   - grain_fill   : 70  ≤ pct ≤ 100  (used for any "ripening / fill" phase)
+#
+# Weights for a given (crop, stage) MUST sum to 1.0. The ensemble factor is
+# Σ(weight_i × per_index_factor_i). Per-index factors live in yield_model.py.
+#
+# Choices reflect crop physiology:
+#   - tobacco      : NDRE emphasis grows late season (canopy chlorophyll /
+#                    nitrogen status driving leaf quality at topping & cure).
+#   - maize        : NDMI emphasis during grain fill (kernel water content /
+#                    end-of-season drought stress is the main yield lever).
+#   - cotton       : NDRE consistently high — boll set & retention track
+#                    canopy nitrogen status, which red-edge captures best.
+#   - soybean      : NDMI rises in reproductive (R3-R5 pod fill is moisture
+#                    sensitive); NDVI saturates so its share drops late.
+#   - sorghum      : NDVI dominant early; NDMI shares with NDVI later as
+#                    the crop is grown in drier zones.
+#   - groundnuts   : NDMI heavy throughout — pod fill is highly moisture
+#                    dependent and crop sits low in the canopy.
+#   - wheat        : NDRE in reproductive (head emergence to anthesis); NDMI
+#                    during grain fill matters for protein/test weight.
+# ---------------------------------------------------------------------------
+INDEX_NAMES: list[str] = ["ndvi", "evi", "ndre", "ndmi", "savi", "sar"]
+
+
+CROP_INDEX_WEIGHTS: dict[str, dict[str, dict[str, float]]] = {
+    "maize": {
+        "vegetative":   {"ndvi": 0.40, "evi": 0.20, "ndre": 0.15, "ndmi": 0.15, "savi": 0.05, "sar": 0.05},
+        "reproductive": {"ndvi": 0.30, "evi": 0.20, "ndre": 0.20, "ndmi": 0.20, "savi": 0.05, "sar": 0.05},
+        "grain_fill":   {"ndvi": 0.20, "evi": 0.15, "ndre": 0.15, "ndmi": 0.35, "savi": 0.05, "sar": 0.10},
+    },
+    "tobacco": {
+        "vegetative":   {"ndvi": 0.35, "evi": 0.20, "ndre": 0.20, "ndmi": 0.15, "savi": 0.05, "sar": 0.05},
+        "reproductive": {"ndvi": 0.25, "evi": 0.15, "ndre": 0.30, "ndmi": 0.20, "savi": 0.05, "sar": 0.05},
+        "grain_fill":   {"ndvi": 0.15, "evi": 0.10, "ndre": 0.40, "ndmi": 0.25, "savi": 0.05, "sar": 0.05},
+    },
+    "cotton": {
+        "vegetative":   {"ndvi": 0.30, "evi": 0.20, "ndre": 0.25, "ndmi": 0.15, "savi": 0.05, "sar": 0.05},
+        "reproductive": {"ndvi": 0.25, "evi": 0.15, "ndre": 0.30, "ndmi": 0.20, "savi": 0.05, "sar": 0.05},
+        "grain_fill":   {"ndvi": 0.20, "evi": 0.15, "ndre": 0.30, "ndmi": 0.25, "savi": 0.05, "sar": 0.05},
+    },
+    "soybean": {
+        "vegetative":   {"ndvi": 0.35, "evi": 0.25, "ndre": 0.15, "ndmi": 0.15, "savi": 0.05, "sar": 0.05},
+        "reproductive": {"ndvi": 0.25, "evi": 0.20, "ndre": 0.15, "ndmi": 0.30, "savi": 0.05, "sar": 0.05},
+        "grain_fill":   {"ndvi": 0.20, "evi": 0.15, "ndre": 0.15, "ndmi": 0.35, "savi": 0.05, "sar": 0.10},
+    },
+    "sorghum": {
+        "vegetative":   {"ndvi": 0.40, "evi": 0.20, "ndre": 0.10, "ndmi": 0.20, "savi": 0.05, "sar": 0.05},
+        "reproductive": {"ndvi": 0.30, "evi": 0.15, "ndre": 0.15, "ndmi": 0.30, "savi": 0.05, "sar": 0.05},
+        "grain_fill":   {"ndvi": 0.20, "evi": 0.10, "ndre": 0.15, "ndmi": 0.40, "savi": 0.05, "sar": 0.10},
+    },
+    "groundnuts": {
+        "vegetative":   {"ndvi": 0.30, "evi": 0.20, "ndre": 0.15, "ndmi": 0.25, "savi": 0.05, "sar": 0.05},
+        "reproductive": {"ndvi": 0.20, "evi": 0.15, "ndre": 0.15, "ndmi": 0.35, "savi": 0.05, "sar": 0.10},
+        "grain_fill":   {"ndvi": 0.15, "evi": 0.10, "ndre": 0.15, "ndmi": 0.40, "savi": 0.05, "sar": 0.15},
+    },
+    "wheat": {
+        "vegetative":   {"ndvi": 0.40, "evi": 0.20, "ndre": 0.15, "ndmi": 0.15, "savi": 0.05, "sar": 0.05},
+        "reproductive": {"ndvi": 0.25, "evi": 0.15, "ndre": 0.30, "ndmi": 0.20, "savi": 0.05, "sar": 0.05},
+        "grain_fill":   {"ndvi": 0.20, "evi": 0.10, "ndre": 0.20, "ndmi": 0.35, "savi": 0.05, "sar": 0.10},
+    },
+}
+
+
+# Default weights for any crop missing from CROP_INDEX_WEIGHTS.
+DEFAULT_INDEX_WEIGHTS: dict[str, dict[str, float]] = {
+    "vegetative":   {"ndvi": 0.40, "evi": 0.20, "ndre": 0.15, "ndmi": 0.15, "savi": 0.05, "sar": 0.05},
+    "reproductive": {"ndvi": 0.30, "evi": 0.20, "ndre": 0.20, "ndmi": 0.20, "savi": 0.05, "sar": 0.05},
+    "grain_fill":   {"ndvi": 0.25, "evi": 0.15, "ndre": 0.15, "ndmi": 0.30, "savi": 0.05, "sar": 0.10},
+}
+
+
+def get_index_weights(crop_name: str, stage_bucket: str) -> dict[str, float]:
+    """
+    Return the index-weight dict for a (crop, stage_bucket) pair.
+
+    Falls back to DEFAULT_INDEX_WEIGHTS[stage_bucket] when the crop has no
+    bespoke weights. Stage names: vegetative, reproductive, grain_fill.
+    """
+    crop_key = crop_name.lower().strip()
+    table = CROP_INDEX_WEIGHTS.get(crop_key, DEFAULT_INDEX_WEIGHTS)
+    return table.get(stage_bucket, DEFAULT_INDEX_WEIGHTS[stage_bucket])

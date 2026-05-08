@@ -19,7 +19,12 @@ import json
 
 from database import get_db_connection
 from proactive_intelligence import get_variety_info, calculate_growth_stage
-from crop_constants import CROP_BASE_TEMPS as _CANONICAL_BASE_TEMPS, CROP_WATER_REQUIREMENTS as _CANONICAL_WATER
+from crop_constants import (
+    CROP_BASE_TEMPS as _CANONICAL_BASE_TEMPS,
+    CROP_WATER_REQUIREMENTS as _CANONICAL_WATER,
+    INDEX_NAMES,
+    get_index_weights,
+)
 
 
 @dataclass
@@ -158,6 +163,246 @@ def calculate_ndvi_factor(ndvi_history: List[float]) -> Tuple[float, str]:
         explanation += " (declining trend detected)"
     
     return round(factor, 2), explanation
+
+
+# ---------------------------------------------------------------------------
+# Multi-index ensemble factor
+# ---------------------------------------------------------------------------
+
+ENSEMBLE_RECENT_DAYS = 7   # recency window for averaging each index
+SAR_FALLBACK_WINDOW = 14   # window over which we measure optical reliability
+SAR_FALLBACK_BAD_RATIO = 0.5  # >50% non-good ⇒ boost SAR weight
+
+
+def _stage_bucket(growth_stage_percent: float) -> str:
+    """Map progress_percent to one of: vegetative, reproductive, grain_fill."""
+    if growth_stage_percent < 40:
+        return "vegetative"
+    if growth_stage_percent < 70:
+        return "reproductive"
+    return "grain_fill"
+
+
+def _ndvi_factor(mean: float) -> float:
+    """Same shape as the legacy NDVI factor, kept consistent across indices."""
+    if mean < 0.2:
+        return 0.6
+    if mean < 0.4:
+        return 0.75
+    if mean < 0.6:
+        return 0.9
+    if mean < 0.8:
+        return 1.0
+    return 1.1
+
+
+def _evi_factor(mean: float) -> float:
+    # EVI typically tops out lower than NDVI for the same canopy.
+    if mean < 0.15:
+        return 0.65
+    if mean < 0.3:
+        return 0.8
+    if mean < 0.45:
+        return 0.95
+    if mean < 0.65:
+        return 1.05
+    return 1.1
+
+
+def _ndre_factor(mean: float) -> float:
+    # NDRE saturates later than NDVI; healthy crops sit around 0.25-0.45.
+    if mean < 0.10:
+        return 0.65
+    if mean < 0.20:
+        return 0.85
+    if mean < 0.35:
+        return 1.0
+    if mean < 0.50:
+        return 1.08
+    return 1.1
+
+
+def _ndmi_factor(mean: float) -> float:
+    # NDMI tracks moisture / leaf water content; <0 dry stress, ~0.3 healthy.
+    if mean < 0.0:
+        return 0.65
+    if mean < 0.15:
+        return 0.85
+    if mean < 0.35:
+        return 1.0
+    if mean < 0.55:
+        return 1.05
+    return 1.0  # >0.55 may indicate saturation/waterlogging — neutral.
+
+
+def _savi_factor(mean: float) -> float:
+    # SAVI scales similarly to NDVI but a touch lower over sparse canopies.
+    if mean < 0.15:
+        return 0.6
+    if mean < 0.35:
+        return 0.8
+    if mean < 0.55:
+        return 0.95
+    if mean < 0.75:
+        return 1.05
+    return 1.1
+
+
+def _sar_factor(vv_db_mean: float) -> float:
+    # VV backscatter increases with biomass / canopy roughness. Typical agricultural
+    # range is roughly -16 dB (bare/wet) up to -7 dB (dense). Values outside that
+    # band collapse toward the boundary factor.
+    if vv_db_mean is None:
+        return 1.0
+    if vv_db_mean < -16:
+        return 0.85
+    if vv_db_mean < -13:
+        return 0.95
+    if vv_db_mean < -9:
+        return 1.0
+    return 1.05
+
+
+_INDEX_FACTOR_FUNCS: Dict[str, Any] = {
+    "ndvi": _ndvi_factor,
+    "evi":  _evi_factor,
+    "ndre": _ndre_factor,
+    "ndmi": _ndmi_factor,
+    "savi": _savi_factor,
+    "sar":  _sar_factor,
+}
+
+
+def _extract_index_value(row: Dict[str, Any], index_name: str) -> Optional[float]:
+    """
+    Pull a scalar value for `index_name` from a daily_logs row's `indices`
+    JSONB blob. Tolerates missing keys, scalar/dict shapes, and the legacy
+    top-level ndvi column.
+    """
+    indices = row.get("indices") if isinstance(row, dict) else None
+    if not isinstance(indices, dict):
+        if index_name == "ndvi":
+            v = row.get("ndvi") if isinstance(row, dict) else None
+            return _to_float(v)
+        return None
+
+    if index_name == "sar":
+        sar = indices.get("sar") or {}
+        return _to_float(sar.get("vv_db"))
+
+    optical = indices.get("optical") or {}
+    val = optical.get(index_name)
+    if isinstance(val, dict):
+        # Backfill writer ships {"mean": .., "p10": .., ...}; fall back to mean.
+        val = val.get("mean")
+    if val is None and index_name == "ndvi":
+        val = row.get("ndvi") if isinstance(row, dict) else None
+    return _to_float(val)
+
+
+def _to_float(v: Any) -> Optional[float]:
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _recent_mean(indices_history: List[Dict[str, Any]], index_name: str, n: int) -> Optional[float]:
+    """Mean of the last n non-null values for a given index across the history."""
+    values: List[float] = []
+    for row in indices_history[-n:]:
+        v = _extract_index_value(row, index_name)
+        if v is not None:
+            values.append(v)
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
+def _is_optical_sparse(indices_history: List[Dict[str, Any]]) -> bool:
+    """
+    Returns True when more than 50% of the last 14 observations have
+    observation_quality != 'good'. Empty windows count as sparse.
+    """
+    window = indices_history[-SAR_FALLBACK_WINDOW:]
+    if not window:
+        return True
+    bad = sum(
+        1 for r in window
+        if (r.get("observation_quality") or "").lower() != "good"
+    )
+    return bad / len(window) > SAR_FALLBACK_BAD_RATIO
+
+
+def calculate_index_ensemble_factor(
+    indices_history: List[Dict[str, Any]],
+    crop: str,
+    growth_stage_percent: float,
+) -> Tuple[float, str, Dict[str, float]]:
+    """
+    Multi-index yield-adjustment factor.
+
+    indices_history: list of daily_logs-shaped rows ordered oldest → newest.
+        Each row should expose `indices` (the JSONB blob), and optionally
+        `observation_quality` for the SAR fallback heuristic.
+    crop: crop name (case-insensitive).
+    growth_stage_percent: 0..100, used to pick the stage bucket and weights.
+
+    Returns (combined_factor, explanation, per_index_factors). The combined
+    factor lives in roughly [0.6, 1.15] — the same band as the legacy NDVI
+    factor. per_index_factors maps each index in the ensemble to its
+    individual factor (defaulting to 1.0 when no data).
+    """
+    if not indices_history:
+        return 0.85, "No satellite data available (using conservative estimate)", {}
+
+    bucket = _stage_bucket(growth_stage_percent)
+    weights = dict(get_index_weights(crop, bucket))
+
+    if _is_optical_sparse(indices_history) and weights.get("sar", 0) > 0:
+        weights["sar"] *= 2.0
+    weight_sum = sum(weights.values()) or 1.0
+    weights = {k: v / weight_sum for k, v in weights.items()}
+
+    per_index_factors: Dict[str, float] = {}
+    used_indices: List[str] = []
+    contributions: List[Tuple[str, float, float]] = []  # (name, factor, weight)
+    total_weight_used = 0.0
+    weighted_sum = 0.0
+
+    for name in INDEX_NAMES:
+        weight = weights.get(name, 0.0)
+        if weight <= 0:
+            continue
+        mean = _recent_mean(indices_history, name, ENSEMBLE_RECENT_DAYS)
+        if mean is None:
+            per_index_factors[name] = 1.0
+            continue
+        factor_func = _INDEX_FACTOR_FUNCS[name]
+        factor = factor_func(mean)
+        per_index_factors[name] = round(factor, 3)
+        weighted_sum += weight * factor
+        total_weight_used += weight
+        contributions.append((name, factor, weight))
+        used_indices.append(name)
+
+    if total_weight_used == 0:
+        return 0.85, "Indices history present but no usable per-index means", per_index_factors
+
+    combined = weighted_sum / total_weight_used  # renormalise across actually-used indices
+    combined = round(combined, 3)
+
+    contributions.sort(key=lambda c: c[2] * c[1], reverse=True)
+    top = contributions[:3]
+    explanation = (
+        f"{bucket.replace('_', ' ')} stage; ensemble of "
+        f"{', '.join(used_indices)}: " +
+        ", ".join(f"{n}={f:.2f}@w{w:.2f}" for n, f, w in top)
+    )
+
+    return combined, explanation, per_index_factors
 
 
 def calculate_water_factor(
@@ -359,7 +604,8 @@ def generate_yield_projection(
     weather_data: Optional[Dict[str, Any]] = None,
     cumulative_rainfall_mm: float = 0.0,
     transplant_date: Optional[date] = None,
-    is_transplanted: bool = False
+    is_transplanted: bool = False,
+    indices_history: Optional[List[Dict[str, Any]]] = None,
 ) -> YieldProjection:
     """
     Generate agronomically-grounded yield projection.
@@ -414,7 +660,21 @@ def generate_yield_projection(
     region, region_multiplier = get_regional_multiplier(avg_lat, avg_lon, crop)
     
     # 4. Calculate individual adjustment factors
-    ndvi_factor, ndvi_explanation = calculate_ndvi_factor(ndvi_history or [])
+    ensemble_factor: Optional[float] = None
+    ensemble_explanation: Optional[str] = None
+    per_index_factors: Dict[str, float] = {}
+    if indices_history:
+        ensemble_factor, ensemble_explanation, per_index_factors = (
+            calculate_index_ensemble_factor(
+                indices_history=indices_history,
+                crop=crop,
+                growth_stage_percent=growth_stage.progress_percent,
+            )
+        )
+        ndvi_factor = round(ensemble_factor, 2)
+        ndvi_explanation = ensemble_explanation
+    else:
+        ndvi_factor, ndvi_explanation = calculate_ndvi_factor(ndvi_history or [])
     water_factor, water_explanation = calculate_water_factor(
         cumulative_rainfall_mm, 
         growth_stage.days_since_planting,
@@ -448,15 +708,22 @@ def generate_yield_projection(
     yield_high = max(projected_yield, yield_high)
     
     # 7. Calculate confidence score
+    has_satellite = bool(indices_history) or bool(ndvi_history)
+    sat_count = len(indices_history) if indices_history else (
+        len(ndvi_history) if ndvi_history else 0
+    )
     confidence_score, confidence_factors = calculate_confidence_score(
         has_variety_data=variety_info is not None,
-        has_ndvi=bool(ndvi_history),
-        ndvi_count=len(ndvi_history) if ndvi_history else 0,
+        has_ndvi=has_satellite,
+        ndvi_count=sat_count,
         has_weather=weather_data is not None,
         has_inputs=bool(fertilizer_history and fertilizer_history.strip()),
         days_since_planting=growth_stage.days_since_planting,
         growth_stage_percent=growth_stage.progress_percent
     )
+    if per_index_factors:
+        used = ", ".join(sorted(per_index_factors.keys())).upper()
+        confidence_factors.append(f"✓ Ensemble indices: {used}")
     
     # 8. Generate yield gap analysis
     potential_yield = base_yield_high * region_multiplier
@@ -497,14 +764,26 @@ def generate_yield_projection(
         confidence_score=confidence_score,
         confidence_factors=confidence_factors,
         yield_gap_analysis=yield_gap_analysis,
-        methodology="KurimaSense Agronomic Model v1.0 - variety-grounded",
+        methodology=(
+            "KurimaSense Agronomic Model v1.1 - variety-grounded + index ensemble"
+            if per_index_factors
+            else "KurimaSense Agronomic Model v1.0 - variety-grounded"
+        ),
         adjustment_factors={
             "region_multiplier": region_multiplier,
             "ndvi_factor": ndvi_factor,
             "water_factor": water_factor,
             "input_factor": input_factor,
             "variety_factor": variety_factor,
-            "combined_factor": round(combined_factor, 3)
+            "combined_factor": round(combined_factor, 3),
+            **(
+                {"index_ensemble_factor": round(ensemble_factor, 3)}
+                if ensemble_factor is not None else {}
+            ),
+            **(
+                {"per_index_factors": per_index_factors}
+                if per_index_factors else {}
+            ),
         },
         disclaimer=YIELD_DISCLAIMER.strip()
     )
@@ -543,5 +822,6 @@ __all__ = [
     'YieldProjection',
     'generate_yield_projection',
     'get_field_ndvi_history',
-    'YIELD_DISCLAIMER'
+    'calculate_index_ensemble_factor',
+    'YIELD_DISCLAIMER',
 ]
