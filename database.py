@@ -53,8 +53,9 @@ def _get_pool() -> ThreadedConnectionPool | None:
         return None
 
     try:
-        # Tune maxconn based on your instance size.
-        _POOL = ThreadedConnectionPool(minconn=1, maxconn=10, dsn=db_url)
+        # Increased from 10 → 20 to handle concurrent AI insight requests
+        # (each /ai/insights call uses up to 5 connections with current patterns)
+        _POOL = ThreadedConnectionPool(minconn=2, maxconn=20, dsn=db_url)
         return _POOL
     except Exception as e:
         print(f"CRITICAL: DB Pool init failed: {e}")
@@ -221,10 +222,18 @@ def init_db():
             
             # Performance indexes — created once, idempotent via IF NOT EXISTS
             cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_fields_user_id      ON fields(user_id);
-                CREATE INDEX IF NOT EXISTS idx_daily_logs_field_id ON daily_logs(field_id);
+                CREATE INDEX IF NOT EXISTS idx_fields_user_id        ON fields(user_id);
+                CREATE INDEX IF NOT EXISTS idx_daily_logs_field_id   ON daily_logs(field_id);
                 CREATE INDEX IF NOT EXISTS idx_daily_logs_field_date ON daily_logs(field_id, log_date DESC);
-                CREATE INDEX IF NOT EXISTS idx_farm_tasks_user_date ON farm_tasks(user_id, task_date);
+                CREATE INDEX IF NOT EXISTS idx_farm_tasks_user_date  ON farm_tasks(user_id, task_date);
+
+                -- NEW: Critical indexes for slow queries identified in performance audit
+                CREATE INDEX IF NOT EXISTS idx_chat_logs_user_date   ON chat_logs(user_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_chat_logs_user_field  ON chat_logs(user_id, field_context_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_field_inputs_field    ON field_inputs(field_id, input_date DESC);
+                CREATE INDEX IF NOT EXISTS idx_farm_tasks_user_status ON farm_tasks(user_id, completed, priority);
+                CREATE INDEX IF NOT EXISTS idx_user_events_user      ON user_events(user_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_daily_logs_user       ON daily_logs(user_id, log_date DESC);
             """)
 
             conn.commit()
@@ -239,26 +248,39 @@ def init_db():
     else:
         print("❌ Database connection failed. App will run in degraded/mock mode.")
 
-def log_user_event(user_id: str, event_type: str, event_name: str, event_data: dict = None):
-    """
-    Log a user event (feature usage) to the database.
-    """
+import threading
+import json as _json
+
+def _log_user_event_sync(user_id: str, event_type: str, event_name: str, event_data: dict = None):
+    """Internal sync implementation of event logging."""
     conn = get_db_connection()
     if not conn: return
-    
+
     try:
-        import json
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO user_events (user_id, event_type, event_name, event_data)
             VALUES (%s, %s, %s, %s)
-        """, (user_id, event_type, event_name, json.dumps(event_data) if event_data else '{}'))
+        """, (user_id, event_type, event_name, _json.dumps(event_data) if event_data else '{}'))
         conn.commit()
         cursor.close()
         conn.close()
     except Exception as e:
         print(f"Failed to log user event: {e}")
         if conn: conn.close()
+
+
+def log_user_event(user_id: str, event_type: str, event_name: str, event_data: dict = None):
+    """
+    Log a user event (feature usage) to the database.
+    Runs in a background thread so it never blocks the HTTP response.
+    """
+    t = threading.Thread(
+        target=_log_user_event_sync,
+        args=(user_id, event_type, event_name, event_data),
+        daemon=True,
+    )
+    t.start()
 
 def get_recent_field_activity(field_id: str, limit: int = 5) -> list:
     """

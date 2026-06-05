@@ -62,6 +62,12 @@ def cache_get(key: str):
 
 def cache_set(key: str, data, ttl_seconds: int = 300):
     _response_cache[key] = (data, time.time() + ttl_seconds)
+    # Evict expired entries when cache grows too large
+    if len(_response_cache) > 100:
+        now = time.time()
+        stale = [k for k, (_, exp) in _response_cache.items() if now > exp]
+        for k in stale:
+            del _response_cache[k]
 
 
 def cache_invalidate_prefix(prefix: str):
@@ -301,13 +307,21 @@ async def get_field_context(field_id: str, user_id: str) -> FieldContext:
 
     try:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
+        # Use LEFT JOIN LATERAL instead of 2 correlated subqueries — single index scan
         cursor.execute("""
             SELECT
                 f.name, f.crop_type, f.planting_date, f.variety, f.health_score,
                 f.transplant_date, f.is_transplanted,
-                (SELECT ndvi FROM daily_logs WHERE field_id = f.id ORDER BY log_date DESC LIMIT 1) as current_ndvi,
-                (SELECT soil_moisture FROM daily_logs WHERE field_id = f.id ORDER BY log_date DESC LIMIT 1) as soil_moisture
+                latest.ndvi as current_ndvi,
+                latest.soil_moisture as soil_moisture
             FROM fields f
+            LEFT JOIN LATERAL (
+                SELECT ndvi, soil_moisture
+                FROM daily_logs
+                WHERE field_id = f.id
+                ORDER BY log_date DESC
+                LIMIT 1
+            ) latest ON true
             WHERE f.id = %s::uuid AND f.user_id = %s
         """, (field_id, user_id))
 
