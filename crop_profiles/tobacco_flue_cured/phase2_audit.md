@@ -11,14 +11,24 @@ BLOCKER halts Phase 2.
 - `crop_profiles/tobacco_flue_cured/variety_database.json` (12 varieties)
 - `crop_profiles/tobacco_flue_cured/natural_region_baselines.json` (5 regions)
 
-**Overall verdict: PROCEED.** No BLOCKER. Five PASS, two GAPS_BUT_PROCEEDABLE.
-The two gaps (variety numeric interpolation; NR II `best_practice` encoding the
-genetic ceiling rather than operational best practice) are handled explicitly in
-`model_design.md` and do not block design.
+**Overall verdict: PROCEED.** No BLOCKER. Originally five PASS, two
+GAPS_BUT_PROCEEDABLE.
+
+**Phase 2 amendment (2026-06-05):** both GAPS items were subsequently addressed
+(see "Amendments applied" at the foot of this document), upgrading criterion (b)
+to **PASS** and substantially de-risking (a). Current standing: **six PASS, one
+GAPS_BUT_PROCEEDABLE** (the residual being interpolated variety days-to-maturity /
+topping-leaf counts, which require the full Kutsaga trial tables to close).
 
 ---
 
-## (a) Variety coverage — **GAPS_BUT_PROCEEDABLE**
+## (a) Variety coverage — **GAPS_BUT_PROCEEDABLE → improved (Phase 2)**
+
+> Phase 2 amendment: plant-population ranges are now grounded in the documented
+> Zimbabwe spacing standard (1.2 m × 0.50–0.56 m ⇒ ~14,800–16,700 plants/ha;
+> Kutsaga spacing trials, Britannica Orinoco spacing). Residual interpolation is
+> now limited to days-to-maturity and topping-leaf counts only.
+
 
 - **Count:** 12 entries; 10 are current Zimbabwe commercial/recent Kutsaga lines
   (K RK1, K30R, K35, KRK29, KRK26R, KRK28, K RK66, K RK76, T75, KE1), plus KRK75
@@ -42,7 +52,14 @@ genetic ceiling rather than operational best practice) are handled explicitly in
 - K326 is flagged benchmark-only (international norms, not Zimbabwe trial) — the
   model treats it as usable but tags it lower-confidence.
 
-## (b) Natural Region baselines — **GAPS_BUT_PROCEEDABLE**
+## (b) Natural Region baselines — **GAPS_BUT_PROCEEDABLE → PASS (Phase 2 amended)**
+
+> Phase 2 amendment: `best_practice` values were lowered to operational
+> best practice within the 2,500–3,500 sanity band (NR II = 3,300 kg/ha) and the
+> former hybrid-ceiling figures moved to a new `genetic_ceiling_kg_ha` field
+> (NR II = 4,500), which `tobacco_math.project_yield` now uses as the upper clamp.
+> The sanity check now passes.
+
 
 - **All 5 regions present** (I–V), each with
   `yield_baselines_kg_ha.{poor_management, average_management, best_practice}`,
@@ -135,3 +152,30 @@ genetic ceiling rather than operational best practice) are handled explicitly in
 | 5 | Spray-count not precisely sourced | Scored vs a documented minimum band (≥6 typical), low weight. |
 
 **Decision: all criteria PASS or GAPS_BUT_PROCEEDABLE → proceed to Step B.**
+
+---
+
+## Amendments applied (Phase 2, 2026-06-05)
+
+Following the Step B/C/D build, the two GAPS items were addressed at the user's
+request:
+
+1. **Gap (b) — NR II ceiling above sanity band → RESOLVED (now PASS).**
+   `natural_region_baselines.json` (schema 1.1): every region's `best_practice`
+   lowered to operational best practice within band (I 3,000 / II 3,300 /
+   III 2,800 / IV 2,200 / V 1,800) and a new `genetic_ceiling_kg_ha` field carries
+   the former hybrid ceilings (I 4,000 / II 4,500 / III 3,800 / IV 3,000 /
+   V 2,600). `tobacco_math.project_yield` now clamps to `genetic_ceiling_kg_ha`
+   (with `best_practice` fallback for older files). NR II clamp unchanged at 4,500,
+   so no model behaviour regressed; all 48 tests still pass.
+
+2. **Gap (a) — variety interpolation → IMPROVED.** Plant-population ranges grounded
+   in the sourced Zimbabwe spacing standard (1.2 m × 0.50–0.56 m ⇒
+   ~14,800–16,700 plants/ha); `variety_database.json` `_meta` updated accordingly.
+   Residual interpolation now limited to days-to-maturity and topping-leaf counts,
+   which still require the full Kutsaga trial tables (carried as the one remaining
+   GAPS_BUT_PROCEEDABLE item and noted in research.md §9).
+
+New sources added to `sources.md`: Kutsaga spacing trial (1.2 × 0.56 m), Britannica
+*common tobacco* (Orinoco flue-cured spacing).
+

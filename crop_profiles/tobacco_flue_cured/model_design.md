@@ -30,7 +30,10 @@ projected_yield_kg_ha =
 ```
 
 Result is then **clamped** to `[200, Y_ceiling[region]]` where `Y_ceiling` is the
-Phase 1 `best_practice` baseline (the documented genetic/best-practice ceiling).
+`genetic_ceiling_kg_ha` field of `natural_region_baselines.json` (the documented
+hybrid genetic ceiling; falls back to `best_practice` for older data files). This
+field was introduced in the Phase 2 amendment that resolved audit gap (b) — see
+`phase2_audit.md`; NR II ceiling = 4,500 kg/ha, operational `best_practice` = 3,300.
 Every factor is individually clamped to the Phase-2 mandated `[0.0, 1.5]` window
 before multiplication; the tighter sub-ranges above are the *design* ranges.
 
@@ -63,6 +66,9 @@ to NR II, derived from the Phase 1 `best_practice` ceilings
 | III | 3800 | 0.84 |
 | IV | 3000 | 0.67 |
 | V | 2600 | 0.58 |
+
+(The "ceiling" column above is the `genetic_ceiling_kg_ha` field added in the
+Phase 2 gap-(b) amendment; factors are unchanged.)
 This is intentionally more generous than `yield_model.py`'s legacy tobacco
 multipliers (IV 0.4 / V 0.2) because `base_potential` is already a single
 reference and management/stress factors carry the rest; the divergence is

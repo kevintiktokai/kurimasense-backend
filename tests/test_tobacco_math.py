@@ -455,6 +455,30 @@ def test_kurima_score_output_structure():
     assert out["as_of_date"] == "2024-12-01"
 
 
+def test_nr_baselines_best_practice_within_sanity_band():
+    """Phase 2 gap-(b) amendment: every region's best_practice sits in a sane band
+    and a separate genetic_ceiling_kg_ha (>= best_practice) is present."""
+    regions = tm.NATURAL_REGION_BASELINES["natural_regions"]
+    for code, data in regions.items():
+        yb = data["yield_baselines_kg_ha"]
+        assert 1500 <= yb["best_practice"] <= 3500, (code, yb)
+        assert yb["genetic_ceiling_kg_ha"] >= yb["best_practice"], (code, yb)
+    # NR II specifically must be inside the audit's 2,500-3,500 sanity band.
+    assert 2500 <= regions["II"]["yield_baselines_kg_ha"]["best_practice"] <= 3500
+
+
+def test_project_yield_clamps_to_genetic_ceiling_not_best_practice():
+    """A maximal crop may exceed operational best_practice but never the genetic ceiling."""
+    yb = tm.NATURAL_REGION_BASELINES["natural_regions"]["II"]["yield_baselines_kg_ha"]
+    out = tm.project_yield(
+        "K RK66", "II", TP, date(2024, 12, 3), 16000,
+        _indices(0.85, 0.70, 0.54, 0.40),
+        _full_mgmt(variety_code="K RK66"),
+        {"rainfall_mm_per_stage": {"ESTABLISHMENT": 45, "VEGETATIVE": 175, "REPRODUCTIVE": 95}},
+    )
+    assert out["projected_yield_kg_ha"] <= yb["genetic_ceiling_kg_ha"]
+
+
 def test_project_yield_output_structure():
     out = tm.project_yield(
         "K326", "II", TP, date(2024, 12, 3), 16000, _indices(), _full_mgmt(),

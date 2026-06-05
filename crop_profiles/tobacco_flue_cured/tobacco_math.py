@@ -959,9 +959,10 @@ def project_yield(
     for f in factors.values():
         point *= f
 
-    y_ceiling = float(
-        NATURAL_REGION_BASELINES["natural_regions"][region]["yield_baselines_kg_ha"]["best_practice"]
-    )
+    _baselines = NATURAL_REGION_BASELINES["natural_regions"][region]["yield_baselines_kg_ha"]
+    # Clamp to the absolute genetic ceiling (true achievable max); fall back to
+    # best_practice for older data files without the genetic_ceiling field (audit gap (b)).
+    y_ceiling = float(_baselines.get("genetic_ceiling_kg_ha") or _baselines["best_practice"])
     point = _clip(point, 200.0, y_ceiling)
 
     # Confidence + interval (§1.3, §6).
