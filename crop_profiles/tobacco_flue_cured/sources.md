@@ -171,6 +171,18 @@ before Phase 2 sign-off).
   https://www.newsday.co.zw/local-news/article/200051719/ — tobacco expansion
   into NR IV.
 
+## 5b. Agronomic spacing / population (added Phase 2, gap-(a) amendment)
+
+- **[Kutsaga Spacing Trial]** Kutsaga Research Station field experiments using
+  **1.2 m between rows × 0.56 m in-row** spacing for flue-cured tobacco (≈14,881
+  plants/ha). Referenced via Marowa et al. and CORESTA/Kutsaga trial methodology.
+  Used to ground variety plant-population ranges.
+- **[Britannica Tobacco]** Encyclopædia Britannica, *common tobacco (Nicotiana
+  tabacum)* — Orinoco flue-cured strains grown in rows ~1.2 m apart, plants
+  50–60 cm in-row (≈14,800–16,700 plants/ha).
+  https://www.britannica.com/plant/common-tobacco — general spacing corroboration
+  (tertiary source; used only for the spacing/population standard, not yields).
+
 ## 6. Classification reference
 
 - **[Vincent & Thomas 1960]** Vincent, V. & Thomas, R.G. (1960). *An Agricultural
