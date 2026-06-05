@@ -43,6 +43,15 @@ from tools.generate_yield import run as run_generate_yield
 from tools.get_weather_forecast import fetch_weather as fetch_weather_data
 import climate_service
 
+# Field State Aggregator — canonical single source of truth for a field's state.
+# Heavy subsystem imports inside the aggregator are lazy, so this import is light.
+from services.field_state import (
+    build_field_state,
+    FieldState,
+    FieldNotFound,
+    FieldAccessDenied,
+)
+
 # Shared dependencies (auth, caching, helpers)
 from deps import (
     verify_token,
@@ -602,8 +611,19 @@ def analyze_field(field_id: str, background_tasks: BackgroundTasks, user_id: str
             
             coords = row['polygon_coordinates']
             if coords and isinstance(coords, list) and len(coords) > 0:
-                lat, lon = coords[0]['lat'], coords[0]['lon']
-            
+                # Use the polygon CENTROID (mean of all vertices), not the first
+                # vertex. Sampling at coords[0] meant two distinct fields whose
+                # first corners fell inside the same ~200 m Sentinel bbox/cache
+                # tile resolved to identical NDVI — the "every field shows 0.21"
+                # bug. The centroid samples over each field's own area and matches
+                # what the insight/history/aggregator paths already do.
+                try:
+                    lats = [p['lat'] for p in coords]
+                    lons = [p['lon'] for p in coords]
+                    lat, lon = sum(lats) / len(lats), sum(lons) / len(lons)
+                except (KeyError, TypeError, ZeroDivisionError):
+                    lat, lon = coords[0]['lat'], coords[0]['lon']
+
             cursor.close()
             conn.close()
         except HTTPException:
@@ -615,9 +635,20 @@ def analyze_field(field_id: str, background_tasks: BackgroundTasks, user_id: str
     background_tasks.add_task(trigger_sentinel_analysis, field_id, lat, lon)
     return {"status": "success", "message": "Analysis started"}
 
-@app.get("/fields/{field_id}/insight")
+@app.get("/fields/{field_id}/insight", deprecated=True)
 async def get_field_insight(field_id: str, user_id: str = Depends(verify_token)):
-    """Generate a real-time AI agronomist insight for a specific field."""
+    """Generate a real-time AI agronomist insight for a specific field.
+
+    DEPRECATED: superseded by ``GET /field/{field_id}/state`` (the Field State
+    Aggregator). This endpoint's ``WHERE f.id = %s AND f.user_id = %s`` query is
+    the source of the "Field not found" panel bug — when the session's user_id
+    does not match the field owner it returns no row and emits a misleading
+    "Field not found", even for fields that exist with active satellite data.
+    The aggregator runs in the same scope as the rest of the field's data and
+    surfaces the agronomist insight via ``kurima_score.primary_driver /
+    likely_cause / recommended_action``. Kept running during the frontend
+    transition; remove once all clients read from the aggregator.
+    """
     conn = get_db_connection()
     if not conn:
         return {"insight": "Database unavailable. Please try again shortly.", "source": "error"}
@@ -1413,6 +1444,55 @@ def post_generate_yield(field_id: str, user_id: str = Depends(verify_token)):
             "confidence_bands": None,
             "error": "Projection generation failed. Check field configuration."
         }
+
+# ===========================================================================
+# FIELD STATE AGGREGATOR — canonical "state of this field"
+# ===========================================================================
+async def get_state_principal(
+    authorization: Optional[str] = Header(None),
+    x_api_key: Optional[str] = Header(None),
+    x_tenant_id: Optional[str] = Header(None),
+) -> str:
+    """
+    Resolve the principal (tenant scope) for a Field State request.
+
+    * Consumer: standard Supabase session via the Authorization bearer token.
+    * Institutional: ``X-API-Key`` matching ``INSTITUTIONAL_API_KEY`` plus an
+      ``X-Tenant-Id`` header naming the tenant being read. Tenant scoping is then
+      enforced downstream (the aggregator returns 403 if the field is not in scope).
+    """
+    if x_api_key:
+        expected = os.environ.get("INSTITUTIONAL_API_KEY")
+        if expected and x_api_key == expected and x_tenant_id:
+            return x_tenant_id
+        raise HTTPException(status_code=401, detail="Invalid API key or missing X-Tenant-Id scope")
+    return verify_token(authorization)
+
+
+@app.get("/field/{field_id}/state", response_model=FieldState)
+async def get_field_state(field_id: str, principal: str = Depends(get_state_principal)):
+    """
+    Single canonical document with everything any screen needs about this field.
+
+    Every consumer screen reads from here, so two screens can never disagree about
+    a field's state. All interpretation (NDVI labels, confidence banding, water
+    deficit, etc.) is computed server-side. Tenant scoping is enforced: an
+    out-of-scope field returns 403 (not 404), an absent field returns 404.
+    """
+    cache_key = f"field_state:{principal}:{field_id}"
+    cached = _cache_get(cache_key, 120)
+    if cached is not None:
+        return cached
+    try:
+        state = await build_field_state(field_id, principal)
+    except FieldAccessDenied:
+        raise HTTPException(status_code=403, detail="You do not have access to this field")
+    except FieldNotFound:
+        raise HTTPException(status_code=404, detail="Field not found")
+    payload = state.model_dump()
+    _cache_set(cache_key, payload)
+    return payload
+
 
 @app.get("/market/prices")
 def get_market_prices(region: str = "Zimbabwe"):
