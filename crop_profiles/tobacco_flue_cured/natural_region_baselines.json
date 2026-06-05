@@ -1,0 +1,83 @@
+{
+  "_meta": {
+    "crop": "Flue-cured (Virginia) tobacco",
+    "country": "Zimbabwe",
+    "units": "kg/ha cured leaf",
+    "phase": "Phase 1 research draft",
+    "schema_version": "1.0",
+    "compiled": "2026-06-05",
+    "confidence_note": "National anchor points are well-sourced: documented Zimbabwe smallholder/communal averages cluster at ~1,900-2,050 kg/ha (Mount Darwin 2,052 kg/ha; Mazowe ~1,915 kg/ha), large-scale commercial historically ~2,500 kg/ha, and modern hybrid best-practice potential ~4,500 kg/ha (Kutsaga). Per-Natural-Region splits across the poor/average/best-practice management scenarios are INTERPOLATED from these national anchors using the agro-ecological rainfall/reliability gradient and the regional multipliers already encoded in yield_model.py (NATURAL_REGION_MULTIPLIERS). TIMB does not publish a clean per-region x management yield matrix, so Region-level figures carry estimation uncertainty (see research.md Section 5 and Section 9). 'cross_check_vs_yield_model_multiplier' records the implied ratio of each region's average-management figure to NR II average, for alignment with the existing model.",
+    "management_scenario_definitions": {
+      "poor_management": "Typical resource-constrained smallholder: late/erratic transplanting, sub-optimal basal + topdressing rates, weak weed/sucker control, rain-fed only, frequent late topping.",
+      "average_management": "Typical commercial contract grower: full recommended fertiliser programme, scheduled spray program, supplementary irrigation in dry spells, timely topping and curing.",
+      "best_practice": "Optimally managed, fully irrigated, fully resourced crop with modern hybrid genetics and tight curing control — the variety/region genetic ceiling."
+    }
+  },
+  "natural_regions": {
+    "I": {
+      "description": "Eastern Highlands and high-rainfall specialised farming zone (>1000 mm/yr; altitude ~1000-1700 m; cooler, longer wet season). Suited to diversified/plantation farming; tobacco grown on a limited scale, with cooler temperatures sometimes slowing ripening.",
+      "suitability_for_tobacco": "good",
+      "rainfall_mm_per_year": "1000-1400+",
+      "yield_baselines_kg_ha": {
+        "poor_management": 1500,
+        "average_management": 2400,
+        "best_practice": 4000
+      },
+      "primary_constraints": ["Cooler temperatures can slow ripening/maturity", "Higher disease pressure (angular leaf spot, frog-eye) under prolonged leaf wetness", "Competition with higher-value horticulture/plantation crops for land", "Steep terrain in parts limits mechanisation"],
+      "cross_check_vs_yield_model_multiplier": 1.0,
+      "sources": ["FAO 'Tobacco in Zimbabwe' (y4997e)", "Vincent & Thomas (1960) Zimbabwe Natural Regions classification", "yield_model.py NATURAL_REGION_MULTIPLIERS"]
+    },
+    "II": {
+      "description": "Intensive farming region of the Mashonaland highveld (NR IIa/IIb; 750-1000 mm/yr; altitude ~1200-1500 m; reliable summer rains on light granite-derived sandy loams). The historic and current core of Zimbabwe's flue-cured tobacco belt (Mvurwi, Bindura, Marondera, Karoi, Mazowe).",
+      "suitability_for_tobacco": "excellent",
+      "rainfall_mm_per_year": "750-1000",
+      "yield_baselines_kg_ha": {
+        "poor_management": 1800,
+        "average_management": 2500,
+        "best_practice": 4500
+      },
+      "primary_constraints": ["In-season dry spells (mid-season drought) in lower-rainfall IIb", "Over-fertilisation / excess N degrading leaf quality", "Bacterial (Granville) wilt hotspots (Mvurwi-Concession, Macheke/Headlands/Marondera)", "Soil acidity on continuously cropped granite sands"],
+      "cross_check_vs_yield_model_multiplier": 1.0,
+      "sources": ["Masvongo et al. (2013) Mount Darwin smallholder study (2,052 kg/ha)", "FAO 'Tobacco in Zimbabwe' (large-scale commercial ~2,500 kg/ha)", "Kutsaga (hybrid potential ~4,500 kg/ha)", "yield_model.py NATURAL_REGION_MULTIPLIERS"]
+    },
+    "III": {
+      "description": "Semi-intensive farming region (650-800 mm/yr; mid-altitude; characterised by mid-season dry spells and higher temperatures). Substantial smallholder tobacco area — e.g. Mount Darwin / much of Mashonaland Central, which alone accounts for ~30% of national output.",
+      "suitability_for_tobacco": "good",
+      "rainfall_mm_per_year": "650-800",
+      "yield_baselines_kg_ha": {
+        "poor_management": 1400,
+        "average_management": 2050,
+        "best_practice": 3800
+      },
+      "primary_constraints": ["Mid-season dry spells requiring supplementary irrigation", "Higher heat stress accelerating ripening and reducing leaf weight", "Smallholder input-finance and curing-fuel (wood) constraints", "Yield variability season-to-season tied to rainfall onset"],
+      "cross_check_vs_yield_model_multiplier": 0.82,
+      "sources": ["Masvongo et al. (2013) Mount Darwin (NR III): 2,052 kg/ha smallholder average", "Newsday: Mazowe ~1,915 kg/ha (2017)", "yield_model.py NATURAL_REGION_MULTIPLIERS (tobacco NR III = 0.8)"]
+    },
+    "IV": {
+      "description": "Semi-extensive farming region (450-650 mm/yr; lower, hotter; periodic seasonal droughts). Marginal for rain-fed tobacco but increasingly planted with drought-tolerant varieties and, recently, with NCV (non-conventional/alternative) and irrigated tobacco initiatives in parts of Matabeleland.",
+      "suitability_for_tobacco": "marginal",
+      "rainfall_mm_per_year": "450-650",
+      "yield_baselines_kg_ha": {
+        "poor_management": 800,
+        "average_management": 1400,
+        "best_practice": 3000
+      },
+      "primary_constraints": ["Insufficient and unreliable rainfall — irrigation effectively required for viable yields", "High evaporative demand and heat stress", "Limited tobacco extension/infrastructure outside core belt", "Curing-fuel access and grower experience"],
+      "cross_check_vs_yield_model_multiplier": 0.56,
+      "sources": ["yield_model.py NATURAL_REGION_MULTIPLIERS (tobacco NR IV = 0.4)", "Newsday: NCV tobacco in Matabeleland (2024)", "Estimated; primary per-region source needed"]
+    },
+    "V": {
+      "description": "Extensive farming / lowveld region (<450 mm/yr; hot, semi-arid). Generally unsuitable for rain-fed tobacco; any production is fully irrigated and small in area. Drought-tolerant lines (e.g. T75) can be grown experimentally but the region is not a commercial tobacco zone.",
+      "suitability_for_tobacco": "marginal",
+      "rainfall_mm_per_year": "<450",
+      "yield_baselines_kg_ha": {
+        "poor_management": 500,
+        "average_management": 1000,
+        "best_practice": 2600
+      },
+      "primary_constraints": ["Rainfall far below crop requirement — full irrigation mandatory", "Extreme heat stress shortening the leaf-filling window", "Negligible tobacco infrastructure and contracting presence", "High production cost relative to yield"],
+      "cross_check_vs_yield_model_multiplier": 0.40,
+      "sources": ["yield_model.py NATURAL_REGION_MULTIPLIERS (tobacco NR V = 0.2)", "Estimated; primary per-region source needed"]
+    }
+  }
+}
