@@ -12,6 +12,26 @@ provisioned manually via the `X-Admin-Token`-gated admin endpoint — see
 Set the `ADMIN_TOKEN` env var to enable those endpoints. Run the migration with
 `python migrate_user_roles.py`.
 
+## Data model (tenants & growers)
+
+Field ownership is by **tenant**, not user (Workstream 3). A `tenant` is a
+`consumer` (one-member personal tenant) or `institutional` (many officers).
+`tenant_members` maps users → tenants with a role (`owner`/`officer`/`viewer`);
+`growers` are an institution's contracted growers; `fields` carry `tenant_id`
+(+ optional `grower_id`). Every consumer gets a personal tenant on backfill, so
+their experience is unchanged. See
+[`docs/tenant_model_concepts.md`](docs/tenant_model_concepts.md) and
+[`docs/grower_management_guide.md`](docs/grower_management_guide.md).
+
+Migrations (run in order, idempotent):
+```bash
+python migrate_create_tenants.py            # tenants + tenant_members
+python migrate_backfill_consumer_tenants.py # one owner-tenant per profile
+python migrate_fields_to_tenants.py         # growers + fields.tenant_id/grower_id
+```
+`fields.user_id` is retained but **deprecated** (migration safety; dropped in a
+future cleanup PR).
+
 ## 1. Frontend: Vercel Setup
 **Repository**: [kevintiktokai/kurima-sense](https://github.com/kevintiktokai/kurima-sense)
 
