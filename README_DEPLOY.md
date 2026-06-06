@@ -2,6 +2,16 @@
 
 Follow these steps to deploy the KurimaSense platform. Each part of the system is hosted separately to ensure maximum performance and scalability.
 
+## User roles
+
+`profiles.role` tags each user as `consumer` (default — every farmer), `institutional`
+(offtakers, lenders, insurers, growers — with an `institutional_type` + `tenant_name`),
+or `admin`. Existing users default to `consumer` with no behaviour change. Roles are
+provisioned manually via the `X-Admin-Token`-gated admin endpoint — see
+[`docs/onboarding_institutional_user.md`](docs/onboarding_institutional_user.md).
+Set the `ADMIN_TOKEN` env var to enable those endpoints. Run the migration with
+`python migrate_user_roles.py`.
+
 ## 1. Frontend: Vercel Setup
 **Repository**: [kevintiktokai/kurima-sense](https://github.com/kevintiktokai/kurima-sense)
 

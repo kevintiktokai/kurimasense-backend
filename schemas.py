@@ -6,8 +6,8 @@ replacing raw dict payloads with structured models.
 """
 
 from datetime import date
-from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, Field
+from typing import Optional, List, Dict, Any, Literal
+from pydantic import BaseModel, Field, model_validator
 
 
 # ========== Common Models ==========
@@ -112,3 +112,61 @@ class UpdateFarmTaskRequest(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     priority: Optional[str] = None
+
+
+# ========== Role Tagging (Workstream 1) ==========
+
+Role = Literal["consumer", "institutional", "admin"]
+InstitutionalType = Literal["buyer", "lender", "insurer", "grower"]
+
+
+class AuthenticatedUser(BaseModel):
+    """Role-aware identity for an authenticated request.
+
+    Produced by ``auth_roles.get_authenticated_user`` (NOT by ``verify_token``,
+    which is kept returning a bare ``user_id`` string for backward compatibility
+    with the 48 existing endpoints). Carries the access tier and, for
+    institutional users, their institution type/name.
+    """
+    user_id: str
+    role: Role
+    institutional_type: Optional[InstitutionalType] = None
+    tenant_name: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _institutional_requires_type(self) -> "AuthenticatedUser":
+        # Pydantic-level mirror of the DB CHECK `institutional_users_have_type`.
+        if self.role == "institutional" and self.institutional_type is None:
+            raise ValueError("institutional users must have an institutional_type")
+        return self
+
+
+class UpdateUserRoleRequest(BaseModel):
+    """Body for POST /admin/users/{user_id}/role.
+
+    Note: the institutional-requires-type rule is enforced in the endpoint (so it
+    can return HTTP 400, not a 422 validation error), NOT via a model validator.
+    """
+    role: Role
+    institutional_type: Optional[InstitutionalType] = None
+    tenant_name: Optional[str] = None
+
+
+class UpdateUserRoleResponse(BaseModel):
+    user_id: str
+    role: str
+    institutional_type: Optional[str] = None
+    tenant_name: Optional[str] = None
+    updated_at: str  # ISO timestamp
+
+
+class UserProfile(BaseModel):
+    """User profile shape including role context. Defined for a future GET /me
+    (Workstream 2) — no endpoint returns it in this PR."""
+    user_id: str
+    full_name: Optional[str] = None
+    phone_number: Optional[str] = None
+    role: Role = "consumer"
+    institutional_type: Optional[InstitutionalType] = None
+    tenant_name: Optional[str] = None
+    preferred_language: Optional[str] = None
