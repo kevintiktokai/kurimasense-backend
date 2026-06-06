@@ -100,11 +100,52 @@ def fetch_or_create_role(user_id: str) -> Tuple[str, Optional[str], Optional[str
 
 
 # ---------------------------------------------------------------------------
+# Tenant context (Workstream 3)
+# ---------------------------------------------------------------------------
+def fetch_tenant_context(user_id: str):
+    """
+    Return (primary_tenant_id, tenant_ids, primary_member_role) for ``user_id``.
+
+    Primary = earliest-joined membership. Degrades to (None, [], None) if the
+    tenant tables don't exist yet (pre-migration) or the DB is unavailable, so
+    authentication never breaks on the tenant lookup.
+    """
+    conn = get_db_connection()
+    if not conn:
+        return None, [], None
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(
+            """
+            SELECT tenant_id::text AS tenant_id, member_role
+            FROM tenant_members
+            WHERE user_id = %s::uuid
+            ORDER BY joined_at ASC, tenant_id ASC
+            """,
+            (user_id,),
+        )
+        rows = cur.fetchall()
+        cur.close()
+        if not rows:
+            return None, [], None
+        tenant_ids = [r["tenant_id"] for r in rows]
+        return tenant_ids[0], tenant_ids, rows[0].get("member_role")
+    except Exception as exc:  # pragma: no cover - defensive (e.g. table missing pre-migration)
+        logger.warning("Tenant lookup failed for %s: %s", user_id, exc)
+        return None, [], None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # Role-aware dependency (sibling of verify_token)
 # ---------------------------------------------------------------------------
 def get_authenticated_user(authorization: Optional[str] = Header(None)) -> AuthenticatedUser:
     """
-    Verify the JWT (reusing ``deps.verify_token``) and attach role context.
+    Verify the JWT (reusing ``deps.verify_token``) and attach role + tenant context.
 
     Returns an ``AuthenticatedUser``. ``verify_token`` is imported lazily so this
     module does not pull in the heavy AI stack at import time.
@@ -113,12 +154,38 @@ def get_authenticated_user(authorization: Optional[str] = Header(None)) -> Authe
 
     user_id = verify_token(authorization)
     role, institutional_type, tenant_name = fetch_or_create_role(user_id)
+    tenant_id, tenant_ids, member_role = fetch_tenant_context(user_id)
     return AuthenticatedUser(
         user_id=user_id,
         role=role,
         institutional_type=institutional_type,
         tenant_name=tenant_name,
+        tenant_id=tenant_id,
+        tenant_ids=tenant_ids,
+        member_role=member_role,
     )
+
+
+# ---------------------------------------------------------------------------
+# Field access helpers (Workstream 3)
+# ---------------------------------------------------------------------------
+def user_can_access_field(user: AuthenticatedUser, field_tenant_id) -> bool:
+    """True if ``user`` may READ fields in ``field_tenant_id`` (admin: always)."""
+    if user.role == "admin":
+        return True
+    if field_tenant_id is None:
+        return False
+    return str(field_tenant_id) in user.tenant_ids
+
+
+def user_can_modify_field(user: AuthenticatedUser, field_tenant_id) -> bool:
+    """True if ``user`` may WRITE fields in ``field_tenant_id``. Owners and
+    officers can modify; viewers cannot; admin always can."""
+    if user.role == "admin":
+        return True
+    if field_tenant_id is None or str(field_tenant_id) not in user.tenant_ids:
+        return False
+    return user.member_role in ("owner", "officer")
 
 
 # ---------------------------------------------------------------------------
