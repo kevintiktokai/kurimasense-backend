@@ -75,6 +75,11 @@ logger = logging.getLogger("kurimasense")
 
 app = FastAPI(title="KurimaSense AI")
 
+# Admin role-management endpoints (Workstream 1). Gated by X-Admin-Token; kept in
+# a light router module so it does not depend on the AI stack.
+from admin_routes import router as admin_router  # noqa: E402
+app.include_router(admin_router)
+
 # CORS Configuration
 # Allow specific origins from environment or default to known frontends
 allowed_origins_env = os.environ.get("CORS_ORIGINS", "").strip()
