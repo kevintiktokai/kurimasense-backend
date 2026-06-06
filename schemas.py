@@ -5,7 +5,7 @@ Provides type-safe validation for all API endpoints,
 replacing raw dict payloads with structured models.
 """
 
-from datetime import date
+from datetime import date, datetime
 from typing import Optional, List, Dict, Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
@@ -118,6 +118,7 @@ class UpdateFarmTaskRequest(BaseModel):
 
 Role = Literal["consumer", "institutional", "admin"]
 InstitutionalType = Literal["buyer", "lender", "insurer", "grower"]
+MemberRole = Literal["owner", "officer", "viewer"]
 
 
 class AuthenticatedUser(BaseModel):
@@ -132,6 +133,12 @@ class AuthenticatedUser(BaseModel):
     role: Role
     institutional_type: Optional[InstitutionalType] = None
     tenant_name: Optional[str] = None
+    # Tenant context (Workstream 3). tenant_id is the *primary* tenant (earliest
+    # joined). Optional because admins (and a degraded/pre-migration DB) have no
+    # tenant membership — callers must handle None.
+    tenant_id: Optional[str] = None
+    tenant_ids: List[str] = []
+    member_role: Optional[MemberRole] = None
 
     @model_validator(mode="after")
     def _institutional_requires_type(self) -> "AuthenticatedUser":
@@ -170,3 +177,78 @@ class UserProfile(BaseModel):
     institutional_type: Optional[InstitutionalType] = None
     tenant_name: Optional[str] = None
     preferred_language: Optional[str] = None
+
+
+# ========== Tenant model (Workstream 3) ==========
+
+class Tenant(BaseModel):
+    id: str
+    name: str
+    tenant_type: Literal["consumer", "institutional"]
+    institutional_type: Optional[InstitutionalType] = None
+    created_at: datetime
+    updated_at: datetime
+    deleted_at: Optional[datetime] = None
+
+
+class TenantMember(BaseModel):
+    tenant_id: str
+    user_id: str
+    member_role: MemberRole
+    joined_at: datetime
+
+
+class CreateTenantRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    tenant_type: Literal["consumer", "institutional"] = "institutional"
+    institutional_type: Optional[InstitutionalType] = None
+
+
+class UpdateTenantRequest(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=200)
+    institutional_type: Optional[InstitutionalType] = None
+
+
+class TenantDetail(Tenant):
+    members: List[TenantMember] = []
+
+
+class AddTenantMemberRequest(BaseModel):
+    user_id: str
+    member_role: MemberRole = "officer"
+
+
+class UpdateTenantMemberRequest(BaseModel):
+    member_role: MemberRole
+
+
+# ========== Growers (Workstream 3) ==========
+
+class Grower(BaseModel):
+    id: str
+    tenant_id: str
+    name: str
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    coordinates: Optional[dict] = None
+    claimed_by_user_id: Optional[str] = None
+    created_by_user_id: Optional[str] = None
+    notes: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class CreateGrowerRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    coordinates: Optional[dict] = None
+    notes: Optional[str] = None
+
+
+class UpdateGrowerRequest(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=200)
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    coordinates: Optional[dict] = None
+    notes: Optional[str] = None
