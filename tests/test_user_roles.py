@@ -268,7 +268,8 @@ def test_me_role_returns_consumer():
     r = client.get("/me/role")
     assert r.status_code == 200
     assert r.json() == {"user_id": "u1", "role": "consumer",
-                        "institutional_type": None, "tenant_name": None}
+                        "institutional_type": None, "tenant_name": None,
+                        "tenant_id": None, "tenant_ids": [], "member_role": None}
 
 
 def test_me_role_returns_institutional_context():

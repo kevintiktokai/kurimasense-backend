@@ -126,3 +126,45 @@ exception — those stay access-controlling because the data is personal.
    NOT NULL once clean. **`fields.user_id` is retained** (deprecated, for safety).
 
 All idempotent. No endpoint/query code changes in Block 1 — those are Block 2.
+
+---
+
+## Block 2 status — what was migrated
+
+**Migrated to tenant access (this block):**
+- **Auth context:** `AuthenticatedUser` now carries `tenant_id` / `tenant_ids` /
+  `member_role`; `auth_roles.get_authenticated_user` joins `tenant_members`
+  (earliest-joined = primary). `user_can_access_field` / `user_can_modify_field`
+  added. All degrade gracefully if the tenant tables are absent (pre-migration).
+- **Field State Aggregator** (`services/field_state/aggregator.py`) — the canonical
+  field path: `resolve_access` now grants by admin / `field.tenant_id ∈ caller
+  tenant_ids` / legacy `user_id` fallback; `GET /field/{id}/state` passes the
+  caller's tenant context. (Also fixed a latent bug: it selected a non-existent
+  `fields.natural_region` column.)
+- **New endpoints:** admin tenant CRUD + membership (`/admin/tenants*`), and
+  institutional grower CRUD (`/tenants/me/growers*`), all tenant-scoped.
+
+**Deliberately NOT changed:**
+- **Background satellite ingestion** — there is no `workers/` package; ingestion
+  is `tools/get_crop_health.py` + `trigger_sentinel_analysis(field_id, lat, lon)`,
+  which operate per-field and never access-filter by `user_id`. No change needed.
+
+**Long tail tracked for completion (consumer endpoints in `app.py`):**
+The ~25 consumer field-ownership filters in `app.py` (`/fields`, `/fields/{id}/
+history|insight|yield|analyze`, `/dashboard*`, `/yield-analytics`, the field-scoped
+`/agro/*`, `/ai/*`, `/climate/*`) still use `WHERE user_id = %s`. These keep
+consumers working **identically today**. The behaviour-preserving migration is the
+JOIN-subquery form:
+
+    -- before
+    WHERE f.user_id = %s::uuid
+    -- after (same bound param; consumers unchanged, officers see shared tenant fields)
+    WHERE f.tenant_id IN (SELECT tenant_id FROM tenant_members WHERE user_id = %s::uuid)
+
+These were intentionally NOT rewritten blind: `app.py` is 155 KB, cannot be
+runtime-tested in this environment, and the zero-consumer-change mandate makes
+unverified edits to every field query unacceptable. They should be migrated
+endpoint-by-endpoint against a deployable instance (Render preview) with the
+Block 3 test suite asserting consumer parity before each is switched. The
+institutional surface (portfolio, Workstream 4) reads through the **already-
+migrated** aggregator + new endpoints, so it is unblocked.

@@ -84,6 +84,10 @@ app.include_router(admin_router)
 from me_routes import router as me_router  # noqa: E402
 app.include_router(me_router)
 
+# Grower management (Workstream 3, institutional). Tenant-scoped, light router.
+from grower_routes import router as grower_router  # noqa: E402
+app.include_router(grower_router)
+
 # CORS Configuration
 # Allow specific origins from environment or default to known frontends
 allowed_origins_env = os.environ.get("CORS_ORIGINS", "").strip()
@@ -1473,27 +1477,33 @@ async def get_state_principal(
     if x_api_key:
         expected = os.environ.get("INSTITUTIONAL_API_KEY")
         if expected and x_api_key == expected and x_tenant_id:
-            return x_tenant_id
+            return {"requester_id": x_tenant_id, "tenant_ids": [x_tenant_id], "is_admin": False}
         raise HTTPException(status_code=401, detail="Invalid API key or missing X-Tenant-Id scope")
-    return verify_token(authorization)
+    # Session: resolve the role-aware user so we get the caller's tenant_ids.
+    from auth_roles import get_authenticated_user
+    user = get_authenticated_user(authorization)
+    return {"requester_id": user.user_id, "tenant_ids": user.tenant_ids, "is_admin": user.role == "admin"}
 
 
 @app.get("/field/{field_id}/state", response_model=FieldState)
-async def get_field_state(field_id: str, principal: str = Depends(get_state_principal)):
+async def get_field_state(field_id: str, principal: dict = Depends(get_state_principal)):
     """
     Single canonical document with everything any screen needs about this field.
 
     Every consumer screen reads from here, so two screens can never disagree about
     a field's state. All interpretation (NDVI labels, confidence banding, water
-    deficit, etc.) is computed server-side. Tenant scoping is enforced: an
-    out-of-scope field returns 403 (not 404), an absent field returns 404.
+    deficit, etc.) is computed server-side. Access is tenant-scoped (Workstream 3):
+    an out-of-scope field returns 403 (not 404), an absent field returns 404.
     """
-    cache_key = f"field_state:{principal}:{field_id}"
+    cache_key = f"field_state:{principal['requester_id']}:{field_id}"
     cached = _cache_get(cache_key, 120)
     if cached is not None:
         return cached
     try:
-        state = await build_field_state(field_id, principal)
+        state = await build_field_state(
+            field_id, principal["requester_id"],
+            tenant_ids=principal.get("tenant_ids"), is_admin=principal.get("is_admin", False),
+        )
     except FieldAccessDenied:
         raise HTTPException(status_code=403, detail="You do not have access to this field")
     except FieldNotFound:

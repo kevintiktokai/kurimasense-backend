@@ -221,21 +221,25 @@ def assemble_field_state(
     alerts_raw: Optional[List[Dict[str, Any]]] = None,
     scouting_rows: Optional[List[Dict[str, Any]]] = None,
     now: Optional[datetime] = None,
+    enforce_owner: bool = True,
 ) -> FieldState:
     """
     Build a :class:`FieldState` from already-fetched primitives.
 
-    ``field_row`` must include at least ``id`` and ``user_id``. Raises
-    :class:`FieldAccessDenied` if ``requester_id`` is provided and does not match
-    the field's owner (the 403-not-404 security rule lives in the caller, but this
-    is a defensive backstop).
+    ``field_row`` must include at least ``id`` and ``user_id``. With
+    ``enforce_owner=True`` (the default, used by direct callers/tests) this raises
+    :class:`FieldAccessDenied` if ``requester_id`` does not match the field's
+    ``user_id`` — a legacy backstop. The real pipeline (:func:`build_field_state`)
+    passes ``enforce_owner=False`` because :func:`resolve_access` has already
+    enforced tenant access (so institutional officers, whose user_id differs from
+    the field's, are correctly allowed).
     """
     started = time.time()
     now = now or datetime.utcnow()
     today = now.date()
 
     owner = field_row.get("user_id")
-    if requester_id is not None and owner is not None and str(owner) != str(requester_id):
+    if enforce_owner and requester_id is not None and owner is not None and str(owner) != str(requester_id):
         raise FieldAccessDenied(field_row.get("id"))
 
     crop_type = field_row.get("crop_type") or field_row.get("crop")
@@ -426,7 +430,9 @@ def assemble_field_state(
         area_ha=area_ha,
         natural_region=natural_region,
         polygon_coordinates=polygon if isinstance(polygon, list) else None,
-        tenant_id=str(owner) if owner is not None else None,
+        # Prefer the real tenant_id (Workstream 3); fall back to owner user_id for
+        # rows not yet backfilled / direct-test field rows.
+        tenant_id=field_row.get("tenant_id") or (str(owner) if owner is not None else None),
     )
 
     season = SeasonInfo(
@@ -644,11 +650,20 @@ def _build_plan_items(plan_rows: Optional[List[Dict[str, Any]]], alerts: List[Al
 # ---------------------------------------------------------------------------
 # I/O orchestration (lazy imports; best-effort everywhere)
 # ---------------------------------------------------------------------------
-def resolve_access(field_id: str, requester_id: str) -> Dict[str, Any]:
+def resolve_access(
+    field_id: str,
+    requester_id: str,
+    tenant_ids: Optional[List[str]] = None,
+    is_admin: bool = False,
+) -> Dict[str, Any]:
     """
-    Look the field up by id *without* a tenant filter, then enforce ownership.
-    Raises FieldNotFound (404) if absent, FieldAccessDenied (403) on mismatch.
-    Returns the field row dict.
+    Look the field up by id *without* a tenant filter, then enforce access.
+    Raises FieldNotFound (404) if absent, FieldAccessDenied (403) otherwise.
+
+    Access is granted if any of: admin; the field's ``tenant_id`` is in the
+    caller's ``tenant_ids`` (the tenant model, Workstream 3); or — legacy
+    fallback — the field's ``user_id`` equals ``requester_id`` (keeps consumers
+    working even if tenant context is unavailable). Returns the field row dict.
     """
     from database import get_db_connection
     from psycopg2.extras import RealDictCursor
@@ -660,8 +675,9 @@ def resolve_access(field_id: str, requester_id: str) -> Dict[str, Any]:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute(
             """
-            SELECT id, user_id, name, crop_type, variety, planting_date, transplant_date,
-                   is_transplanted, size_hectares, natural_region, polygon_coordinates,
+            SELECT id, user_id, tenant_id::text AS tenant_id, grower_id::text AS grower_id,
+                   name, crop_type, variety, planting_date, transplant_date,
+                   is_transplanted, size_hectares, polygon_coordinates,
                    fertilizer_history, health_score
             FROM fields WHERE id = %s::uuid
             """,
@@ -677,17 +693,30 @@ def resolve_access(field_id: str, requester_id: str) -> Dict[str, Any]:
 
     if not row:
         raise FieldNotFound(field_id)
-    if str(row.get("user_id")) != str(requester_id):
+
+    field_tenant = row.get("tenant_id")
+    allowed_tenants = {str(t) for t in (tenant_ids or [])}
+    allowed = (
+        is_admin
+        or (field_tenant is not None and str(field_tenant) in allowed_tenants)
+        or (row.get("user_id") is not None and str(row.get("user_id")) == str(requester_id))
+    )
+    if not allowed:
         raise FieldAccessDenied(field_id)
     return dict(row)
 
 
-async def build_field_state(field_id: str, requester_id: str) -> FieldState:
+async def build_field_state(
+    field_id: str,
+    requester_id: str,
+    tenant_ids: Optional[List[str]] = None,
+    is_admin: bool = False,
+) -> FieldState:
     """
     Full pipeline: resolve access, gather data from every subsystem (best-effort),
     and assemble the canonical FieldState. Target < 300ms for a single field.
     """
-    field_row = resolve_access(field_id, requester_id)
+    field_row = resolve_access(field_id, requester_id, tenant_ids=tenant_ids, is_admin=is_admin)
     crop_type = field_row.get("crop_type")
     variety_code = field_row.get("variety")
 
@@ -746,6 +775,9 @@ async def build_field_state(field_id: str, requester_id: str) -> FieldState:
         plan_rows=plan_rows,
         alerts_raw=alerts_raw,
         scouting_rows=scouting_rows,
+        # resolve_access already enforced tenant access; don't re-check by user_id
+        # (institutional officers legitimately differ from the field's user_id).
+        enforce_owner=False,
     )
 
 
