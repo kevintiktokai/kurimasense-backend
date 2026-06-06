@@ -33,10 +33,14 @@ CREATE TABLE IF NOT EXISTS tenants (
                institutional_type IN ('buyer', 'lender', 'insurer', 'grower')),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    deleted_at TIMESTAMP WITH TIME ZONE,
     CONSTRAINT institutional_tenants_have_type CHECK (
         tenant_type != 'institutional' OR institutional_type IS NOT NULL
     )
 );
+
+-- deleted_at also added defensively for DBs where tenants already existed.
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP WITH TIME ZONE;
 
 CREATE INDEX IF NOT EXISTS idx_tenants_type ON tenants(tenant_type);
 
