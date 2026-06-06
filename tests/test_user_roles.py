@@ -230,6 +230,28 @@ def test_admin_get_role():
     assert r.json()["institutional_type"] == "lender"
 
 
+def test_admin_get_role_not_found():
+    conn = FakeConn(results=[None])  # SELECT yields no profile row
+    client = _admin_client(conn)
+    r = client.get("/admin/users/ghost/role", headers={"X-Admin-Token": "secret-admin"})
+    assert r.status_code == 404
+
+
+def test_admin_token_unset_denies_all():
+    # Safe default: with ADMIN_TOKEN unset, even a matching-looking header is denied.
+    saved = os.environ.pop("ADMIN_TOKEN", None)
+    try:
+        app = FastAPI()
+        app.include_router(admin_routes.router)
+        admin_routes.get_db_connection = lambda: FakeConn()  # type: ignore
+        client = TestClient(app, raise_server_exceptions=False)
+        r = client.get("/admin/users/abc/role", headers={"X-Admin-Token": "anything"})
+        assert r.status_code == 401
+    finally:
+        if saved is not None:
+            os.environ["ADMIN_TOKEN"] = saved
+
+
 # ===========================================================================
 # 4. AuthenticatedUser model validation
 # ===========================================================================
