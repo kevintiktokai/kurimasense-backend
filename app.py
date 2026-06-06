@@ -80,6 +80,10 @@ app = FastAPI(title="KurimaSense AI")
 from admin_routes import router as admin_router  # noqa: E402
 app.include_router(admin_router)
 
+# Current-user role endpoint (Workstream 2): GET /me/role for frontend routing.
+from me_routes import router as me_router  # noqa: E402
+app.include_router(me_router)
+
 # CORS Configuration
 # Allow specific origins from environment or default to known frontends
 allowed_origins_env = os.environ.get("CORS_ORIGINS", "").strip()

@@ -16,6 +16,7 @@ from pydantic import ValidationError
 
 import auth_roles
 import admin_routes
+import me_routes
 from auth_roles import (
     require_consumer, require_institutional, require_admin,
     get_authenticated_user, fetch_or_create_role,
@@ -250,6 +251,35 @@ def test_admin_token_unset_denies_all():
     finally:
         if saved is not None:
             os.environ["ADMIN_TOKEN"] = saved
+
+
+# ===========================================================================
+# 3b. GET /me/role (Workstream 2)
+# ===========================================================================
+def _me_client(user: AuthenticatedUser):
+    app = FastAPI()
+    app.include_router(me_routes.router)
+    app.dependency_overrides[me_routes.get_authenticated_user] = lambda: user
+    return TestClient(app, raise_server_exceptions=False)
+
+
+def test_me_role_returns_consumer():
+    client = _me_client(AuthenticatedUser(user_id="u1", role="consumer"))
+    r = client.get("/me/role")
+    assert r.status_code == 200
+    assert r.json() == {"user_id": "u1", "role": "consumer",
+                        "institutional_type": None, "tenant_name": None}
+
+
+def test_me_role_returns_institutional_context():
+    client = _me_client(AuthenticatedUser(
+        user_id="u2", role="institutional", institutional_type="buyer", tenant_name="Northern Tobacco"))
+    r = client.get("/me/role")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["role"] == "institutional"
+    assert body["institutional_type"] == "buyer"
+    assert body["tenant_name"] == "Northern Tobacco"
 
 
 # ===========================================================================
