@@ -88,6 +88,10 @@ app.include_router(me_router)
 from grower_routes import router as grower_router  # noqa: E402
 app.include_router(grower_router)
 
+# Portfolio aggregate (MVP PR 2): GET /portfolio/aggregate, institutional-only.
+from portfolio_routes import router as portfolio_router  # noqa: E402
+app.include_router(portfolio_router)
+
 # CORS Configuration
 # Allow specific origins from environment or default to known frontends
 allowed_origins_env = os.environ.get("CORS_ORIGINS", "").strip()
