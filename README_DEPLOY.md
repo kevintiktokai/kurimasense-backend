@@ -32,6 +32,17 @@ python migrate_fields_to_tenants.py         # growers + fields.tenant_id/grower_
 `fields.user_id` is retained but **deprecated** (migration safety; dropped in a
 future cleanup PR).
 
+## Scripts
+
+- `scripts/seed_demo_fields.py` — **demo-only**, manual seeder that creates ~40
+  fields + growers (fictional names, real GPS polygons) in an institutional
+  tenant for the portfolio dashboard demo. Not an API endpoint; safe to re-run
+  (`DEMO_SEED:` marker) with a `--clear` that only removes demo data. See
+  [`docs/demo_seeding_guide.md`](docs/demo_seeding_guide.md).
+- `scripts/recompute_kurima_scores.py` — one-shot warm-up/validation of
+  KurimaScores for a tenant's fields (scores are computed on-the-fly).
+
+
 ## 1. Frontend: Vercel Setup
 **Repository**: [kevintiktokai/kurima-sense](https://github.com/kevintiktokai/kurima-sense)
 
