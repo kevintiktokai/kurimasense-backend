@@ -252,3 +252,61 @@ class UpdateGrowerRequest(BaseModel):
     email: Optional[str] = None
     coordinates: Optional[dict] = None
     notes: Optional[str] = None
+
+
+# ========== Portfolio Aggregate (MVP PR 2) ==========
+
+class PortfolioTenantInfo(BaseModel):
+    id: str
+    name: str
+    institutional_type: Optional[InstitutionalType] = None
+
+
+class PortfolioScoreDistribution(BaseModel):
+    thriving: int = 0
+    strong: int = 0
+    adequate: int = 0
+    stressed: int = 0
+    distressed: int = 0
+    critical: int = 0
+    awaiting_data: int = 0
+
+
+class PortfolioSummary(BaseModel):
+    total_fields: int
+    total_growers: int
+    total_hectares: float
+    score_distribution: PortfolioScoreDistribution
+    alerts_critical: int
+    alerts_high: int
+    average_kurima_score: Optional[float] = None
+    fields_with_data: int
+    fields_awaiting_data: int
+
+
+class PortfolioPriority(BaseModel):
+    field_id: str
+    field_name: str
+    grower_id: Optional[str] = None
+    grower_name: Optional[str] = None
+    district: Optional[str] = None
+    natural_region: Optional[str] = None
+    crop_type: str
+    variety: Optional[str] = None
+    size_hectares: float
+    kurima_score: Optional[int] = None
+    kurima_label: Optional[str] = None
+    kurima_color: Optional[str] = None
+    primary_concern: Optional[str] = None
+    recommended_action: Optional[str] = None
+    urgency: Literal["critical", "high", "medium", "low", "awaiting_data"]
+    days_since_observation: Optional[int] = None
+    planting_date: Optional[str] = None
+    days_since_planting: Optional[int] = None
+
+
+class PortfolioAggregateResponse(BaseModel):
+    tenant: PortfolioTenantInfo
+    summary: PortfolioSummary
+    priorities: List[PortfolioPriority]
+    generated_at: datetime
