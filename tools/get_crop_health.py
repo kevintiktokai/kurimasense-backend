@@ -12,6 +12,24 @@ REQUEST_TIMEOUT_SECONDS = 60
 RETRY_ATTEMPTS = 3
 CACHE_TTL_SECONDS = 21600
 
+# Satellite backend: defaults to the free Copernicus Data Space Ecosystem (CDSE),
+# which exposes the same Sentinel Hub APIs (OAuth + Statistics) at no cost and
+# needs no paid plan. Override via env to point at commercial Sentinel Hub
+# (https://services.sentinel-hub.com/oauth/token + /api/v1/statistics) if ever
+# subscribed. Read at call time so a .env loaded in run()/scripts takes effect.
+DEFAULT_TOKEN_URL = (
+    "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token"
+)
+DEFAULT_STATS_URL = "https://sh.dataspace.copernicus.eu/api/v1/statistics"
+
+
+def _token_url():
+    return os.getenv("SATELLITE_TOKEN_URL", DEFAULT_TOKEN_URL)
+
+
+def _stats_url():
+    return os.getenv("SATELLITE_STATS_URL", DEFAULT_STATS_URL)
+
 
 def _error(message):
     return {"status": "error", "error_message": message}
@@ -32,7 +50,7 @@ def _extract_location(seed):
 
 
 def _get_access_token(client_id, client_secret):
-    url = "https://services.sentinel-hub.com/oauth/token"
+    url = _token_url()
     payload = {
         "client_id": client_id,
         "client_secret": client_secret,
@@ -101,7 +119,7 @@ function evaluatePixel(sample) {
 
 
 def _fetch_ndvi_stats(token, payload):
-    url = "https://services.sentinel-hub.com/api/v1/statistics"
+    url = _stats_url()
     headers = {"Authorization": f"Bearer {token}"}
     last_error = None
     for _ in range(RETRY_ATTEMPTS):
