@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import sys
 from datetime import datetime, timedelta, timezone
@@ -33,6 +34,19 @@ def _stats_url():
 
 def _error(message):
     return {"status": "error", "error_message": message}
+
+
+def _to_float(value):
+    """Coerce a Statistics API stat to a finite float, else None.
+
+    CDSE returns the JSON string "NaN" (not null) for the mean of intervals
+    with no valid pixels (fully clouded/masked days), so a plain None-check
+    is not enough."""
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
 
 
 def _load_seed():
@@ -166,9 +180,9 @@ def _parse_stats(stats):
             .get("B0", {})
             .get("stats", {})
         )
-        mean_ndvi = ndvi_stats.get("mean")
-        mean_evi = evi_stats.get("mean")
-        mean_mask = mask_stats.get("mean")
+        mean_ndvi = _to_float(ndvi_stats.get("mean"))
+        mean_evi = _to_float(evi_stats.get("mean"))
+        mean_mask = _to_float(mask_stats.get("mean"))
         if mean_ndvi is not None:
             ndvi_means.append(mean_ndvi)
         if mean_evi is not None:

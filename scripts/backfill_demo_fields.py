@@ -69,7 +69,11 @@ def _parse_daily(stats):
     for interval in stats.get("data", []):
         outputs = interval.get("outputs", {})
         def _mean(name):
-            return outputs.get(name, {}).get("bands", {}).get("B0", {}).get("stats", {}).get("mean")
+            # gch._to_float guards against CDSE returning the string "NaN"
+            # for intervals with no valid pixels (fully clouded days).
+            return gch._to_float(
+                outputs.get(name, {}).get("bands", {}).get("B0", {}).get("stats", {}).get("mean")
+            )
         ndvi = _mean("ndvi")
         if ndvi is None:
             continue
@@ -128,21 +132,28 @@ def main():
             time.sleep(args.sleep)
             continue
 
-        # existing dates for idempotency
-        cur.execute("SELECT log_date::text FROM daily_logs WHERE field_id = %s::uuid", (f["id"],))
-        have = {r["log_date"] for r in cur.fetchall()}
+        # parse + insert; one bad field must never abort the whole batch
+        try:
+            # existing dates for idempotency
+            cur.execute("SELECT log_date::text FROM daily_logs WHERE field_id = %s::uuid", (f["id"],))
+            have = {r["log_date"] for r in cur.fetchall()}
 
-        new = 0
-        for day, ndvi, evi, cloud in _parse_daily(stats):
-            if day in have:
-                continue
-            cur.execute(
-                "INSERT INTO daily_logs (field_id, user_id, log_date, ndvi, evi, cloud_cover, source) "
-                "VALUES (%s::uuid, %s::uuid, %s::date, %s, %s, %s, 'Sentinel-2')",
-                (f["id"], f["user_id"], day, ndvi, evi, cloud),
-            )
-            new += 1
-        conn.commit()
+            new = 0
+            for day, ndvi, evi, cloud in _parse_daily(stats):
+                if day in have:
+                    continue
+                cur.execute(
+                    "INSERT INTO daily_logs (field_id, user_id, log_date, ndvi, evi, cloud_cover, source) "
+                    "VALUES (%s::uuid, %s::uuid, %s::date, %s, %s, %s, 'Sentinel-2')",
+                    (f["id"], f["user_id"], day, ndvi, evi, cloud),
+                )
+                new += 1
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            print(f"  [{i}/{len(fields)}] {f['name'][:42]:<42} ERROR: {exc}")
+            time.sleep(args.sleep)
+            continue
         total_rows += new
         print(f"  [{i}/{len(fields)}] {f['name'][:42]:<42} +{new} obs")
         time.sleep(args.sleep)
