@@ -31,8 +31,12 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 
+# Ensure the repo root is importable when launched as `python scripts/<this>.py`
+# (Python puts scripts/ on sys.path, not the repo root, so `tools` isn't found).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 # Reuse the existing satellite tool's helpers (no modification to ingestion).
-from tools import get_crop_health as gch
+from tools import get_crop_health as gch  # noqa: E402
 
 DEMO_PREFIX = "DEMO_SEED: "
 

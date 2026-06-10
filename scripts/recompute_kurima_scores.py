@@ -23,7 +23,10 @@ import argparse
 import os
 import sys
 
-from services.field_state.aggregator import assemble_field_state
+# Make the repo root importable when launched as `python scripts/<this>.py`.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from services.field_state.aggregator import assemble_field_state  # noqa: E402
 
 
 def _connect():
