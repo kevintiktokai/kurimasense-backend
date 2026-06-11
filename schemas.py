@@ -148,6 +148,15 @@ class AuthenticatedUser(BaseModel):
         return self
 
 
+class SelfServeInstitutionalRequest(BaseModel):
+    """Body for POST /me/institutional — a user upgrading their OWN account to an
+    institution during onboarding (self-service, session-gated; distinct from the
+    X-Admin-Token admin flow). ``institutional_type`` is validated by the Literal
+    (422 on a bad value); ``organization_name`` becomes the tenant display name."""
+    institutional_type: InstitutionalType
+    organization_name: str = Field(..., min_length=1, max_length=200)
+
+
 class UpdateUserRoleRequest(BaseModel):
     """Body for POST /admin/users/{user_id}/role.
 
@@ -177,6 +186,29 @@ class UserProfile(BaseModel):
     institutional_type: Optional[InstitutionalType] = None
     tenant_name: Optional[str] = None
     preferred_language: Optional[str] = None
+
+
+class SelfServeInstitutionalRequest(BaseModel):
+    """Body for POST /me/institutional — the authenticated user upgrades their
+    OWN account to an institutional one (self-service signup).
+
+    Unlike the admin role endpoint (which is gated by X-Admin-Token), this is
+    gated by the user's own session: a user can only ever institutionalise
+    themselves. The endpoint also provisions the tenant + owner membership so
+    portfolio access works immediately — which the admin role-flip endpoint
+    deliberately does not do.
+    """
+    institutional_type: InstitutionalType
+    organization_name: str = Field(..., min_length=1, max_length=200)
+
+
+class SelfServeInstitutionalResponse(BaseModel):
+    user_id: str
+    role: Role
+    institutional_type: InstitutionalType
+    tenant_name: str
+    tenant_id: str
+    member_role: MemberRole
 
 
 # ========== Tenant model (Workstream 3) ==========

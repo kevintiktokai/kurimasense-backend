@@ -1,8 +1,36 @@
-# Onboarding an institutional user (manual)
+# Onboarding an institutional user
 
-Until self-service institutional signup exists (Workstream 5), institutional
-users are provisioned manually by flipping a user's `role` on the `profiles`
-table via the admin endpoint. This is the demo path.
+There are now **two** ways to onboard an institutional user:
+
+1. **Self-service (preferred)** — the user picks "Institution" during signup
+   onboarding. The frontend calls `POST /me/institutional` (session-gated, see
+   below), which flips their `role` to `institutional`, records the
+   `institutional_type` + organization name, and provisions a `tenant` +
+   `owner` membership so portfolio access works immediately.
+2. **Manual (admin)** — an operator flips a user's `role` via the
+   `X-Admin-Token` admin endpoint. Use this for support/back-office changes.
+   Note: the admin role-flip does **not** create a tenant/membership; pair it
+   with the tenant + tenant-member admin endpoints if portfolio access is needed.
+
+## Self-service endpoint
+
+```
+POST /me/institutional
+Authorization: Bearer <user JWT>
+Content-Type: application/json
+
+{ "institutional_type": "buyer", "organization_name": "Northern Tobacco" }
+```
+`institutional_type` is one of `buyer | lender | insurer | grower`.
+Re-submitting is idempotent: an institutional tenant the user already owns is
+reused (renamed), never duplicated.
+
+---
+
+## Manual provisioning (admin)
+
+Institutional users can also be provisioned manually by flipping a user's `role`
+on the `profiles` table via the admin endpoint. This is the demo/back-office path.
 
 ## Prerequisites
 - The `ADMIN_TOKEN` env var is set on the backend (Render). The admin endpoints

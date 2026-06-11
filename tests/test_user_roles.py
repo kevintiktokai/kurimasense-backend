@@ -41,6 +41,9 @@ class FakeCursor:
             return self.conn.results.pop(0)
         return None
 
+    def fetchall(self):
+        return []
+
     def close(self):
         pass
 
@@ -281,6 +284,82 @@ def test_me_role_returns_institutional_context():
     assert body["role"] == "institutional"
     assert body["institutional_type"] == "buyer"
     assert body["tenant_name"] == "Northern Tobacco"
+
+
+# ===========================================================================
+# 3c. POST /me/institutional (self-service institutional signup, Workstream 5)
+# ===========================================================================
+def _me_institutional_client(conn, user: AuthenticatedUser):
+    app = FastAPI()
+    app.include_router(me_routes.router)
+    app.dependency_overrides[me_routes.get_authenticated_user] = lambda: user
+    me_routes.get_db_connection = lambda: conn  # type: ignore
+    return TestClient(app, raise_server_exceptions=False)
+
+
+def test_self_serve_institutional_creates_tenant_and_membership():
+    user = AuthenticatedUser(user_id="u-self", role="consumer")
+    # UPDATE profiles RETURNING id -> row; SELECT existing tenant -> None;
+    # INSERT tenants RETURNING id -> tenant row.
+    conn = FakeConn(results=[{"id": "u-self"}, None, {"id": "tenant-new"}])
+    client = _me_institutional_client(conn, user)
+    r = client.post(
+        "/me/institutional",
+        json={"institutional_type": "buyer", "organization_name": "Northern Tobacco"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body == {
+        "user_id": "u-self", "role": "institutional", "institutional_type": "buyer",
+        "tenant_name": "Northern Tobacco", "tenant_id": "tenant-new", "member_role": "owner",
+    }
+    assert conn.committed
+    # Profile promoted to institutional with the right values.
+    update_profile = [c for c in conn.calls if "UPDATE profiles" in c[0]][0]
+    assert update_profile[1] == ("buyer", "Northern Tobacco", "u-self")
+    # A new tenant was inserted (no existing one to reuse).
+    assert any("INSERT INTO tenants" in c[0] for c in conn.calls)
+    # The user was added as owner.
+    member_call = [c for c in conn.calls if "INSERT INTO tenant_members" in c[0]][0]
+    assert member_call[1] == ("tenant-new", "u-self")
+
+
+def test_self_serve_institutional_reuses_existing_tenant():
+    user = AuthenticatedUser(user_id="u-self", role="institutional", institutional_type="buyer", tenant_name="Old")
+    # UPDATE profiles RETURNING id -> row; SELECT existing tenant -> existing row.
+    conn = FakeConn(results=[{"id": "u-self"}, {"id": "tenant-existing"}])
+    client = _me_institutional_client(conn, user)
+    r = client.post(
+        "/me/institutional",
+        json={"institutional_type": "lender", "organization_name": "AFC"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["tenant_id"] == "tenant-existing"
+    # Reuse path updates the existing tenant; it does NOT insert a new one.
+    assert not any("INSERT INTO tenants" in c[0] for c in conn.calls)
+    assert any("UPDATE tenants" in c[0] for c in conn.calls)
+
+
+def test_self_serve_institutional_requires_valid_type():
+    user = AuthenticatedUser(user_id="u-self", role="consumer")
+    conn = FakeConn()
+    client = _me_institutional_client(conn, user)
+    r = client.post(
+        "/me/institutional",
+        json={"institutional_type": "banker", "organization_name": "X"},
+    )
+    assert r.status_code == 422  # invalid InstitutionalType literal
+
+
+def test_self_serve_institutional_requires_org_name():
+    user = AuthenticatedUser(user_id="u-self", role="consumer")
+    conn = FakeConn()
+    client = _me_institutional_client(conn, user)
+    r = client.post(
+        "/me/institutional",
+        json={"institutional_type": "buyer", "organization_name": ""},
+    )
+    assert r.status_code == 422  # min_length=1 violated
 
 
 # ===========================================================================
