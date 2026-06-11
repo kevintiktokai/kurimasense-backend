@@ -92,6 +92,10 @@ app.include_router(grower_router)
 from portfolio_routes import router as portfolio_router  # noqa: E402
 app.include_router(portfolio_router)
 
+# Season accumulations (Depth Sprint PR D): GET /field/{id}/season-accumulations.
+from season_routes import router as season_router  # noqa: E402
+app.include_router(season_router)
+
 # CORS Configuration
 # Allow specific origins from environment or default to known frontends
 allowed_origins_env = os.environ.get("CORS_ORIGINS", "").strip()

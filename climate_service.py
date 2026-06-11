@@ -295,6 +295,55 @@ async def get_agricultural_metrics(lat: float = DEFAULT_LAT, lon: float = DEFAUL
     }
 
 
+# Simple in-process cache for historical daily windows (no DB, no migration).
+_history_cache: Dict[str, Tuple[float, list]] = {}
+_HISTORY_TTL = 60 * 60 * 6  # 6 hours — archive data for past days does not change
+
+
+async def get_daily_history(lat: float, lon: float, start_date: str, end_date: str) -> list:
+    """Daily tmax / tmin / precipitation for a point over [start_date, end_date]
+    from the Open-Meteo historical archive.
+
+    Returns an ordered list of ``{"date", "tmax", "tmin", "precip"}`` dicts (one
+    per day the provider returns). Reuses the shared client; results are cached
+    in-process for 6h keyed by location+window. Raises on a non-2xx response.
+    """
+    key = f"{round(lat, 3)}:{round(lon, 3)}:{start_date}:{end_date}"
+    now = time.time()
+    cached = _history_cache.get(key)
+    if cached and (now - cached[0]) < _HISTORY_TTL:
+        return cached[1]
+
+    params = _join_params({
+        "latitude": lat,
+        "longitude": lon,
+        "start_date": start_date,
+        "end_date": end_date,
+        "daily": ["temperature_2m_max", "temperature_2m_min", "precipitation_sum"],
+        "timezone": "auto",
+    })
+    client = _get_http()
+    response = await client.get(HISTORICAL_URL, params=params)
+    response.raise_for_status()
+    daily = response.json().get("daily", {}) or {}
+
+    dates = daily.get("time", []) or []
+    tmax = daily.get("temperature_2m_max", []) or []
+    tmin = daily.get("temperature_2m_min", []) or []
+    precip = daily.get("precipitation_sum", []) or []
+
+    out = []
+    for i, d in enumerate(dates):
+        out.append({
+            "date": d,
+            "tmax": tmax[i] if i < len(tmax) else None,
+            "tmin": tmin[i] if i < len(tmin) else None,
+            "precip": precip[i] if i < len(precip) else None,
+        })
+    _history_cache[key] = (now, out)
+    return out
+
+
 async def calculate_gdd(
     lat: float = DEFAULT_LAT, 
     lon: float = DEFAULT_LON, 
