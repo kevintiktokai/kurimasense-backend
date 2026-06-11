@@ -335,6 +335,12 @@ class PortfolioPriority(BaseModel):
     days_since_observation: Optional[int] = None
     planting_date: Optional[str] = None
     days_since_planting: Optional[int] = None
+    # Geometry + latest raw indices (Depth Sprint PR C) — additive, for the map
+    # view. Passed through / derived from data already loaded; no extra queries.
+    polygon_coordinates: Optional[list] = None
+    centroid: Optional[dict] = None
+    latest_ndvi: Optional[float] = None
+    latest_soil_moisture: Optional[float] = None
 
 
 class PortfolioAggregateResponse(BaseModel):

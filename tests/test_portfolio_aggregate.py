@@ -72,12 +72,16 @@ def _tenant_row():
     return {"id": TENANT_ID, "name": "Test Institution", "institutional_type": "buyer"}
 
 
-def _field(fid, name, *, grower_id=None, grower_name=None, ha=4.0, ndvi_days=None):
-    """A field row; ndvi_days=None means no observations (awaiting_data)."""
+_DEFAULT_POLYGON = [{"lat": -17.0, "lon": 31.0}]
+
+
+def _field(fid, name, *, grower_id=None, grower_name=None, ha=4.0, ndvi_days=None, polygon="__default__"):
+    """A field row; ndvi_days=None means no observations (awaiting_data).
+    Pass ``polygon=None`` for a field with no stored geometry."""
     return {
         "id": fid, "name": name, "crop_type": "tobacco_flue_cured", "crop": None,
         "variety": "KRK26", "size_hectares": ha, "natural_region": "II",
-        "polygon_coordinates": [{"lat": -17.0, "lon": 31.0}],
+        "polygon_coordinates": _DEFAULT_POLYGON if polygon == "__default__" else polygon,
         "planting_date": "2026-02-01", "transplant_date": "2026-02-01", "is_transplanted": True,
         "user_id": "u1", "tenant_id": TENANT_ID, "grower_id": grower_id,
         "grower_name": grower_name, "created_at": "2026-06-01T00:00:00",
@@ -239,3 +243,81 @@ def test_tenant_not_found_404(monkeypatch):
     user = AuthenticatedUser(user_id="a", role="admin", tenant_id=None, tenant_ids=[])
     c = _client(user, conn=FakeConn(tenant=None, fields=[]), monkeypatch=monkeypatch)
     assert c.get(f"/portfolio/aggregate?tenant_id={TENANT_ID}").status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Geometry + latest indices (Depth Sprint PR C) — additive payload extension
+# ---------------------------------------------------------------------------
+import time as _time
+
+from services.portfolio.aggregate import compute_centroid
+
+
+def test_compute_centroid_pure():
+    # vertex mean of a square
+    sq = [{"lat": 0, "lon": 0}, {"lat": 0, "lon": 2}, {"lat": 2, "lon": 2}, {"lat": 2, "lon": 0}]
+    assert compute_centroid(sq) == {"lat": 1.0, "lon": 1.0}
+    # malformed / empty / None never raise → None
+    assert compute_centroid(None) is None
+    assert compute_centroid([]) is None
+    assert compute_centroid("nope") is None
+    assert compute_centroid([{"x": 1}, {"lat": 1}]) is None       # missing lon
+    assert compute_centroid([{"lat": "bad", "lon": "x"}]) is None  # non-numeric
+    # mixed valid/invalid → averages only the valid vertices
+    assert compute_centroid([{"lat": 1, "lon": 1}, {"bad": 0}]) == {"lat": 1.0, "lon": 1.0}
+
+
+def _bbox(polygon):
+    lats = [p["lat"] for p in polygon]
+    lons = [p["lon"] for p in polygon]
+    return min(lats), max(lats), min(lons), max(lons)
+
+
+def test_field_with_polygon_returns_geometry_and_centroid_in_bbox(monkeypatch):
+    poly = [
+        {"lat": -17.10, "lon": 31.40}, {"lat": -17.10, "lon": 31.44},
+        {"lat": -17.14, "lon": 31.44}, {"lat": -17.14, "lon": 31.40},
+    ]
+    fields = [_field("f1", "A", polygon=poly)]
+    _patch_db(monkeypatch, FakeConn(_tenant_row(), fields, logs=[_log("f1", 0.6)]))
+    resp = _run(compute_portfolio_aggregate(TENANT_ID))
+    p = resp.priorities[0]
+    assert p.polygon_coordinates == poly
+    assert p.centroid is not None
+    lat_min, lat_max, lon_min, lon_max = _bbox(poly)
+    assert lat_min <= p.centroid["lat"] <= lat_max
+    assert lon_min <= p.centroid["lon"] <= lon_max
+
+
+def test_field_without_polygon_returns_none_and_stays_valid(monkeypatch):
+    fields = [_field("f1", "A", polygon=None)]
+    _patch_db(monkeypatch, FakeConn(_tenant_row(), fields, logs=[_log("f1", 0.6)]))
+    resp = _run(compute_portfolio_aggregate(TENANT_ID))
+    p = resp.priorities[0]
+    assert p.polygon_coordinates is None
+    assert p.centroid is None
+    assert p.field_id == "f1"  # response otherwise intact
+
+
+def test_latest_indices_populated_when_observed_and_none_when_awaiting(monkeypatch):
+    fields = [_field("f-obs", "Observed"), _field("f-await", "Awaiting")]
+    logs = [_log("f-obs", 0.71)]  # only the first field has an observation
+    _patch_db(monkeypatch, FakeConn(_tenant_row(), fields, logs=logs))
+    resp = _run(compute_portfolio_aggregate(TENANT_ID))
+    by_id = {p.field_id: p for p in resp.priorities}
+    assert by_id["f-obs"].latest_ndvi == 0.71
+    assert by_id["f-obs"].latest_soil_moisture == 35     # from the daily_logs row
+    assert by_id["f-await"].latest_ndvi is None
+    assert by_id["f-await"].latest_soil_moisture is None
+
+
+def test_40_fields_under_one_second(monkeypatch):
+    fields = [_field(f"f{i}", f"DEMO_SEED: G{i} - Bindura - Flue-Cured", ha=float(i % 10 + 1)) for i in range(40)]
+    logs = [_log(f"f{i}", 0.3 + (i % 50) / 100) for i in range(40)]
+    _patch_db(monkeypatch, FakeConn(_tenant_row(), fields, logs=logs))
+    t0 = _time.perf_counter()
+    resp = _run(compute_portfolio_aggregate(TENANT_ID))
+    elapsed = _time.perf_counter() - t0
+    assert len(resp.priorities) == 40
+    assert all(p.centroid is not None for p in resp.priorities)
+    assert elapsed < 1.0, f"aggregate took {elapsed*1000:.0f}ms for 40 fields"

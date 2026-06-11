@@ -101,6 +101,29 @@ def _parse_district(name: Optional[str]) -> Optional[str]:
     return parts[1] if len(parts) >= 3 else None
 
 
+def compute_centroid(polygon) -> Optional[dict]:
+    """Simple vertex-mean centroid of a field polygon.
+
+    ``polygon`` is the stored ``fields.polygon_coordinates`` JSONB — a list of
+    ``{"lat": float, "lon": float}`` vertices. Returns ``{"lat", "lon"}`` (mean
+    of the vertices) or ``None`` for empty/malformed input. Pure; never raises.
+    """
+    if not isinstance(polygon, (list, tuple)):
+        return None
+    lats: list = []
+    lons: list = []
+    for p in polygon:
+        if isinstance(p, dict) and "lat" in p and "lon" in p:
+            try:
+                lats.append(float(p["lat"]))
+                lons.append(float(p["lon"]))
+            except (TypeError, ValueError):
+                continue
+    if not lats:
+        return None
+    return {"lat": round(sum(lats) / len(lats), 6), "lon": round(sum(lons) / len(lons), 6)}
+
+
 def _days_since(iso_date: Optional[str], today: date) -> Optional[int]:
     if not iso_date:
         return None
@@ -260,6 +283,13 @@ async def compute_portfolio_aggregate(tenant_id: str) -> PortfolioAggregateRespo
             days_since_observation=_days_since(fs.indices.current.as_of_date, today),
             planting_date=fs.season.planted_date,
             days_since_planting=fs.season.days_since_planted,
+            # Geometry + latest raw indices for the map (additive; no new query —
+            # polygon is from the already-selected field row, the indices from
+            # the field state assembled above over the already-batched logs).
+            polygon_coordinates=fr.get("polygon_coordinates"),
+            centroid=compute_centroid(fr.get("polygon_coordinates")),
+            latest_ndvi=fs.indices.current.ndvi,
+            latest_soil_moisture=fs.water_balance.soil_moisture_pct,
         ))
         states.append((score, fs.alerts))
 
