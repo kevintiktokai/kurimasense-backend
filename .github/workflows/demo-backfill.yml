@@ -1,0 +1,56 @@
+name: Demo backfill
+
+# Manual, on-demand backfill of real Sentinel-2 history for the demo fields.
+# Runs scripts/backfill_demo_fields.py on a GitHub-hosted runner (which has the
+# outbound network access to reach Sentinel Hub + the Supabase pooler that the
+# Render shell / a laptop would otherwise provide). No Render plan needed.
+#
+# Setup (one-time): add these repository secrets under
+#   Settings → Secrets and variables → Actions:
+#     - SATELLITE_API_CLIENT_ID
+#     - SATELLITE_API_CLIENT_SECRET
+#     - DATABASE_URL          (the full Supabase pooler connection string)
+#
+# Then: Actions tab → "Demo backfill" → Run workflow (pick the tenant id).
+
+on:
+  workflow_dispatch:
+    inputs:
+      tenant_id:
+        description: "Institutional tenant id to backfill"
+        required: true
+        default: "6fd723f4-caff-42b7-a971-0e3ed992aa94"
+      days:
+        description: "Days of history to pull"
+        required: false
+        default: "90"
+      sleep:
+        description: "Seconds between fields (rate limiting)"
+        required: false
+        default: "2"
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    # generous timeout: 40 fields x (Sentinel calls + sleep)
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install psycopg2-binary requests python-dotenv
+
+      - name: Run backfill
+        env:
+          SATELLITE_API_CLIENT_ID: ${{ secrets.SATELLITE_API_CLIENT_ID }}
+          SATELLITE_API_CLIENT_SECRET: ${{ secrets.SATELLITE_API_CLIENT_SECRET }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          python scripts/backfill_demo_fields.py \
+            --tenant-id "${{ github.event.inputs.tenant_id }}" \
+            --days "${{ github.event.inputs.days }}" \
+            --sleep "${{ github.event.inputs.sleep }}"

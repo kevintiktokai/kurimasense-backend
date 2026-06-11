@@ -16,6 +16,7 @@ from fastapi import FastAPI, HTTPException, Depends, Header, Request, Background
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.concurrency import run_in_threadpool
 from typing import Optional
 
@@ -42,12 +43,21 @@ from tools.generate_yield import run as run_generate_yield
 from tools.get_weather_forecast import fetch_weather as fetch_weather_data
 import climate_service
 
+# Field State Aggregator — canonical single source of truth for a field's state.
+# Heavy subsystem imports inside the aggregator are lazy, so this import is light.
+from services.field_state import (
+    build_field_state,
+    FieldState,
+    FieldNotFound,
+    FieldAccessDenied,
+)
+
 # Shared dependencies (auth, caching, helpers)
 from deps import (
     verify_token,
-    cache_get as _cache_get,
-    cache_set as _cache_set,
-    cache_invalidate_prefix as _cache_invalidate_prefix,
+    # NOTE: cache_get/cache_set/cache_invalidate_prefix from deps are NOT imported
+    # here because app.py defines its own thread-safe versions below. Using both
+    # caused cache misses when one store had data but the other was checked.
     get_user_language,
     get_health_status as _get_health_status,
     get_field_context as _get_field_context,
@@ -64,6 +74,23 @@ logger = logging.getLogger("kurimasense")
 # ---------------------------------------------------------------------------
 
 app = FastAPI(title="KurimaSense AI")
+
+# Admin role-management endpoints (Workstream 1). Gated by X-Admin-Token; kept in
+# a light router module so it does not depend on the AI stack.
+from admin_routes import router as admin_router  # noqa: E402
+app.include_router(admin_router)
+
+# Current-user role endpoint (Workstream 2): GET /me/role for frontend routing.
+from me_routes import router as me_router  # noqa: E402
+app.include_router(me_router)
+
+# Grower management (Workstream 3, institutional). Tenant-scoped, light router.
+from grower_routes import router as grower_router  # noqa: E402
+app.include_router(grower_router)
+
+# Portfolio aggregate (MVP PR 2): GET /portfolio/aggregate, institutional-only.
+from portfolio_routes import router as portfolio_router  # noqa: E402
+app.include_router(portfolio_router)
 
 # CORS Configuration
 # Allow specific origins from environment or default to known frontends
@@ -162,6 +189,9 @@ class TimingMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(TimingMiddleware)
 
+# GZip compress responses > 500 bytes (saves ~40-60% on JSON payloads like /ai/insights)
+app.add_middleware(GZipMiddleware, minimum_size=500)
+
 # NOTE: Standard CORSMiddleware removed — RobustCORSMiddleware above handles
 # all CORS logic including preflight, error responses, and header injection.
 # Having two CORS middlewares caused duplicate headers and unpredictable behavior.
@@ -227,9 +257,15 @@ def _cache_get(key: str, ttl_seconds: int):
     return None
 
 def _cache_set(key: str, data):
-    """Store a value in the cache."""
+    """Store a value in the cache. Evicts stale entries when cache grows too large."""
     with _cache_lock:
         _response_cache[key] = {"data": data, "ts": time.time()}
+        # Prevent unbounded memory growth — evict entries older than 30 minutes
+        if len(_response_cache) > 100:
+            now = time.time()
+            stale = [k for k, v in _response_cache.items() if now - v["ts"] > 1800]
+            for k in stale:
+                del _response_cache[k]
 
 def _cache_invalidate(prefix: str):
     """Invalidate all cache entries starting with a prefix."""
@@ -592,8 +628,19 @@ def analyze_field(field_id: str, background_tasks: BackgroundTasks, user_id: str
             
             coords = row['polygon_coordinates']
             if coords and isinstance(coords, list) and len(coords) > 0:
-                lat, lon = coords[0]['lat'], coords[0]['lon']
-            
+                # Use the polygon CENTROID (mean of all vertices), not the first
+                # vertex. Sampling at coords[0] meant two distinct fields whose
+                # first corners fell inside the same ~200 m Sentinel bbox/cache
+                # tile resolved to identical NDVI — the "every field shows 0.21"
+                # bug. The centroid samples over each field's own area and matches
+                # what the insight/history/aggregator paths already do.
+                try:
+                    lats = [p['lat'] for p in coords]
+                    lons = [p['lon'] for p in coords]
+                    lat, lon = sum(lats) / len(lats), sum(lons) / len(lons)
+                except (KeyError, TypeError, ZeroDivisionError):
+                    lat, lon = coords[0]['lat'], coords[0]['lon']
+
             cursor.close()
             conn.close()
         except HTTPException:
@@ -605,9 +652,20 @@ def analyze_field(field_id: str, background_tasks: BackgroundTasks, user_id: str
     background_tasks.add_task(trigger_sentinel_analysis, field_id, lat, lon)
     return {"status": "success", "message": "Analysis started"}
 
-@app.get("/fields/{field_id}/insight")
+@app.get("/fields/{field_id}/insight", deprecated=True)
 async def get_field_insight(field_id: str, user_id: str = Depends(verify_token)):
-    """Generate a real-time AI agronomist insight for a specific field."""
+    """Generate a real-time AI agronomist insight for a specific field.
+
+    DEPRECATED: superseded by ``GET /field/{field_id}/state`` (the Field State
+    Aggregator). This endpoint's ``WHERE f.id = %s AND f.user_id = %s`` query is
+    the source of the "Field not found" panel bug — when the session's user_id
+    does not match the field owner it returns no row and emits a misleading
+    "Field not found", even for fields that exist with active satellite data.
+    The aggregator runs in the same scope as the rest of the field's data and
+    surfaces the agronomist insight via ``kurima_score.primary_driver /
+    likely_cause / recommended_action``. Kept running during the frontend
+    transition; remove once all clients read from the aggregator.
+    """
     conn = get_db_connection()
     if not conn:
         return {"insight": "Database unavailable. Please try again shortly.", "source": "error"}
@@ -1198,39 +1256,20 @@ def get_dashboard_stats(user_id: str = Depends(verify_token)):
         # Fetch user's fields WITH variety information
         try:
             cursor = conn.cursor(cursor_factory=RealDictCursor)
-            
-            # Check if user_id column exists
+
+            # user_id column always exists (created by init_db)
+            # Removed information_schema check that was adding ~100-200ms per request
             cursor.execute("""
-                SELECT column_name FROM information_schema.columns 
-                WHERE table_name = 'fields' AND column_name = 'user_id'
-            """)
-            has_user_id = cursor.fetchone() is not None
-            
-            if has_user_id:
-                # Enhanced query with variety join for accurate yield potential
-                cursor.execute("""
-                    SELECT 
-                        f.id, f.name, f.crop_type, f.size_hectares, f.health_score, 
-                        f.polygon_coordinates, f.variety,
-                        cv.yield_potential_low, cv.yield_potential_high
-                    FROM fields f
-                    LEFT JOIN crop_varieties cv ON 
-                        cv.variety_name ILIKE f.variety AND 
-                        cv.crop_name ILIKE f.crop_type
-                    WHERE f.user_id = %s::uuid
-                """, (user_id,))
-            else:
-                # Fallback for legacy schema
-                cursor.execute("""
-                    SELECT 
-                        f.id, f.name, f.crop_type, f.size_hectares, f.health_score, 
-                        f.polygon_coordinates, f.variety,
-                        cv.yield_potential_low, cv.yield_potential_high
-                    FROM fields f
-                    LEFT JOIN crop_varieties cv ON 
-                        cv.variety_name ILIKE f.variety AND 
-                        cv.crop_name ILIKE f.crop_type
-                """)
+                SELECT
+                    f.id, f.name, f.crop_type, f.size_hectares, f.health_score,
+                    f.polygon_coordinates, f.variety,
+                    cv.yield_potential_low, cv.yield_potential_high
+                FROM fields f
+                LEFT JOIN crop_varieties cv ON
+                    cv.variety_name ILIKE f.variety AND
+                    cv.crop_name ILIKE f.crop_type
+                WHERE f.user_id = %s::uuid
+            """, (user_id,))
             
             rows = cursor.fetchall()
             
@@ -1423,6 +1462,61 @@ def post_generate_yield(field_id: str, user_id: str = Depends(verify_token)):
             "error": "Projection generation failed. Check field configuration."
         }
 
+# ===========================================================================
+# FIELD STATE AGGREGATOR — canonical "state of this field"
+# ===========================================================================
+async def get_state_principal(
+    authorization: Optional[str] = Header(None),
+    x_api_key: Optional[str] = Header(None),
+    x_tenant_id: Optional[str] = Header(None),
+) -> str:
+    """
+    Resolve the principal (tenant scope) for a Field State request.
+
+    * Consumer: standard Supabase session via the Authorization bearer token.
+    * Institutional: ``X-API-Key`` matching ``INSTITUTIONAL_API_KEY`` plus an
+      ``X-Tenant-Id`` header naming the tenant being read. Tenant scoping is then
+      enforced downstream (the aggregator returns 403 if the field is not in scope).
+    """
+    if x_api_key:
+        expected = os.environ.get("INSTITUTIONAL_API_KEY")
+        if expected and x_api_key == expected and x_tenant_id:
+            return {"requester_id": x_tenant_id, "tenant_ids": [x_tenant_id], "is_admin": False}
+        raise HTTPException(status_code=401, detail="Invalid API key or missing X-Tenant-Id scope")
+    # Session: resolve the role-aware user so we get the caller's tenant_ids.
+    from auth_roles import get_authenticated_user
+    user = get_authenticated_user(authorization)
+    return {"requester_id": user.user_id, "tenant_ids": user.tenant_ids, "is_admin": user.role == "admin"}
+
+
+@app.get("/field/{field_id}/state", response_model=FieldState)
+async def get_field_state(field_id: str, principal: dict = Depends(get_state_principal)):
+    """
+    Single canonical document with everything any screen needs about this field.
+
+    Every consumer screen reads from here, so two screens can never disagree about
+    a field's state. All interpretation (NDVI labels, confidence banding, water
+    deficit, etc.) is computed server-side. Access is tenant-scoped (Workstream 3):
+    an out-of-scope field returns 403 (not 404), an absent field returns 404.
+    """
+    cache_key = f"field_state:{principal['requester_id']}:{field_id}"
+    cached = _cache_get(cache_key, 120)
+    if cached is not None:
+        return cached
+    try:
+        state = await build_field_state(
+            field_id, principal["requester_id"],
+            tenant_ids=principal.get("tenant_ids"), is_admin=principal.get("is_admin", False),
+        )
+    except FieldAccessDenied:
+        raise HTTPException(status_code=403, detail="You do not have access to this field")
+    except FieldNotFound:
+        raise HTTPException(status_code=404, detail="Field not found")
+    payload = state.model_dump()
+    _cache_set(cache_key, payload)
+    return payload
+
+
 @app.get("/market/prices")
 def get_market_prices(region: str = "Zimbabwe"):
     """
@@ -1465,20 +1559,25 @@ def get_market_prices(region: str = "Zimbabwe"):
 # ========== COMBINED DASHBOARD INIT ==========
 
 @app.get("/dashboard/init")
-def dashboard_init(user_id: str = Depends(verify_token)):
+async def dashboard_init(user_id: str = Depends(verify_token)):
     """
     Combined endpoint that returns dashboard stats, fields, and market prices
     in a single round-trip. This eliminates 2 extra HTTP requests from the frontend.
     Cached per-user for 2 minutes.
+
+    Stats and fields DB queries run concurrently via threadpool to halve latency.
     """
     cache_key = f"dashboard_init:{user_id}"
     cached = _cache_get(cache_key, 120)
     if cached is not None:
         return cached
 
-    # Re-use the existing endpoint functions
-    stats = get_dashboard_stats(user_id=user_id)
-    fields_data = get_fields(user_id=user_id)
+    # Run the two DB-bound functions concurrently (each opens its own connection)
+    stats_future = run_in_threadpool(get_dashboard_stats, user_id=user_id)
+    fields_future = run_in_threadpool(get_fields, user_id=user_id)
+    stats, fields_data = await asyncio.gather(stats_future, fields_future)
+
+    # Market prices are hardcoded — no I/O, runs instantly
     market = get_market_prices(region="Zimbabwe")
 
     result = {
@@ -2035,45 +2134,37 @@ async def get_ai_insights(user_id: str = Depends(verify_token)):
     # Parallel I/O: fetch fields, today's tasks, and weather concurrently #
     # ------------------------------------------------------------------ #
 
-    def _fetch_fields():
+    def _fetch_fields_and_tasks():
+        """Fetch fields AND today's tasks in a SINGLE DB connection (was 2 separate connections)."""
         conn = get_db_connection()
         if not conn:
-            return []
+            return [], []
         try:
             cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+            # Query 1: fields
             cursor.execute("""
                 SELECT id, name, crop_type, variety, planting_date,
                        polygon_coordinates, health_score,
                        transplant_date, is_transplanted
                 FROM fields WHERE user_id = %s
             """, (user_id,))
-            result = cursor.fetchall()
-            cursor.close()
-            return result
-        except Exception as e:
-            print(f"⚠️ Error fetching fields for insights: {e}")
-            return []
-        finally:
-            conn.close()
+            fields_result = cursor.fetchall()
 
-    def _fetch_tasks():
-        conn = get_db_connection()
-        if not conn:
-            return []
-        try:
-            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            # Query 2: today's tasks (same connection, no pool overhead)
             cursor.execute("""
                 SELECT t.*, f.name as field_name
                 FROM farm_tasks t
                 LEFT JOIN fields f ON t.field_id = f.id
                 WHERE t.user_id = %s AND t.task_date = %s
             """, (user_id, current_date))
-            result = cursor.fetchall()
+            tasks_result = cursor.fetchall()
+
             cursor.close()
-            return result
+            return fields_result, tasks_result
         except Exception as e:
-            print(f"⚠️ Error fetching existing tasks: {e}")
-            return []
+            print(f"⚠️ Error fetching fields/tasks for insights: {e}")
+            return [], []
         finally:
             conn.close()
 
@@ -2086,11 +2177,8 @@ async def get_ai_insights(user_id: str = Depends(verify_token)):
             print(f"Weather fetch failed: {e}")
         return None
 
-    # Phase 1: fetch fields and tasks in parallel
-    fields, existing_tasks = await asyncio.gather(
-        run_in_threadpool(_fetch_fields),
-        run_in_threadpool(_fetch_tasks),
-    )
+    # Single DB round-trip for fields + tasks (was 2 connections)
+    fields, existing_tasks = await run_in_threadpool(_fetch_fields_and_tasks)
 
     # Phase 2: fetch weather using actual field coordinates (not hardcoded Harare)
     weather_lat, weather_lon = -17.82, 31.05  # Default Harare fallback
@@ -2364,42 +2452,43 @@ async def get_ai_insights(user_id: str = Depends(verify_token)):
                 existing_task_titles.add(task['title'].lower().strip())
 
         # 2. Persist any new stage-based actions that don't already exist in DB
-        #    (these were flagged with _needs_persist in the proactive intelligence loop)
+        #    Runs in a background thread so the response is not blocked by DB writes
         actions_to_persist = [a for a in actions if a.get('_needs_persist')]
         if actions_to_persist:
-            _persist_conn = get_db_connection()
-            if _persist_conn:
+            import threading
+            def _persist_tasks(uid, tasks_to_save, known_titles):
+                _persist_conn = get_db_connection()
+                if not _persist_conn:
+                    return
                 try:
                     cursor = _persist_conn.cursor(cursor_factory=RealDictCursor)
-                    for action in actions_to_persist:
-                        # Deduplicate: skip if a task with the same title exists today
-                        if action['title'].lower().strip() in existing_task_titles:
+                    for action in tasks_to_save:
+                        if action['title'].lower().strip() in known_titles:
                             continue
-
                         cursor.execute("""
                             INSERT INTO farm_tasks (user_id, field_id, title, description, activity_type, priority, is_ai_generated)
                             VALUES (%s, %s, %s, %s, %s, %s, TRUE)
-                            RETURNING *
                         """, (
-                            user_id,
+                            uid,
                             action.get('fieldId'),
                             action['title'][:200],
                             (action.get('description') or '')[:500],
                             action.get('type', 'scout'),
                             action.get('priority', 'normal')
                         ))
-                        new_task = cursor.fetchone()
-                        # Replace the synthetic ID with the real DB ID
-                        action['id'] = str(new_task['id'])
-                        action['completed'] = False
-                        existing_task_titles.add(action['title'].lower().strip())
-
+                        known_titles.add(action['title'].lower().strip())
                     _persist_conn.commit()
                     cursor.close()
                 except Exception as e:
                     print(f"⚠️ Error persisting stage-based tasks: {e}")
                 finally:
                     _persist_conn.close()
+
+            threading.Thread(
+                target=_persist_tasks,
+                args=(user_id, actions_to_persist, existing_task_titles),
+                daemon=True,
+            ).start()
 
         # 3. If no actions at all (no fields, no existing tasks), add a starter
         if not actions and not fields:

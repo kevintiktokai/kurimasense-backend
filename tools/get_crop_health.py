@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import sys
 from datetime import datetime, timedelta, timezone
@@ -12,9 +13,40 @@ REQUEST_TIMEOUT_SECONDS = 60
 RETRY_ATTEMPTS = 3
 CACHE_TTL_SECONDS = 21600
 
+# Satellite backend: defaults to the free Copernicus Data Space Ecosystem (CDSE),
+# which exposes the same Sentinel Hub APIs (OAuth + Statistics) at no cost and
+# needs no paid plan. Override via env to point at commercial Sentinel Hub
+# (https://services.sentinel-hub.com/oauth/token + /api/v1/statistics) if ever
+# subscribed. Read at call time so a .env loaded in run()/scripts takes effect.
+DEFAULT_TOKEN_URL = (
+    "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token"
+)
+DEFAULT_STATS_URL = "https://sh.dataspace.copernicus.eu/api/v1/statistics"
+
+
+def _token_url():
+    return os.getenv("SATELLITE_TOKEN_URL", DEFAULT_TOKEN_URL)
+
+
+def _stats_url():
+    return os.getenv("SATELLITE_STATS_URL", DEFAULT_STATS_URL)
+
 
 def _error(message):
     return {"status": "error", "error_message": message}
+
+
+def _to_float(value):
+    """Coerce a Statistics API stat to a finite float, else None.
+
+    CDSE returns the JSON string "NaN" (not null) for the mean of intervals
+    with no valid pixels (fully clouded/masked days), so a plain None-check
+    is not enough."""
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
 
 
 def _load_seed():
@@ -32,7 +64,7 @@ def _extract_location(seed):
 
 
 def _get_access_token(client_id, client_secret):
-    url = "https://services.sentinel-hub.com/oauth/token"
+    url = _token_url()
     payload = {
         "client_id": client_id,
         "client_secret": client_secret,
@@ -101,7 +133,7 @@ function evaluatePixel(sample) {
 
 
 def _fetch_ndvi_stats(token, payload):
-    url = "https://services.sentinel-hub.com/api/v1/statistics"
+    url = _stats_url()
     headers = {"Authorization": f"Bearer {token}"}
     last_error = None
     for _ in range(RETRY_ATTEMPTS):
@@ -148,9 +180,9 @@ def _parse_stats(stats):
             .get("B0", {})
             .get("stats", {})
         )
-        mean_ndvi = ndvi_stats.get("mean")
-        mean_evi = evi_stats.get("mean")
-        mean_mask = mask_stats.get("mean")
+        mean_ndvi = _to_float(ndvi_stats.get("mean"))
+        mean_evi = _to_float(evi_stats.get("mean"))
+        mean_mask = _to_float(mask_stats.get("mean"))
         if mean_ndvi is not None:
             ndvi_means.append(mean_ndvi)
         if mean_evi is not None:

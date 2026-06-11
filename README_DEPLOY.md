@@ -2,6 +2,47 @@
 
 Follow these steps to deploy the KurimaSense platform. Each part of the system is hosted separately to ensure maximum performance and scalability.
 
+## User roles
+
+`profiles.role` tags each user as `consumer` (default — every farmer), `institutional`
+(offtakers, lenders, insurers, growers — with an `institutional_type` + `tenant_name`),
+or `admin`. Existing users default to `consumer` with no behaviour change. Roles are
+provisioned manually via the `X-Admin-Token`-gated admin endpoint — see
+[`docs/onboarding_institutional_user.md`](docs/onboarding_institutional_user.md).
+Set the `ADMIN_TOKEN` env var to enable those endpoints. Run the migration with
+`python migrate_user_roles.py`.
+
+## Data model (tenants & growers)
+
+Field ownership is by **tenant**, not user (Workstream 3). A `tenant` is a
+`consumer` (one-member personal tenant) or `institutional` (many officers).
+`tenant_members` maps users → tenants with a role (`owner`/`officer`/`viewer`);
+`growers` are an institution's contracted growers; `fields` carry `tenant_id`
+(+ optional `grower_id`). Every consumer gets a personal tenant on backfill, so
+their experience is unchanged. See
+[`docs/tenant_model_concepts.md`](docs/tenant_model_concepts.md) and
+[`docs/grower_management_guide.md`](docs/grower_management_guide.md).
+
+Migrations (run in order, idempotent):
+```bash
+python migrate_create_tenants.py            # tenants + tenant_members
+python migrate_backfill_consumer_tenants.py # one owner-tenant per profile
+python migrate_fields_to_tenants.py         # growers + fields.tenant_id/grower_id
+```
+`fields.user_id` is retained but **deprecated** (migration safety; dropped in a
+future cleanup PR).
+
+## Scripts
+
+- `scripts/seed_demo_fields.py` — **demo-only**, manual seeder that creates ~40
+  fields + growers (fictional names, real GPS polygons) in an institutional
+  tenant for the portfolio dashboard demo. Not an API endpoint; safe to re-run
+  (`DEMO_SEED:` marker) with a `--clear` that only removes demo data. See
+  [`docs/demo_seeding_guide.md`](docs/demo_seeding_guide.md).
+- `scripts/recompute_kurima_scores.py` — one-shot warm-up/validation of
+  KurimaScores for a tenant's fields (scores are computed on-the-fly).
+
+
 ## 1. Frontend: Vercel Setup
 **Repository**: [kevintiktokai/kurima-sense](https://github.com/kevintiktokai/kurima-sense)
 
