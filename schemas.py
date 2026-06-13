@@ -348,3 +348,26 @@ class PortfolioAggregateResponse(BaseModel):
     summary: PortfolioSummary
     priorities: List[PortfolioPriority]
     generated_at: datetime
+
+
+# ========== Season accumulations (Depth Sprint PR D) ==========
+
+class SeasonAccumulationDay(BaseModel):
+    date: str            # YYYY-MM-DD
+    gdd: float
+    gdd_cumulative: float
+    precip_mm: float
+    precip_cumulative: float
+
+
+class SeasonAccumulationsResponse(BaseModel):
+    field_id: str
+    crop_type: str
+    planting_date: str
+    days_elapsed: int
+    gdd_base_c: float
+    gdd_cap_c: float
+    total_gdd: float
+    total_precip_mm: float
+    series: List[SeasonAccumulationDay]
+
