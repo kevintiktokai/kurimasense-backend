@@ -143,6 +143,54 @@ def fetch_tenant_context(user_id: str):
 # ---------------------------------------------------------------------------
 # Role-aware dependency (sibling of verify_token)
 # ---------------------------------------------------------------------------
+def fetch_primary_institutional_tenant(user_id: str):
+    """
+    Return ``(institutional_type, tenant_name)`` for the user's earliest-joined
+    **institutional** tenant membership, or ``None`` if they belong to no
+    institutional tenant.
+
+    Used as a downgrade guard: a member of an institutional tenant is an
+    institutional user even if ``profiles.role`` was reset to ``consumer`` by a
+    stray profile write — tenant membership wins, so an institutional owner/
+    officer/viewer can never be silently downgraded. Degrades to ``None`` (no
+    promotion) if the tenant tables are absent or the DB is unavailable.
+    """
+    conn = get_db_connection()
+    if not conn:
+        return None
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(
+            """
+            SELECT t.institutional_type, t.name
+            FROM tenant_members tm
+            JOIN tenants t ON t.id = tm.tenant_id
+            WHERE tm.user_id = %s::uuid
+              AND t.tenant_type = 'institutional'
+              AND t.deleted_at IS NULL
+            ORDER BY tm.joined_at ASC, tm.tenant_id ASC
+            LIMIT 1
+            """,
+            (user_id,),
+        )
+        row = cur.fetchone()
+        cur.close()
+        if not row:
+            return None
+        # Tenants always carry a type, but coerce + default defensively so the
+        # promoted AuthenticatedUser always has a valid institutional_type.
+        inst_type = _coerce_institutional_type("institutional", row.get("institutional_type")) or "buyer"
+        return inst_type, row.get("name")
+    except Exception as exc:  # pragma: no cover - defensive (table missing pre-migration)
+        logger.warning("Institutional-tenant lookup failed for %s: %s", user_id, exc)
+        return None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def get_authenticated_user(authorization: Optional[str] = Header(None)) -> AuthenticatedUser:
     """
     Verify the JWT (reusing ``deps.verify_token``) and attach role + tenant context.
@@ -155,6 +203,20 @@ def get_authenticated_user(authorization: Optional[str] = Header(None)) -> Authe
     user_id = verify_token(authorization)
     role, institutional_type, tenant_name = fetch_or_create_role(user_id)
     tenant_id, tenant_ids, member_role = fetch_tenant_context(user_id)
+
+    # Downgrade guard: membership in an institutional tenant makes the user
+    # institutional regardless of profiles.role. Role resolution reads a single
+    # mutable profiles.role column, so a stray profile write (onboarding/settings)
+    # could otherwise silently downgrade an institutional owner to consumer and
+    # hide their whole portfolio. Tenant membership wins. Only runs in that
+    # downgrade case (non-admin, not already institutional, has a tenant) — so a
+    # normal institutional user pays no extra query.
+    if role not in ("admin", "institutional") and tenant_id is not None:
+        promoted = fetch_primary_institutional_tenant(user_id)
+        if promoted is not None:
+            role = "institutional"
+            institutional_type, tenant_name = promoted
+
     return AuthenticatedUser(
         user_id=user_id,
         role=role,
