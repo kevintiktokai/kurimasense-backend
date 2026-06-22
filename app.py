@@ -980,6 +980,68 @@ async def get_field_history(field_id: str, user_id: str = Depends(verify_token))
 
     return satellite_history
 
+def _resolve_or_create_owner_tenant_id(cursor, user_id: str) -> str:
+    """Return the caller's owner ``tenant_id``, provisioning a consumer tenant +
+    owner membership on the fly if the user has none yet.
+
+    Workstream 3 re-scoped field ownership to tenants: ``fields.tenant_id`` is
+    NOT NULL. Every consumer normally gets a 1-member ``consumer`` tenant via
+    ``migrate_backfill_consumer_tenants.py``, but a user created *after* that
+    backfill ran (or one whose tenant was never provisioned) can have a profile
+    with no ``tenant_members`` row — which is exactly why ``POST /fields`` was
+    inserting a NULL ``tenant_id`` and getting a 500. We resolve the primary
+    (earliest-joined) membership and, failing that, create the consumer tenant
+    here so field creation always succeeds. Runs on the caller's cursor so it is
+    atomic with the field insert (same transaction/commit).
+    """
+    # Primary membership = earliest-joined (matches auth_roles.fetch_tenant_context);
+    # a consumer has exactly one.
+    cursor.execute(
+        """
+        SELECT tenant_id::text AS tenant_id
+        FROM tenant_members
+        WHERE user_id = %s::uuid
+        ORDER BY joined_at ASC, tenant_id ASC
+        LIMIT 1
+        """,
+        (user_id,),
+    )
+    row = cursor.fetchone()
+    if row:
+        return row["tenant_id"]
+
+    # No membership yet — provision a consumer tenant + owner membership, mirroring
+    # migrate_backfill_consumer_tenants.py. Ensure the profiles row exists first
+    # (tenant_members.user_id REFERENCES profiles(id)); get_authenticated_user
+    # normally creates it, but /fields authenticates via the bare verify_token.
+    cursor.execute(
+        "INSERT INTO profiles (id, role) VALUES (%s::uuid, 'consumer') "
+        "ON CONFLICT (id) DO NOTHING",
+        (user_id,),
+    )
+    cursor.execute(
+        "SELECT COALESCE(NULLIF(full_name, ''), 'User ' || left(id::text, 8)) AS name "
+        "FROM profiles WHERE id = %s::uuid",
+        (user_id,),
+    )
+    prow = cursor.fetchone()
+    tenant_name = prow["name"] if prow else ("User " + str(user_id)[:8])
+
+    cursor.execute(
+        "INSERT INTO tenants (name, tenant_type, institutional_type) "
+        "VALUES (%s, 'consumer', NULL) RETURNING id::text AS id",
+        (tenant_name,),
+    )
+    tenant_id = cursor.fetchone()["id"]
+    cursor.execute(
+        "INSERT INTO tenant_members (tenant_id, user_id, member_role) "
+        "VALUES (%s::uuid, %s::uuid, 'owner') "
+        "ON CONFLICT (tenant_id, user_id) DO NOTHING",
+        (tenant_id, user_id),
+    )
+    return tenant_id
+
+
 @app.post("/fields")
 def create_field(payload: dict, background_tasks: BackgroundTasks, user_id: str = Depends(verify_token)):
     conn = get_db_connection()
@@ -1032,17 +1094,22 @@ def create_field(payload: dict, background_tasks: BackgroundTasks, user_id: str 
     
     try:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-        
+
+        # Resolve the owner tenant for this field. fields.tenant_id is NOT NULL
+        # (Workstream 3); without this the insert violated the not-null constraint
+        # and POST /fields returned 500.
+        tenant_id = _resolve_or_create_owner_tenant_id(cursor, user_id)
+
         # Insert with all field data including planting info and transplant info
         cursor.execute("""
             INSERT INTO fields (
-                name, crop_type, polygon_coordinates, size_hectares, 
-                health_score, user_id, planting_date, transplant_date, 
+                name, crop_type, polygon_coordinates, size_hectares,
+                health_score, user_id, tenant_id, planting_date, transplant_date,
                 is_transplanted, variety, fertilizer_history
-            ) 
-            VALUES (%s, %s, %s, %s, 50, %s::uuid, %s, %s, %s, %s, %s) 
+            )
+            VALUES (%s, %s, %s, %s, 50, %s::uuid, %s::uuid, %s, %s, %s, %s, %s)
             RETURNING id
-        """, (name, crop, json.dumps(coords), area_ha, user_id, planting_date, 
+        """, (name, crop, json.dumps(coords), area_ha, user_id, tenant_id, planting_date,
               transplant_date, is_transplanted, variety, fertilizer_history))
         
         new_id = cursor.fetchone()['id']
