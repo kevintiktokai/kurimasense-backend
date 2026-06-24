@@ -980,6 +980,23 @@ async def get_field_history(field_id: str, user_id: str = Depends(verify_token))
 
     return satellite_history
 
+def _clean_date(value):
+    """Normalize a payload date value for insertion into a Postgres ``DATE`` column.
+
+    The consumer "add field" form (and the yield form) treat planting/transplant/
+    harvest dates as optional, so an untouched date input arrives as ``""``.
+    Postgres rejects the empty string for type ``date`` ("invalid input syntax for
+    type date") which aborts the whole INSERT and turns an optional blank field
+    into a 500 — i.e. the field silently fails to save. Coerce empty/whitespace
+    strings to ``None`` so the column is stored as NULL instead.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip() == "":
+        return None
+    return value
+
+
 def _resolve_or_create_owner_tenant_id(cursor, user_id: str) -> str:
     """Return the caller's owner ``tenant_id``, provisioning a consumer tenant +
     owner membership on the fly if the user has none yet.
@@ -1050,8 +1067,8 @@ def create_field(payload: dict, background_tasks: BackgroundTasks, user_id: str 
     crop = payload.get("crop", "Maize")
     coords = payload.get("coordinates", [])
     area_ha = payload.get("area", 0.0) or 15.0
-    planting_date = payload.get("plantingDate")
-    transplant_date = payload.get("transplantDate")
+    planting_date = _clean_date(payload.get("plantingDate"))
+    transplant_date = _clean_date(payload.get("transplantDate"))
     variety = payload.get("variety")
     fertilizer_history = payload.get("fertilizerHistory")
     
@@ -3639,8 +3656,8 @@ async def record_yield(field_id: str, payload: dict, user_id: str = Depends(veri
         season_type = payload.get('season_type', 'summer')
         crop_type = payload.get('crop_type') or field['crop_type']
         variety = payload.get('variety')
-        planting_date = payload.get('planting_date')
-        harvest_date = payload.get('harvest_date')
+        planting_date = _clean_date(payload.get('planting_date'))
+        harvest_date = _clean_date(payload.get('harvest_date'))
         area_harvested_ha = payload.get('area_harvested_ha')
         actual_yield_tonnes = payload.get('actual_yield_tonnes')
         

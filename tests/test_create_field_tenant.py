@@ -91,6 +91,45 @@ def test_create_field_stamps_existing_tenant_id():
     assert conn.committed
 
 
+def test_create_field_blank_dates_stored_as_null():
+    """An optional, untouched date input arrives as "" — Postgres rejects '' for
+    type ``date`` and the whole INSERT 500s, so the field silently fails to save.
+    The empty strings must be normalized to NULL before binding."""
+    conn = FakeConn(results=[{"tenant_id": "tenant-existing"}, {"id": "field-3"}])
+    client = _client(conn)
+
+    r = client.post("/fields", json={
+        "name": "Blank Date Block",
+        "crop": "Maize",
+        "plantingDate": "",
+        "transplantDate": "",
+    })
+
+    assert r.status_code == 200, r.text
+
+    sql, params = _insert_fields_call(conn)
+    # planting_date is the 7th bound param, transplant_date the 8th (VALUES order).
+    assert params[6] is None
+    assert params[7] is None
+    assert conn.committed
+
+
+def test_create_field_keeps_real_dates():
+    """A genuine date passes through untouched."""
+    conn = FakeConn(results=[{"tenant_id": "tenant-existing"}, {"id": "field-4"}])
+    client = _client(conn)
+
+    r = client.post("/fields", json={
+        "name": "Dated Block",
+        "crop": "Maize",
+        "plantingDate": "2026-06-24",
+    })
+
+    assert r.status_code == 200, r.text
+    sql, params = _insert_fields_call(conn)
+    assert params[6] == "2026-06-24"
+
+
 def test_create_field_provisions_tenant_when_user_has_none():
     # tenant_members SELECT -> None (no membership) triggers provisioning:
     #   INSERT profiles (no fetch), SELECT name, INSERT tenants RETURNING id,
