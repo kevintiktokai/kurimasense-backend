@@ -159,17 +159,19 @@ def main():
 
     cur.execute(
         """
-        SELECT f.id::text AS id, f.tenant_id::text AS tenant_id,
-               f.crop_type, f.variety, f.planting_date, f.size_hectares,
+        SELECT f.id::text AS id, f.tenant_id::text AS tenant_id, f.name,
+               f.crop_type, f.variety,
+               COALESCE(hr.planting_date, f.planting_date) AS planting_date,
+               f.size_hectares,
                f.polygon_coordinates, f.fertilizer_history,
                f.transplant_date, f.is_transplanted, f.natural_region,
-               hr.actual_yield_tonnes, hr.season_year
+               hr.actual_yield_tonnes, hr.season_year, hr.source
         FROM fields f
         JOIN harvest_records hr ON hr.field_id = f.id
         WHERE f.tenant_id = %s::uuid
           AND hr.actual_yield_tonnes IS NOT NULL
           AND hr.actual_yield_tonnes > 0
-          AND f.planting_date IS NOT NULL
+          AND COALESCE(hr.planting_date, f.planting_date) IS NOT NULL
           AND f.polygon_coordinates IS NOT NULL
         ORDER BY f.id, hr.season_year
         """,
@@ -183,11 +185,16 @@ def main():
         conn.close()
         return
 
-    is_sample = all(
-        r.get("source") == "historical_backfill"
-        or (r.get("crop_type") or "").startswith("DEMO")
+    # Honesty caveat: a run is "sample" (NOT for external use) if it touches any
+    # demo-seeded field, OR if any paired actual is not from a trusted real source
+    # (a contractor's imported book = 'historical_backfill', or 'institution_recorded').
+    # Only a pure real-actuals run on non-demo fields yields a quotable number.
+    demo_present = any((r.get("name") or "").startswith("DEMO_SEED") for r in records)
+    all_trusted = all(
+        r.get("source") in ("historical_backfill", "institution_recorded")
         for r in records
     )
+    is_sample = demo_present or not all_trusted
 
     print(f"\n{'=' * 60}")
     if is_sample:
@@ -269,6 +276,13 @@ def main():
                          confidence_band, confidence_pct, model_version, is_backtest,
                          season_progress_pct, inputs_snapshot)
                     VALUES (%s::uuid, %s::uuid, %s, %s, %s, %s, %s, TRUE, %s, %s)
+                    ON CONFLICT (field_id, projection_date, season_progress_pct)
+                    WHERE is_backtest = TRUE
+                    DO UPDATE SET
+                        projected_tonnes_per_ha = EXCLUDED.projected_tonnes_per_ha,
+                        confidence_band = EXCLUDED.confidence_band,
+                        confidence_pct = EXCLUDED.confidence_pct,
+                        inputs_snapshot = EXCLUDED.inputs_snapshot
                     """,
                     (
                         rec["id"], rec["tenant_id"], as_of_day, projected,

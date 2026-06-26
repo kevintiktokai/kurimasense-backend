@@ -220,3 +220,15 @@ Columns: `id`, `field_id`, `user_id`, `log_date`, `ndvi`, `evi`, `soil_moisture`
 4. **Auto-deploy:** No auto-deploy on push to main for either repo (from repo config).
 5. **Backend test count:** ~185 tests (not 111+ as stated — the suite has grown).
 6. **`daily_logs` extra columns:** Table also has `user_id` and `insight_text` columns not mentioned in CLAUDE.md (but not relevant to Sprint 1).
+7. **`fields` has NO `deleted_at` column.** Unlike `tenants` and `growers` (which soft-delete), `fields` is **hard-deleted** (`DELETE FROM fields` in `app.py:1206`, `scripts/seed_demo_fields.py:288`). No query in the repo filters `fields` by `deleted_at`. Tenant-scoped field lookups must NOT add `deleted_at IS NULL` — that column does not exist and would raise. (Caught in the cross-model review; `resolve_access` in the aggregator correctly omits it.)
+8. **`fields.natural_region`** is added idempotently by the demo seeder (`ALTER TABLE fields ADD COLUMN IF NOT EXISTS natural_region TEXT`) and is hard-referenced by existing operational scripts (`recompute_kurima_scores.py:56`). It exists on the seeded live DB. The calibration backtest/recompute read it directly; on a fresh non-seeded DB the seeder must run first.
+
+## Cross-model review corrections (post-Opus review of the Sonnet draft)
+
+These bugs were found re-auditing the first-pass implementation and are now fixed:
+- **`outcome_routes._resolve_field_for_tenant`** filtered `fields` by a non-existent `deleted_at` column (would 500 on every harvest call) and failed to `SELECT user_id` (legacy consumer fallback silently dead). Both fixed; regression test added (`TestResolveQuerySchema`).
+- **Harvest insert/list** used `RETURNING *, id::text AS id` (fragile duplicate columns); replaced with an explicit `_HARVEST_COLS` list matching the `grower_routes` convention.
+- **`admin/calibration/recompute`** paired projections to harvests via `season_year = EXTRACT(YEAR FROM projection_date)` — wrong for tobacco (planted in the prior calendar year). Now pairs on the season window (`projection_date BETWEEN planting_date AND COALESCE(harvest_date, planting_date + 365d)`).
+- **`get_calibration` `is_validated`** wrongly excluded `historical_backfill` (that IS the real contractor-book path) and would have mislabeled fabricated demo-field actuals as validated. Now: validated = real actuals exist on **non-demo** fields (`name NOT LIKE 'DEMO_SEED:%'`).
+- **`get_calibration` headline** sorted by bucket string, so `"unknown"` outranked real buckets. Now uses an explicit bucket rank (70-100% > 50-70% > 0-50% > unknown), and dedupes to the latest row per segment via `DISTINCT ON`.
+- **Backtest harness** `is_sample` detection referenced columns not in the SELECT and had inverted logic; now flags SAMPLE if any demo-seeded field is touched or any actual isn't from a trusted real source. Backtest projection writes are now idempotent (`ON CONFLICT` on a new partial unique index) and anchor on the harvest's own `planting_date` for multi-season correctness.

@@ -261,3 +261,58 @@ class TestCrossTenantAccess:
             with pytest.raises(Exception) as exc_info:
                 get_calibration(tenant_id="other-tenant", user=user)
             assert exc_info.value.status_code == 403
+
+
+class TestResolveQuerySchema:
+    """Regression: the resolve query must match the real fields schema.
+    fields has NO deleted_at column (hard-deleted), and must SELECT user_id
+    for the legacy consumer access fallback."""
+
+    @patch("outcome_routes.get_db_connection")
+    def test_resolve_query_has_no_deleted_at_and_selects_user_id(self, mock_conn_fn):
+        from outcome_routes import _resolve_field_for_tenant
+        from schemas import AuthenticatedUser
+
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_cur.fetchone.return_value = {
+            "id": "f1", "user_id": "u1", "tenant_id": "t1",
+            "grower_id": None, "crop_type": "tobacco",
+            "variety": None, "planting_date": None,
+        }
+        mock_conn.cursor.return_value = mock_cur
+        mock_conn_fn.return_value = mock_conn
+
+        user = AuthenticatedUser(
+            user_id="u1", role="institutional",
+            institutional_type="buyer",
+            tenant_id="t1", tenant_ids=["t1"],
+        )
+        _resolve_field_for_tenant("f1", user)
+
+        executed_sql = mock_cur.execute.call_args.args[0]
+        assert "deleted_at" not in executed_sql
+        assert "user_id" in executed_sql
+
+    @patch("outcome_routes.get_db_connection")
+    def test_resolve_allows_legacy_user_id_owner(self, mock_conn_fn):
+        """A consumer whose user_id owns the field (no tenant match) is allowed."""
+        from outcome_routes import _resolve_field_for_tenant
+        from schemas import AuthenticatedUser
+
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_cur.fetchone.return_value = {
+            "id": "f1", "user_id": "consumer-1", "tenant_id": "their-tenant",
+            "grower_id": None, "crop_type": "maize",
+            "variety": None, "planting_date": None,
+        }
+        mock_conn.cursor.return_value = mock_cur
+        mock_conn_fn.return_value = mock_conn
+
+        user = AuthenticatedUser(
+            user_id="consumer-1", role="consumer",
+            tenant_id="own-tenant", tenant_ids=["own-tenant"],
+        )
+        field = _resolve_field_for_tenant("f1", user)
+        assert field["id"] == "f1"

@@ -16,9 +16,14 @@ CREATE TABLE IF NOT EXISTS yield_projections (
     inputs_snapshot JSONB,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
+-- One live projection per field per day (idempotent daily snapshot upsert).
 CREATE UNIQUE INDEX IF NOT EXISTS idx_yield_proj_field_date_bt
     ON yield_projections(field_id, projection_date, is_backtest)
     WHERE is_backtest = FALSE;
+-- One backtest projection per field per checkpoint date (idempotent re-runs).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_yield_proj_backtest
+    ON yield_projections(field_id, projection_date, season_progress_pct)
+    WHERE is_backtest = TRUE;
 CREATE INDEX IF NOT EXISTS idx_yield_proj_field ON yield_projections(field_id, projection_date DESC);
 CREATE INDEX IF NOT EXISTS idx_yield_proj_tenant ON yield_projections(tenant_id);
 

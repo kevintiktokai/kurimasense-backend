@@ -21,6 +21,15 @@ from schemas import (
 
 router = APIRouter(tags=["outcome-loop"])
 
+# Explicit column list with UUID->text casts (matches grower_routes convention).
+_HARVEST_COLS = (
+    "id::text AS id, field_id::text AS field_id, grower_id::text AS grower_id, "
+    "tenant_id::text AS tenant_id, season_year, season_type, crop_type, variety, "
+    "planting_date, harvest_date, area_harvested_ha, actual_yield_tonnes, "
+    "quality_grade, moisture_at_harvest, sale_price_per_tonne, delivered_to_tenant, "
+    "source, notes, created_at"
+)
+
 
 def _resolve_field_for_tenant(field_id: str, user: AuthenticatedUser) -> dict:
     conn = get_db_connection()
@@ -30,9 +39,10 @@ def _resolve_field_for_tenant(field_id: str, user: AuthenticatedUser) -> dict:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute(
             """
-            SELECT id::text, tenant_id::text, grower_id::text,
+            SELECT id::text AS id, user_id::text AS user_id,
+                   tenant_id::text AS tenant_id, grower_id::text AS grower_id,
                    crop_type, variety, planting_date
-            FROM fields WHERE id = %s::uuid AND deleted_at IS NULL
+            FROM fields WHERE id = %s::uuid
             """,
             (field_id,),
         )
@@ -79,11 +89,7 @@ def create_harvest(
                     %s, %s, %s, %s,
                     %s, %s, %s,
                     %s, 'grower_logged', %s)
-            RETURNING *,
-                id::text AS id,
-                field_id::text AS field_id,
-                grower_id::text AS grower_id,
-                tenant_id::text AS tenant_id
+            RETURNING """ + _HARVEST_COLS + """
             """,
             (
                 field_id,
@@ -130,13 +136,9 @@ def list_harvests(
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute(
-            """
-            SELECT *, id::text AS id, field_id::text AS field_id,
-                   grower_id::text AS grower_id, tenant_id::text AS tenant_id
-            FROM harvest_records
-            WHERE field_id = %s::uuid
-            ORDER BY season_year DESC, created_at DESC
-            """,
+            "SELECT " + _HARVEST_COLS + " FROM harvest_records "
+            "WHERE field_id = %s::uuid "
+            "ORDER BY season_year DESC, created_at DESC",
             (field_id,),
         )
         rows = [dict(r) for r in cur.fetchall()]
@@ -179,34 +181,46 @@ def get_calibration(
         )
         tenant_crops = {r["crop_type"] for r in cur.fetchall()}
 
+        # Latest row per segment within the latest model_version, so repeated
+        # recomputes don't surface stale duplicate segments.
         cur.execute(
             """
-            SELECT * FROM model_calibration
+            SELECT DISTINCT ON
+                   (crop_type, natural_region, variety, season_progress_bucket)
+                   crop_type, natural_region, variety, season_progress_bucket,
+                   model_version, n_observations, mae_pct, rmse, bias_pct, computed_at
+            FROM model_calibration
             WHERE model_version = (
                 SELECT model_version FROM model_calibration
                 ORDER BY computed_at DESC LIMIT 1
             )
             AND (crop_type IS NULL OR crop_type = ANY(%s))
-            ORDER BY crop_type, season_progress_bucket
+            ORDER BY crop_type, natural_region, variety, season_progress_bucket,
+                     computed_at DESC
             """,
             (list(tenant_crops) if tenant_crops else ["__none__"],),
         )
         rows = [dict(r) for r in cur.fetchall()]
 
-        has_real_actuals = False
-        if tenant_crops:
-            cur.execute(
-                """
-                SELECT EXISTS(
-                    SELECT 1 FROM harvest_records
-                    WHERE tenant_id = %s::uuid
-                      AND source != 'historical_backfill'
-                      AND actual_yield_tonnes IS NOT NULL
-                )
-                """,
-                (tenant_id,),
-            )
-            has_real_actuals = cur.fetchone()["exists"]
+        # "Validated" means the calibration is backed by real harvest actuals.
+        # All three sources (grower_logged, historical_backfill, institution_recorded)
+        # represent real-world records — a contractor's imported book is exactly the
+        # historical_backfill path. Demo-seeded fields (name LIKE 'DEMO_SEED:%') are
+        # explicitly excluded: fabricated actuals on demo fields must NEVER read as
+        # validated (the honesty caveat — demo data must not masquerade as the number).
+        cur.execute(
+            """
+            SELECT EXISTS(
+                SELECT 1 FROM harvest_records hr
+                JOIN fields f ON f.id = hr.field_id
+                WHERE hr.tenant_id = %s::uuid
+                  AND hr.actual_yield_tonnes IS NOT NULL
+                  AND f.name NOT LIKE 'DEMO_SEED:%%'
+            ) AS has_actuals
+            """,
+            (tenant_id,),
+        )
+        has_real_actuals = bool(cur.fetchone()["has_actuals"])
 
         cur.close()
     finally:
@@ -214,11 +228,20 @@ def get_calibration(
 
     entries = [CalibrationEntry(**r) for r in rows]
 
+    # Headline = the primary crop's figure at the latest (closest-to-harvest)
+    # season-progress bucket. Order buckets explicitly so "unknown" never wins.
+    _BUCKET_RANK = {"0-50%": 1, "50-70%": 2, "70-100%": 3, "unknown": 0}
     headline_mae = None
     headline_crop = None
     headline_bucket = None
     if entries:
-        best = max(entries, key=lambda e: (e.season_progress_bucket or "", e.n_observations))
+        best = max(
+            entries,
+            key=lambda e: (
+                _BUCKET_RANK.get(e.season_progress_bucket or "unknown", 0),
+                e.n_observations,
+            ),
+        )
         headline_mae = best.mae_pct
         headline_crop = best.crop_type
         headline_bucket = best.season_progress_bucket
@@ -256,8 +279,12 @@ def admin_recompute_calibration(
                    hr.actual_yield_tonnes,
                    f.crop_type, f.natural_region, f.variety
             FROM yield_projections yp
-            JOIN harvest_records hr ON hr.field_id = yp.field_id
-                                   AND hr.season_year = EXTRACT(YEAR FROM yp.projection_date)
+            JOIN harvest_records hr
+              ON hr.field_id = yp.field_id
+             AND hr.planting_date IS NOT NULL
+             AND yp.projection_date >= hr.planting_date
+             AND yp.projection_date <= COALESCE(
+                     hr.harvest_date, hr.planting_date + INTERVAL '365 days')
             JOIN fields f ON f.id = yp.field_id
             WHERE yp.projected_tonnes_per_ha IS NOT NULL
               AND hr.actual_yield_tonnes IS NOT NULL
