@@ -1,0 +1,4 @@
+field_id,season_year,crop_type,variety,actual_yield_tonnes,quality_grade,area_harvested_ha,planting_date,harvest_date
+00000000-0000-0000-0000-000000000001,2024,tobacco,KRK26R,2.1,A,5.0,2023-10-15,2024-03-20
+00000000-0000-0000-0000-000000000002,2024,tobacco,T66,1.8,B,3.5,2023-11-01,2024-04-05
+00000000-0000-0000-0000-000000000003,2024,maize,SC727,6.5,,10.0,2023-11-15,2024-04-20

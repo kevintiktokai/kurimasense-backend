@@ -371,3 +371,62 @@ class SeasonAccumulationsResponse(BaseModel):
     total_precip_mm: float
     series: List[SeasonAccumulationDay]
 
+
+# ========== Harvest Schemas ==========
+
+class CreateHarvestRequest(BaseModel):
+    season_year: int = Field(..., ge=2000, le=2100)
+    area_harvested_ha: float = Field(..., gt=0)
+    actual_yield_tonnes: float = Field(..., gt=0)
+    harvest_date: Optional[date] = None
+    quality_grade: Optional[str] = None
+    moisture_at_harvest: Optional[float] = Field(default=None, ge=0, le=100)
+    sale_price_per_tonne: Optional[float] = Field(default=None, ge=0)
+    delivered_to_tenant: Optional[bool] = None
+    notes: Optional[str] = None
+
+
+class HarvestRecord(BaseModel):
+    id: str
+    field_id: str
+    grower_id: Optional[str] = None
+    tenant_id: Optional[str] = None
+    season_year: int
+    season_type: Optional[str] = None
+    crop_type: Optional[str] = None
+    variety: Optional[str] = None
+    planting_date: Optional[date] = None
+    harvest_date: Optional[date] = None
+    area_harvested_ha: Optional[float] = None
+    actual_yield_tonnes: Optional[float] = None
+    quality_grade: Optional[str] = None
+    moisture_at_harvest: Optional[float] = None
+    sale_price_per_tonne: Optional[float] = None
+    delivered_to_tenant: Optional[bool] = None
+    source: Optional[str] = None
+    notes: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+
+# ========== Calibration Schemas ==========
+
+class CalibrationEntry(BaseModel):
+    crop_type: Optional[str] = None
+    natural_region: Optional[str] = None
+    variety: Optional[str] = None
+    season_progress_bucket: Optional[str] = None
+    model_version: str
+    n_observations: int
+    mae_pct: float
+    rmse: Optional[float] = None
+    bias_pct: Optional[float] = None
+    computed_at: Optional[datetime] = None
+
+
+class CalibrationResponse(BaseModel):
+    headline_mae_pct: Optional[float] = None
+    headline_crop: Optional[str] = None
+    headline_progress_bucket: Optional[str] = None
+    is_validated: bool = False
+    entries: List[CalibrationEntry] = []
+

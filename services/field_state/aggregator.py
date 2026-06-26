@@ -758,6 +758,13 @@ async def build_field_state(
     # --- yield (sync, best-effort) ---------------------------------------
     yield_raw = _fetch_yield(field_row, daily_logs)
 
+    # --- snapshot projection (fire-and-forget, own connection) -----------
+    try:
+        from services.calibration.snapshot import snapshot_projection
+        snapshot_projection(field_row, yield_raw, daily_logs)
+    except Exception:
+        pass
+
     # --- alerts (async, best-effort) -------------------------------------
     alerts_raw = await _fetch_alerts(field_row, weather_raw)
 
