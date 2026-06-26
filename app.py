@@ -100,6 +100,10 @@ app.include_router(season_router)
 from outcome_routes import router as outcome_router  # noqa: E402
 app.include_router(outcome_router)
 
+# Financial / exposure (Sprint 2): contracts, disbursements, deliveries, exposure.
+from financial_routes import router as financial_router  # noqa: E402
+app.include_router(financial_router)
+
 # CORS Configuration
 # Allow specific origins from environment or default to known frontends
 allowed_origins_env = os.environ.get("CORS_ORIGINS", "").strip()
