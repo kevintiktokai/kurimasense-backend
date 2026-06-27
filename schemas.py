@@ -532,3 +532,38 @@ class ExposureResponse(BaseModel):
     growers: List[GrowerExposureOut] = []
     weekly: List[WeeklyExposureOut] = []
 
+
+# ========== Scouting Schemas (Sprint 3) ==========
+
+ScoutingCategory = Literal['pest', 'disease', 'weed', 'water', 'nutrient', 'general']
+ScoutingSeverity = Literal['low', 'medium', 'high', 'critical']
+
+
+class CreateScoutingRequest(BaseModel):
+    category: ScoutingCategory
+    severity: ScoutingSeverity
+    notes: Optional[str] = None
+    lat: Optional[float] = Field(default=None, ge=-90, le=90)
+    lon: Optional[float] = Field(default=None, ge=-180, le=180)
+    photo_url: Optional[str] = None
+    diagnosis: Optional[Dict[str, Any]] = None
+    observed_at: Optional[datetime] = None
+    source: Optional[str] = Field(default='grower_logged')
+
+
+class ScoutingRecord(BaseModel):
+    id: str
+    field_id: str
+    tenant_id: Optional[str] = None
+    user_id: Optional[str] = None
+    category: Optional[str] = None
+    severity: Optional[str] = None
+    notes: Optional[str] = None
+    lat: Optional[float] = None
+    lon: Optional[float] = None
+    photo_url: Optional[str] = None
+    diagnosis: Optional[Dict[str, Any]] = None
+    observed_at: Optional[datetime] = None
+    source: Optional[str] = None
+    created_at: Optional[datetime] = None
+

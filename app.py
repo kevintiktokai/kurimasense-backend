@@ -104,6 +104,10 @@ app.include_router(outcome_router)
 from financial_routes import router as financial_router  # noqa: E402
 app.include_router(financial_router)
 
+# Scouting persistence (Sprint 3): grower scouting observations + AI diagnosis.
+from scouting_routes import router as scouting_router  # noqa: E402
+app.include_router(scouting_router)
+
 # CORS Configuration
 # Allow specific origins from environment or default to known frontends
 allowed_origins_env = os.environ.get("CORS_ORIGINS", "").strip()
