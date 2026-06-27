@@ -371,3 +371,164 @@ class SeasonAccumulationsResponse(BaseModel):
     total_precip_mm: float
     series: List[SeasonAccumulationDay]
 
+
+# ========== Harvest Schemas ==========
+
+class CreateHarvestRequest(BaseModel):
+    season_year: int = Field(..., ge=2000, le=2100)
+    area_harvested_ha: float = Field(..., gt=0)
+    actual_yield_tonnes: float = Field(..., gt=0)
+    harvest_date: Optional[date] = None
+    quality_grade: Optional[str] = None
+    moisture_at_harvest: Optional[float] = Field(default=None, ge=0, le=100)
+    sale_price_per_tonne: Optional[float] = Field(default=None, ge=0)
+    delivered_to_tenant: Optional[bool] = None
+    notes: Optional[str] = None
+
+
+class HarvestRecord(BaseModel):
+    id: str
+    field_id: str
+    grower_id: Optional[str] = None
+    tenant_id: Optional[str] = None
+    season_year: int
+    season_type: Optional[str] = None
+    crop_type: Optional[str] = None
+    variety: Optional[str] = None
+    planting_date: Optional[date] = None
+    harvest_date: Optional[date] = None
+    area_harvested_ha: Optional[float] = None
+    actual_yield_tonnes: Optional[float] = None
+    quality_grade: Optional[str] = None
+    moisture_at_harvest: Optional[float] = None
+    sale_price_per_tonne: Optional[float] = None
+    delivered_to_tenant: Optional[bool] = None
+    source: Optional[str] = None
+    notes: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+
+# ========== Calibration Schemas ==========
+
+class CalibrationEntry(BaseModel):
+    crop_type: Optional[str] = None
+    natural_region: Optional[str] = None
+    variety: Optional[str] = None
+    season_progress_bucket: Optional[str] = None
+    model_version: str
+    n_observations: int
+    mae_pct: float
+    rmse: Optional[float] = None
+    bias_pct: Optional[float] = None
+    computed_at: Optional[datetime] = None
+
+
+class CalibrationResponse(BaseModel):
+    headline_mae_pct: Optional[float] = None
+    headline_crop: Optional[str] = None
+    headline_progress_bucket: Optional[str] = None
+    is_validated: bool = False
+    entries: List[CalibrationEntry] = []
+
+
+# ========== Financial / Exposure Schemas (Sprint 2) ==========
+
+class CreateContractRequest(BaseModel):
+    grower_id: str
+    season_year: int = Field(..., ge=2000, le=2100)
+    crop_type: Optional[str] = None
+    contracted_volume_tonnes: float = Field(..., gt=0)
+    contract_price_per_tonne: float = Field(..., gt=0)
+    input_credit_value: float = Field(..., ge=0)
+    status: Optional[str] = Field(default="active")
+
+
+class Contract(BaseModel):
+    id: str
+    tenant_id: Optional[str] = None
+    grower_id: Optional[str] = None
+    season_year: int
+    crop_type: Optional[str] = None
+    contracted_volume_tonnes: Optional[float] = None
+    contract_price_per_tonne: Optional[float] = None
+    input_credit_value: Optional[float] = None
+    status: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+
+class CreateDisbursementRequest(BaseModel):
+    grower_id: str
+    contract_id: Optional[str] = None
+    input_type: Optional[str] = None
+    quantity: Optional[float] = Field(default=None, ge=0)
+    unit: Optional[str] = None
+    credit_value: float = Field(..., gt=0)
+    disbursement_date: Optional[date] = None
+
+
+class Disbursement(BaseModel):
+    id: str
+    tenant_id: Optional[str] = None
+    grower_id: Optional[str] = None
+    contract_id: Optional[str] = None
+    disbursement_date: Optional[date] = None
+    input_type: Optional[str] = None
+    quantity: Optional[float] = None
+    unit: Optional[str] = None
+    credit_value: Optional[float] = None
+    created_at: Optional[datetime] = None
+
+
+class CreateDeliveryRequest(BaseModel):
+    grower_id: str
+    contract_id: Optional[str] = None
+    field_id: Optional[str] = None
+    volume_tonnes: float = Field(..., gt=0)
+    price_per_tonne: Optional[float] = Field(default=None, ge=0)
+    quality_grade: Optional[str] = None
+    delivery_date: Optional[date] = None
+
+
+class Delivery(BaseModel):
+    id: str
+    tenant_id: Optional[str] = None
+    grower_id: Optional[str] = None
+    contract_id: Optional[str] = None
+    field_id: Optional[str] = None
+    delivery_date: Optional[date] = None
+    volume_tonnes: Optional[float] = None
+    price_per_tonne: Optional[float] = None
+    quality_grade: Optional[str] = None
+    value_usd: Optional[float] = None
+    created_at: Optional[datetime] = None
+
+
+class GrowerExposureOut(BaseModel):
+    grower_id: str
+    grower_name: Optional[str] = None
+    input_credit_value: float
+    projected_volume_tonnes: float
+    price_per_tonne: float
+    repayment_likelihood: float
+    net_exposure: float
+    expected_harvest_date: Optional[date] = None
+    kurima_score: Optional[float] = None
+    field_count: int = 0
+
+
+class WeeklyExposureOut(BaseModel):
+    week_start: date
+    total_net_exposure: float
+    grower_count: int
+
+
+class ExposureResponse(BaseModel):
+    tenant_id: str
+    total_net_exposure: float
+    total_input_credit: float
+    total_expected_recoverable: float
+    grower_count: int
+    model_version: str
+    growers: List[GrowerExposureOut] = []
+    weekly: List[WeeklyExposureOut] = []
+
