@@ -3,8 +3,8 @@
 Sprint 4 has four workstreams of differing risk. Sequencing (lowest-risk,
 highest-value first; matches CLAUDE.md ordering):
 
-1. **Reconciliation engine** — side-marketing flags. ✅ *this slice*
-2. **Verification engine** — self-report × disbursement × NDVI response. (next)
+1. **Reconciliation engine** — side-marketing flags. ✅ done
+2. **Verification engine** — self-report × disbursement × NDVI response. ✅ done
 3. **Sentinel-1 SAR ingestion** — close data-gap G2 (persist
    `sar_vv_db`/`ndre`/`ndmi`/`savi`; wet-season floor). (infra)
 4. **Postgres RLS provable isolation** — must follow **Workstream 3.5** (migrate
@@ -56,12 +56,31 @@ growers sorted most-concerning first + a portfolio summary.
   grower reads as "production shortfall" rather than side-marketing (conservative,
   avoids false accusations).
 
-## Slice 2 — Verification engine (planned)
-For each field: did a logged/disbursed input produce an NDVI response? Compare
-`input_disbursements`/`field_inputs` dates against the `daily_logs` NDVI
-trajectory in the following window; flag "input not reflected in canopy" (possible
-non-application/diversion). Pure function over (input events, NDVI series) +
-read API. No migration.
+## Slice 2 — Verification engine (done)
+Did a logged input produce a satellite canopy response?
+
+### Pure engine — `services/verification/compute.py`
+`verify_input(event, ndvi_series)` compares mean NDVI in a baseline window
+(input_date − 14d → input_date) vs a response window (input_date + 14d → + 35d):
+- delta ≥ `MIN_RESPONSE` (0.02) → `verified`
+- delta < threshold → `flagged` ("verify the input was actually applied")
+- insufficient satellite coverage in either window → `unknown` (never a false flag)
+`verify_field(events, series)` aggregates → counts + `verification_pct`
+(verified / judgeable).
+
+### Read API — `verification_routes.py`
+`GET /fields/{field_id}/verification` — tenant-scoped via resolve_access
+(403/404). Loads `field_inputs` (self-reported inputs) + `daily_logs` NDVI, runs
+the engine, returns per-input verification + a field summary. No migration.
+
+### Tests
+`tests/test_verification.py` (9, hand-computed NDVI series) +
+`tests/test_verification_route.py` (2, access). Full suite 265 pass.
+
+### Follow-ups
+- Cross-check against `input_disbursements` (institutional credit) once
+  disbursement→field attribution is modelled (disbursements are per-grower today).
+- Portfolio rollup `GET /tenants/{id}/verification` for attention allocation.
 
 ## Slice 3 — Sentinel-1 SAR (planned, infra)
 Persist `sar_vv_db`/`ndre`/`ndmi`/`savi` (currently computed-not-stored, G2).

@@ -591,3 +591,25 @@ class ReconciliationResponse(BaseModel):
     total_side_marketing_tonnes: float
     growers: List[GrowerReconciliationOut] = []
 
+
+# ========== Verification Schemas (Sprint 4) ==========
+
+class InputVerificationOut(BaseModel):
+    input_date: date
+    input_type: Optional[str] = None
+    ndvi_before: Optional[float] = None
+    ndvi_after: Optional[float] = None
+    response_delta: Optional[float] = None
+    status: str
+    reason: str
+
+
+class FieldVerificationResponse(BaseModel):
+    field_id: str
+    n_inputs: int
+    n_verified: int
+    n_flagged: int
+    n_unknown: int
+    verification_pct: Optional[float] = None
+    inputs: List[InputVerificationOut] = []
+

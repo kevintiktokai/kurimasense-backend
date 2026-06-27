@@ -112,6 +112,10 @@ app.include_router(scouting_router)
 from reconciliation_routes import router as reconciliation_router  # noqa: E402
 app.include_router(reconciliation_router)
 
+# Verification (Sprint 4): logged input × NDVI canopy response.
+from verification_routes import router as verification_router  # noqa: E402
+app.include_router(verification_router)
+
 # CORS Configuration
 # Allow specific origins from environment or default to known frontends
 allowed_origins_env = os.environ.get("CORS_ORIGINS", "").strip()
