@@ -108,6 +108,10 @@ app.include_router(financial_router)
 from scouting_routes import router as scouting_router  # noqa: E402
 app.include_router(scouting_router)
 
+# Reconciliation (Sprint 4): contracted × satellite-implied × delivered → flags.
+from reconciliation_routes import router as reconciliation_router  # noqa: E402
+app.include_router(reconciliation_router)
+
 # CORS Configuration
 # Allow specific origins from environment or default to known frontends
 allowed_origins_env = os.environ.get("CORS_ORIGINS", "").strip()

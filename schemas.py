@@ -567,3 +567,27 @@ class ScoutingRecord(BaseModel):
     source: Optional[str] = None
     created_at: Optional[datetime] = None
 
+
+# ========== Reconciliation Schemas (Sprint 4) ==========
+
+class GrowerReconciliationOut(BaseModel):
+    grower_id: str
+    grower_name: Optional[str] = None
+    contracted_volume_tonnes: float
+    projected_volume_tonnes: float
+    delivered_volume_tonnes: float
+    expected_volume_tonnes: float
+    delivery_gap_pct: float
+    side_marketing_volume_tonnes: float
+    flag: str
+    reasons: List[str] = []
+
+
+class ReconciliationResponse(BaseModel):
+    tenant_id: str
+    grower_count: int
+    flagged_count: int
+    watch_count: int
+    total_side_marketing_tonnes: float
+    growers: List[GrowerReconciliationOut] = []
+
