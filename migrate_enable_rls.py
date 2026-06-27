@@ -18,7 +18,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-SQL_PATH = pathlib.Path(__file__).parent / "db" / "migrations" / "004_enable_rls.sql"
+MIG_DIR = pathlib.Path(__file__).parent / "db" / "migrations"
+SQL_FILES = ["004_enable_rls.sql", "005_enable_rls_remaining.sql"]
 
 VERIFY_SQL = """
 SELECT c.relname, c.relrowsecurity
@@ -27,7 +28,9 @@ JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname = 'public'
   AND c.relname IN ('yield_projections','harvest_records','model_calibration',
                     'grower_contracts','input_disbursements','deliveries',
-                    'tenants','tenant_members','growers')
+                    'tenants','tenant_members','growers',
+                    'farm_tasks','user_events','alerts','daily_log',
+                    'knowledge_base','documents')
 ORDER BY c.relname;
 """
 
@@ -37,12 +40,12 @@ def migrate():
     if not db_url:
         print("❌ DATABASE_URL not set")
         return
-    sql = SQL_PATH.read_text()
     conn = psycopg2.connect(db_url)
     try:
         cur = conn.cursor()
         print("Enabling RLS on sensitive, backend-only tables…")
-        cur.execute(sql)
+        for fname in SQL_FILES:
+            cur.execute((MIG_DIR / fname).read_text())
         conn.commit()
         cur.execute(VERIFY_SQL)
         rows = cur.fetchall()
