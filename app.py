@@ -67,6 +67,8 @@ from deps import (
     SUPABASE_JWT_SECRET, SUPABASE_JWT_PUBLIC_KEY,
     SUPABASE_URL, SUPABASE_ANON_KEY,
 )
+# Workstream 3.5: tenant-aware scoping for consumer `fields` endpoints.
+from tenancy import caller_tenant_ids, field_scope_sql  # noqa: E402
 
 logger = logging.getLogger("kurimasense")
 
@@ -466,9 +468,9 @@ def get_fields(user_id: str = Depends(verify_token)):
                 ORDER BY log_date DESC
                 LIMIT 1
             ) latest ON true
-            WHERE f.user_id = %s::uuid
+            WHERE """ + field_scope_sql("f") + """
             ORDER BY f.created_at DESC
-        """, (user_id,))
+        """, (caller_tenant_ids(user_id), user_id))
         
         rows = cursor.fetchall()
         results = []
