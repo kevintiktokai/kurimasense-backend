@@ -42,12 +42,21 @@ the grep are therefore NOT part of Workstream 3.5.
 
 ## Batches
 1. **`GET /fields` list** — ✅ done (proof-of-pattern; `field_scope_sql`).
-2. **Single-field ownership reads** (the ~16 `id = %s AND user_id = %s` sites) —
-   replace the `user_id` clause with `field_scope_sql()` + `caller_tenant_ids`.
-   Group by nearby endpoints to keep diffs reviewable; add a cross-tenant test
-   per group (in a full env).
-3. **Remaining list sites** (1375, 2258) + field_inputs (3569, scope via field).
-4. **Soak** — deploy, verify consumers + institutional officers in prod.
+2. **Single-field ownership reads** (~16 `id = %s AND user_id = %s` sites) — ✅ done.
+   All migrated to `id = %s::uuid AND (tenant_id = ANY(%s::uuid[]) OR user_id = %s::uuid)`
+   with `caller_tenant_ids(user_id)`. Covers field detail/state/analyze, delete,
+   AI/agronomy reads, crop-plan/yield reads.
+3. **Remaining list sites** (dashboard-init, tasks-field list) — ✅ done. Plus the
+   field-scoped `yield_history` read is now scoped by `field_id` after the
+   (tenant-aware) field access check, so officers see a grower's history instead
+   of an empty list.
+4. **Soak** — deploy, verify consumers + institutional officers in prod. (pending)
+
+### Intentionally NOT migrated
+- `farm_tasks`, `chat_logs`, user-level `yield_history` aggregates — personal data,
+  **no `tenant_id` column**; stay `user_id`-scoped.
+- `SELECT variety FROM fields WHERE id = %s` (one internal read) — has no `user_id`
+  filter today; unscoped internal lookup, left as-is (not a user_id→tenant site).
 
 ## Gated final steps (irreversible — explicit approval + live verification)
 5. **Drop the `user_id` fallback** from all migrated `fields` queries, then
@@ -63,5 +72,7 @@ the grep are therefore NOT part of Workstream 3.5.
    connection. This is the largest change and must be load-tested.
 
 ## Status
-Batch 1 shipped. Remaining batches are mechanical given the helper, but each
-touches live auth — proceeding incrementally with verification, not in one sweep.
+Batches 1–3 shipped: **all consumer `fields` access is tenant-aware** (with the
+`user_id` fallback). Next is soak/verification in prod, then the gated
+irreversible steps (5–6). The app-layer change is reversible (fallback retained);
+nothing is dropped yet.
