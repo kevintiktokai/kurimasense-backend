@@ -88,3 +88,25 @@ class TestVerifyField:
         fv = verify_field([], [])
         assert fv.n_inputs == 0
         assert fv.verification_pct is None
+
+
+class TestRollupPortfolio:
+    def test_aggregates_counts(self):
+        from services.verification.compute import rollup_portfolio
+        verified_series = _series([(-10, 0.40), (-5, 0.40), (20, 0.55), (30, 0.55)])
+        flat_series = _series([(-7, 0.50), (25, 0.49)])
+        f_ok = verify_field([InputEvent(D0)], verified_series)   # 1 verified
+        f_flag = verify_field([InputEvent(D0)], flat_series)     # 1 flagged
+        f_none = verify_field([], [])                            # no inputs
+        roll = rollup_portfolio([f_ok, f_flag, f_none])
+        assert roll.field_count == 3
+        assert roll.fields_with_flagged == 1
+        assert roll.total_flagged_inputs == 1
+        assert roll.total_inputs == 2
+
+    def test_empty(self):
+        from services.verification.compute import rollup_portfolio
+        roll = rollup_portfolio([])
+        assert roll.field_count == 0
+        assert roll.fields_with_flagged == 0
+        assert roll.total_flagged_inputs == 0

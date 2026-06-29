@@ -613,3 +613,23 @@ class FieldVerificationResponse(BaseModel):
     verification_pct: Optional[float] = None
     inputs: List[InputVerificationOut] = []
 
+
+class FieldVerificationSummary(BaseModel):
+    field_id: str
+    field_name: Optional[str] = None
+    grower_name: Optional[str] = None
+    n_inputs: int
+    n_verified: int
+    n_flagged: int
+    n_unknown: int
+    verification_pct: Optional[float] = None
+
+
+class PortfolioVerificationResponse(BaseModel):
+    tenant_id: str
+    field_count: int
+    fields_with_flagged: int
+    total_flagged_inputs: int
+    total_inputs: int
+    fields: List[FieldVerificationSummary] = []
+

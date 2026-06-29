@@ -34,3 +34,15 @@ class TestAccess:
         with pytest.raises(Exception) as exc:
             get_field_verification("f1", _user())
         assert exc.value.status_code == 403
+
+    def test_portfolio_rollup_blocks_cross_tenant(self):
+        from verification_routes import get_portfolio_verification
+        with pytest.raises(Exception) as exc:
+            get_portfolio_verification("other-tenant", _user("t1"))
+        assert exc.value.status_code == 403
+
+    def test_portfolio_rollup_assert_allows_own_and_admin(self):
+        from verification_routes import _assert_tenant_access
+        _assert_tenant_access("t1", _user("t1"))  # no raise
+        admin = AuthenticatedUser(user_id="a", role="admin", tenant_id=None, tenant_ids=[])
+        _assert_tenant_access("any", admin)  # no raise

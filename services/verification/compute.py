@@ -120,3 +120,21 @@ def verify_field(events: List[InputEvent], series: List[NdviPoint]) -> FieldVeri
         verification_pct=pct,
         inputs=results,
     )
+
+
+@dataclass
+class PortfolioVerificationRollup:
+    field_count: int
+    fields_with_flagged: int      # fields with >=1 unverified (flagged) input
+    total_flagged_inputs: int
+    total_inputs: int
+
+
+def rollup_portfolio(per_field: List[FieldVerification]) -> PortfolioVerificationRollup:
+    """Aggregate per-field verification into a portfolio attention summary."""
+    return PortfolioVerificationRollup(
+        field_count=len(per_field),
+        fields_with_flagged=sum(1 for f in per_field if f.n_flagged > 0),
+        total_flagged_inputs=sum(f.n_flagged for f in per_field),
+        total_inputs=sum(f.n_inputs for f in per_field),
+    )

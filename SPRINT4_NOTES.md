@@ -77,10 +77,17 @@ the engine, returns per-input verification + a field summary. No migration.
 `tests/test_verification.py` (9, hand-computed NDVI series) +
 `tests/test_verification_route.py` (2, access). Full suite 265 pass.
 
+### Portfolio rollup (done)
+`GET /tenants/{id}/verification` — attention-allocation view across the book.
+Batch-loads field_inputs + daily_logs for all tenant fields (no per-field round
+trips), runs `verify_field` per field, returns per-field summaries (sorted
+most-flagged first) + a `rollup_portfolio` summary (fields_with_flagged,
+total_flagged_inputs). Tenant-scoped (403 cross-tenant). Pure `rollup_portfolio`
+unit-tested. Frontend surfacing still available to do.
+
 ### Follow-ups
 - Cross-check against `input_disbursements` (institutional credit) once
   disbursement→field attribution is modelled (disbursements are per-grower today).
-- Portfolio rollup `GET /tenants/{id}/verification` for attention allocation.
 
 ## Slice 3 — Sentinel-1 SAR (planned, infra)
 Persist `sar_vv_db`/`ndre`/`ndmi`/`savi` (currently computed-not-stored, G2).
