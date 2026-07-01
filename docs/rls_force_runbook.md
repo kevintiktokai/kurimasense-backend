@@ -51,6 +51,28 @@ Priority order (highest-value / highest-risk isolation surfaces first):
 Leave **out of scope** (personal, no `tenant_id`): `farm_tasks`, `chat_logs`,
 user-level `yield_history`. These need Step B before FORCE.
 
+### Wiring inventory (app.py)
+
+Each site is heterogeneous (early returns, HTTPException raises, mock fallbacks,
+finally blocks), so they are wired **one at a time** with a compile check + a
+prod smoke test — not as a bulk rewrite.
+
+- [x] `GET /fields` (list) — wired + verified.
+- [x] `get_dashboard_stats` (feeds `/dashboard/init`) — wired + verified; also
+  fixed a latent connection leak on the success path.
+- [ ] `POST /fields/{id}/analyze` (~663) — read for coords + ownership.
+- [ ] `GET /fields/{id}/insight` (~728, deprecated) — field+NDVI read.
+- [ ] field state / detail reads (~936, ~954, ~1497).
+- [ ] `DELETE /fields/{id}` (~1217, ~1239) — **write**; verify commit path with a
+  throwaway field, not a real one.
+- [ ] tasks field-list (~2277) — list read.
+- [ ] AI / agronomy field reads (~3189, ~3382, ~3461, ~3568, ~3684).
+- [ ] crop-plan / yield field reads (~3920, ~3964, ~4021, ~4059, ~4120).
+
+All bind `field_scope_sql` params today, so each is behavior-identical after
+wrapping until FORCE flips. Line numbers drift as edits land — re-grep
+`caller_tenant_ids(user_id)` for the live list.
+
 ### Verification for Step A
 - Functionally unchanged in prod (FORCE still off). Watch error rates + p95 —
   each wrapped query now runs one extra `set_config` round trip inside its txn.
