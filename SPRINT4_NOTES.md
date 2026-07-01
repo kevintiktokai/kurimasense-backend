@@ -83,7 +83,10 @@ Batch-loads field_inputs + daily_logs for all tenant fields (no per-field round
 trips), runs `verify_field` per field, returns per-field summaries (sorted
 most-flagged first) + a `rollup_portfolio` summary (fields_with_flagged,
 total_flagged_inputs). Tenant-scoped (403 cross-tenant). Pure `rollup_portfolio`
-unit-tested. Frontend surfacing still available to do.
+unit-tested. ✅ Frontend surfaced: "Input verification" section on the portfolio
+Reports page (`app/portfolio/reports/page.tsx`) via `usePortfolioVerification` +
+`lib/verification-utils.ts` portfolio helpers — rollup stats + a most-flagged-
+first list of fields needing a physical check.
 
 ### Follow-ups
 - Cross-check against `input_disbursements` (institutional credit) once
