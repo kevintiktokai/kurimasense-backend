@@ -51,9 +51,16 @@ def tenant_scoped_connection(user_id: str):
     incrementally and safely ahead of the FORCE cut-over. See
     docs/rls_force_runbook.md.
 
-        with tenant_scoped_connection(user_id) as conn:
+    Yields ``(conn, tenant_ids)`` — the tenant ids are surfaced so callers can
+    still bind them to explicit `field_scope_sql` params without a second
+    `fetch_tenant_context` round trip:
+
+        with tenant_scoped_connection(user_id) as (conn, tenant_ids):
             cur = conn.cursor(cursor_factory=RealDictCursor)
-            cur.execute("SELECT ... FROM fields")   # RLS-scoped once forced
+            cur.execute(f"SELECT ... WHERE {field_scope_sql('f')}", (tenant_ids, user_id))
+
+    Raises ``RuntimeError`` if the database is unavailable (callers that fall
+    back to mock/degraded data should catch it).
     """
     tenant_ids = caller_tenant_ids(user_id)
     conn = get_db_connection()
@@ -67,7 +74,7 @@ def tenant_scoped_connection(user_id: str):
             (_pg_uuid_array_literal(tenant_ids),),
         )
         cur.close()
-        yield conn
+        yield conn, tenant_ids
         conn.commit()
     except Exception:
         try:

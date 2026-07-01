@@ -68,7 +68,7 @@ from deps import (
     SUPABASE_URL, SUPABASE_ANON_KEY,
 )
 # Workstream 3.5: tenant-aware scoping for consumer `fields` endpoints.
-from tenancy import caller_tenant_ids, field_scope_sql  # noqa: E402
+from tenancy import caller_tenant_ids, field_scope_sql, tenant_scoped_connection  # noqa: E402
 
 logger = logging.getLogger("kurimasense")
 
@@ -435,107 +435,109 @@ def startup_checks():
 
 @app.get("/fields")
 def get_fields(user_id: str = Depends(verify_token)):
-    conn = get_db_connection()
-    if not conn:
+    # RLS Slice 4 (Step A): run under tenant_scoped_connection so the DB itself
+    # enforces tenant scoping once FORCE RLS is enabled. Inert until then — the
+    # explicit field_scope_sql filter below is the live scoping mechanism today.
+    try:
+        with tenant_scoped_connection(user_id) as (conn, tenant_ids):
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+            cursor.execute("""
+                SELECT
+                    f.id,
+                    f.name,
+                    f.crop_type,
+                    f.size_hectares,
+                    f.polygon_coordinates,
+                    f.health_score,
+                    f.planting_date,
+                    f.transplant_date,
+                    f.is_transplanted,
+                    f.variety,
+                    f.fertilizer_history,
+                    latest.log_date::text   AS last_pass,
+                    latest.ndvi             AS latest_ndvi,
+                    latest.soil_moisture    AS latest_moisture,
+                    latest.insight_text     AS latest_insight
+                FROM fields f
+                LEFT JOIN LATERAL (
+                    SELECT log_date, ndvi, soil_moisture, insight_text
+                    FROM daily_logs
+                    WHERE field_id = f.id
+                    ORDER BY log_date DESC
+                    LIMIT 1
+                ) latest ON true
+                WHERE """ + field_scope_sql("f") + """
+                ORDER BY f.created_at DESC
+            """, (tenant_ids, user_id))
+
+            rows = cursor.fetchall()
+            results = []
+
+            for row in rows:
+                # Process each field defensively: a single malformed row (NULL
+                # where a number is expected, a bad polygon point, etc.) must
+                # never take down the whole list. Previously an unguarded
+                # float(None) on a NULL health_score raised and dropped the entire
+                # request into the MOCK_FIELDS fallback, hiding every real field.
+                try:
+                    # health_score can be NULL in the DB (e.g. seeded fields before
+                    # their first satellite pass). `.get(key, 0)` returns None when
+                    # the column exists but is NULL, so use `or 0` to coerce safely.
+                    score = float(row.get('health_score') or 0)
+                    status = 'Critical'
+                    if score > 0.7: status = 'Excellent'
+                    elif score > 0.4: status = 'Good'
+
+                    coords = row.get('polygon_coordinates')
+                    location = None
+                    if coords and isinstance(coords, list) and len(coords) > 0:
+                        lats = [p['lat'] for p in coords if isinstance(p, dict) and 'lat' in p]
+                        lons = [p['lon'] for p in coords if isinstance(p, dict) and 'lon' in p]
+                        if lats and lons:
+                            location = {"lat": sum(lats) / len(lats), "lon": sum(lons) / len(lons)}
+
+                    # Format planting_date as string if it's a date object
+                    planting_date_str = None
+                    if row.get('planting_date'):
+                        pd = row['planting_date']
+                        planting_date_str = pd.isoformat() if hasattr(pd, 'isoformat') else str(pd)
+
+                    # Format transplant_date as string if it's a date object
+                    transplant_date_str = None
+                    if row.get('transplant_date'):
+                        td = row['transplant_date']
+                        transplant_date_str = td.isoformat() if hasattr(td, 'isoformat') else str(td)
+
+                    results.append({
+                        "id": str(row['id']),
+                        "name": row['name'],
+                        "crop": row['crop_type'],
+                        "area": float(row['size_hectares'] or 0),
+                        "ndvi": float(row['latest_ndvi'] or 0),
+                        "soilMoisture": float(row['latest_moisture'] or 45),
+                        "healthStatus": status,
+                        "lastSatellitePass": row['last_pass'] or "Pending...",
+                        "location": location,
+                        "coordinates": coords,
+                        "plantingDate": planting_date_str,
+                        "transplantDate": transplant_date_str,
+                        "isTransplanted": row.get('is_transplanted', False),
+                        "variety": row.get('variety'),
+                        "fertilizerHistory": row.get('fertilizer_history'),
+                        "latestInsight": row.get('latest_insight')
+                    })
+                except Exception as row_err:
+                    print(f"Skipping malformed field row {row.get('id')}: {row_err}")
+                    continue
+
+            cursor.close()
+            return results
+
+    except RuntimeError:
+        # tenant_scoped_connection raises this when the DB is unavailable.
         print("Using Mock Data (Offline Mode)")
         return MOCK_FIELDS
-    
-    try:
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
-        
-        cursor.execute("""
-            SELECT
-                f.id,
-                f.name,
-                f.crop_type,
-                f.size_hectares,
-                f.polygon_coordinates,
-                f.health_score,
-                f.planting_date,
-                f.transplant_date,
-                f.is_transplanted,
-                f.variety,
-                f.fertilizer_history,
-                latest.log_date::text   AS last_pass,
-                latest.ndvi             AS latest_ndvi,
-                latest.soil_moisture    AS latest_moisture,
-                latest.insight_text     AS latest_insight
-            FROM fields f
-            LEFT JOIN LATERAL (
-                SELECT log_date, ndvi, soil_moisture, insight_text
-                FROM daily_logs
-                WHERE field_id = f.id
-                ORDER BY log_date DESC
-                LIMIT 1
-            ) latest ON true
-            WHERE """ + field_scope_sql("f") + """
-            ORDER BY f.created_at DESC
-        """, (caller_tenant_ids(user_id), user_id))
-        
-        rows = cursor.fetchall()
-        results = []
-        
-        for row in rows:
-            # Process each field defensively: a single malformed row (NULL where a
-            # number is expected, a bad polygon point, etc.) must never take down
-            # the whole list. Previously an unguarded float(None) on a NULL
-            # health_score raised and dropped the entire request into the
-            # MOCK_FIELDS fallback, hiding every real field the user owned.
-            try:
-                # health_score can be NULL in the DB (e.g. seeded fields before
-                # their first satellite pass). `.get(key, 0)` returns None when
-                # the column exists but is NULL, so use `or 0` to coerce safely.
-                score = float(row.get('health_score') or 0)
-                status = 'Critical'
-                if score > 0.7: status = 'Excellent'
-                elif score > 0.4: status = 'Good'
-
-                coords = row.get('polygon_coordinates')
-                location = None
-                if coords and isinstance(coords, list) and len(coords) > 0:
-                    lats = [p['lat'] for p in coords if isinstance(p, dict) and 'lat' in p]
-                    lons = [p['lon'] for p in coords if isinstance(p, dict) and 'lon' in p]
-                    if lats and lons:
-                        location = {"lat": sum(lats) / len(lats), "lon": sum(lons) / len(lons)}
-
-                # Format planting_date as string if it's a date object
-                planting_date_str = None
-                if row.get('planting_date'):
-                    pd = row['planting_date']
-                    planting_date_str = pd.isoformat() if hasattr(pd, 'isoformat') else str(pd)
-
-                # Format transplant_date as string if it's a date object
-                transplant_date_str = None
-                if row.get('transplant_date'):
-                    td = row['transplant_date']
-                    transplant_date_str = td.isoformat() if hasattr(td, 'isoformat') else str(td)
-
-                results.append({
-                    "id": str(row['id']),
-                    "name": row['name'],
-                    "crop": row['crop_type'],
-                    "area": float(row['size_hectares'] or 0),
-                    "ndvi": float(row['latest_ndvi'] or 0),
-                    "soilMoisture": float(row['latest_moisture'] or 45),
-                    "healthStatus": status,
-                    "lastSatellitePass": row['last_pass'] or "Pending...",
-                    "location": location,
-                    "coordinates": coords,
-                    "plantingDate": planting_date_str,
-                    "transplantDate": transplant_date_str,
-                    "isTransplanted": row.get('is_transplanted', False),
-                    "variety": row.get('variety'),
-                    "fertilizerHistory": row.get('fertilizer_history'),
-                    "latestInsight": row.get('latest_insight')
-                })
-            except Exception as row_err:
-                print(f"Skipping malformed field row {row.get('id')}: {row_err}")
-                continue
-
-        cursor.close()
-        conn.close()
-        return results
-        
     except Exception as e:
         print(f"Fields Query Error: {e}")
         return MOCK_FIELDS
