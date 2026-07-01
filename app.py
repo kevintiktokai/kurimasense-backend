@@ -1362,24 +1362,22 @@ def get_dashboard_stats(user_id: str = Depends(verify_token)):
     Get dashboard statistics with variety-aware yield projections.
     Uses crop_varieties database for accurate yield potentials.
     """
-    conn = get_db_connection()
-    
     # --- Aggregate Yield Logic ---
     total_projected = 0
     active_fields_count = 0
     total_area = 0
     fields_to_scan = []
-    
+
     # Default yields — imported from crop_constants (single source of truth)
     from crop_constants import DEFAULT_YIELDS as _YIELDS
     # Build underscore-keyed lookup for backward compat with crop.replace(' ', '_')
     DEFAULT_YIELDS = {k.replace(' ', '_'): v for k, v in _YIELDS.items()}
-    
-    if not conn:
-        fields_to_scan = MOCK_FIELDS
-    else:
-        # Fetch user's fields WITH variety information
-        try:
+
+    # RLS Step A: run the field read under tenant_scoped_connection — sets
+    # app.tenant_ids for DB-level enforcement (inert until FORCE) and guarantees
+    # the connection returns to the pool (the previous success path leaked it).
+    try:
+        with tenant_scoped_connection(user_id) as (conn, tenant_ids):
             cursor = conn.cursor(cursor_factory=RealDictCursor)
 
             # user_id column always exists (created by init_db)
@@ -1394,10 +1392,10 @@ def get_dashboard_stats(user_id: str = Depends(verify_token)):
                     cv.variety_name ILIKE f.variety AND
                     cv.crop_name ILIKE f.crop_type
                 WHERE """ + field_scope_sql("f") + """
-            """, (caller_tenant_ids(user_id), user_id))
-            
+            """, (tenant_ids, user_id))
+
             rows = cursor.fetchall()
-            
+
             for row in rows:
                 area = float(row['size_hectares'] or 0)
                 crop = (row['crop_type'] or 'maize').lower()
@@ -1430,11 +1428,14 @@ def get_dashboard_stats(user_id: str = Depends(verify_token)):
                 })
             
             cursor.close()
-        except Exception as e:
-            print(f"Dashboard DB Error: {e}")
-            import traceback
-            traceback.print_exc()
-            fields_to_scan = []
+    except RuntimeError:
+        # DB unavailable — degrade to mock, as the original `if not conn` did.
+        fields_to_scan = MOCK_FIELDS
+    except Exception as e:
+        print(f"Dashboard DB Error: {e}")
+        import traceback
+        traceback.print_exc()
+        fields_to_scan = []
 
     avg_health = 0
     for f in fields_to_scan:
