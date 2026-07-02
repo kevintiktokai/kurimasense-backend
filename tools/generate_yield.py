@@ -39,8 +39,11 @@ def _load_payload():
     return json.loads(raw)
 
 
-def run(field_data, language="en"):
-    """Run yield projection. Returns the result dict directly."""
+def run(field_data, language="en", rls_user_id=None, rls_tenant_ids=None):
+    """Run yield projection. Returns the result dict directly.
+
+    ``rls_user_id``/``rls_tenant_ids``: caller identity for the NDVI-history
+    read's RLS GUCs (FORCE-ready); optional for CLI/stdin invocation."""
     load_dotenv()
     try:
         # Extract field parameters
@@ -72,7 +75,8 @@ def run(field_data, language="en"):
         # Get NDVI history if field_id available
         ndvi_history = []
         if field_id:
-            ndvi_history = get_field_ndvi_history(field_id)
+            ndvi_history = get_field_ndvi_history(
+                field_id, user_id=rls_user_id, tenant_ids=rls_tenant_ids)
 
         # === STEP 1: Use Agronomic Model for data-driven projection ===
         projection = generate_yield_projection(

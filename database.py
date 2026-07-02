@@ -307,17 +307,24 @@ def log_user_event(user_id: str, event_type: str, event_name: str, event_data: d
     )
     t.start()
 
-def get_recent_field_activity(field_id: str, limit: int = 5) -> list:
+def get_recent_field_activity(field_id: str, limit: int = 5, user_id: str = None) -> list:
     """
     Fetch recent inputs and logs for a field to provide context to the AI.
+    Pass ``user_id`` so the RLS GUCs are armed (FORCE-ready) — without it the
+    field_inputs read returns [] under FORCE ROW LEVEL SECURITY.
     """
     conn = get_db_connection()
     if not conn: return []
-    
+
     activities = []
     try:
+        if user_id:
+            # Lazy import: tenancy imports database, so a top-level import here
+            # would be circular.
+            from tenancy import caller_tenant_ids, arm_rls_gucs
+            arm_rls_gucs(conn, user_id, caller_tenant_ids(user_id))
         cursor = conn.cursor()
-        
+
         # Get Field Inputs
         cursor.execute("""
             SELECT 'input' as type, input_type as name, quantity, unit, input_date as date

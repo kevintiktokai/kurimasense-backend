@@ -183,21 +183,30 @@ def compute_summary(field_rows: List[dict], states: List[Tuple[Optional[int], li
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
-async def compute_portfolio_aggregate(tenant_id: str) -> PortfolioAggregateResponse:
+async def compute_portfolio_aggregate(
+    tenant_id: str,
+    requester_id: Optional[str] = None,
+) -> PortfolioAggregateResponse:
     """
     Build the full portfolio aggregate for an institutional ``tenant_id``.
 
     Raises :class:`TenantNotFound` if the tenant is missing/not institutional.
     The work is synchronous (one batched read + pure per-field assembly); this is
     ``async`` only to match the endpoint's await call site.
+
+    ``tenant_id`` must already be authorized by the route (it is — the endpoint
+    403s any non-admin caller targeting another tenant), so it is armed directly
+    into the RLS GUCs (FORCE-ready).
     """
     from database import get_db_connection
     from psycopg2.extras import RealDictCursor
+    from tenancy import arm_rls_gucs
 
     conn = get_db_connection()
     if not conn:
         raise RuntimeError("Database unavailable")
     try:
+        arm_rls_gucs(conn, requester_id or "service:portfolio", [str(tenant_id)])
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute(
             "SELECT id::text AS id, name, institutional_type FROM tenants "

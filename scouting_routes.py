@@ -15,6 +15,7 @@ from psycopg2.extras import RealDictCursor
 
 from auth_roles import get_authenticated_user
 from database import get_db_connection
+from tenancy import arm_rls_gucs
 from schemas import AuthenticatedUser, CreateScoutingRequest, ScoutingRecord
 from services.field_state.aggregator import (
     FieldAccessDenied,
@@ -57,6 +58,11 @@ def create_scouting(
     conn = get_db_connection()
     if not conn:
         raise HTTPException(status_code=500, detail="Database unavailable")
+    # FORCE-ready: WITH CHECK on scouting_observations needs the row's tenant.
+    scoped = {str(t) for t in user.tenant_ids}
+    if field.get("tenant_id"):
+        scoped.add(str(field["tenant_id"]))
+    arm_rls_gucs(conn, user.user_id, sorted(scoped))
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute(
@@ -100,11 +106,15 @@ def list_scouting(
     field_id: str,
     user: AuthenticatedUser = Depends(get_authenticated_user),
 ):
-    _resolve(field_id, user)
+    field = _resolve(field_id, user)
 
     conn = get_db_connection()
     if not conn:
         raise HTTPException(status_code=500, detail="Database unavailable")
+    scoped = {str(t) for t in user.tenant_ids}
+    if field.get("tenant_id"):
+        scoped.add(str(field["tenant_id"]))
+    arm_rls_gucs(conn, user.user_id, sorted(scoped))
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute(

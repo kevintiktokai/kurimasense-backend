@@ -33,18 +33,24 @@ ALTER TABLE public.farm_tasks    ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.yield_history ENABLE ROW LEVEL SECURITY;
 -- chat_logs may not exist in every environment; guard it.
 DO $$
+-- chat_sessions (LLM-style chat feature, post-dates the original draft) is
+-- personal data exactly like chat_logs: user-scoped, no tenant dimension.
+DECLARE
+    t text;
 BEGIN
-    IF EXISTS (SELECT 1 FROM information_schema.tables
-               WHERE table_schema='public' AND table_name='chat_logs') THEN
-        EXECUTE 'ALTER TABLE public.chat_logs ENABLE ROW LEVEL SECURITY';
-        EXECUTE 'DROP POLICY IF EXISTS us_chat_logs ON public.chat_logs';
-        EXECUTE $p$
-            CREATE POLICY us_chat_logs ON public.chat_logs
-            FOR ALL
-            USING (user_id::text = public.app_user_id())
-            WITH CHECK (user_id::text = public.app_user_id())
-        $p$;
-    END IF;
+    FOREACH t IN ARRAY ARRAY['chat_logs', 'chat_sessions'] LOOP
+        IF EXISTS (SELECT 1 FROM information_schema.tables
+                   WHERE table_schema='public' AND table_name=t) THEN
+            EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', t);
+            EXECUTE format('DROP POLICY IF EXISTS us_%1$s ON public.%1$I', t);
+            EXECUTE format($p$
+                CREATE POLICY us_%1$s ON public.%1$I
+                FOR ALL
+                USING (user_id::text = public.app_user_id())
+                WITH CHECK (user_id::text = public.app_user_id())
+            $p$, t);
+        END IF;
+    END LOOP;
 END $$;
 
 DROP POLICY IF EXISTS us_farm_tasks ON public.farm_tasks;
@@ -67,4 +73,5 @@ CREATE POLICY us_yield_history ON public.yield_history
 --   DROP POLICY IF EXISTS us_farm_tasks ON public.farm_tasks;
 --   DROP POLICY IF EXISTS us_yield_history ON public.yield_history;
 --   DROP POLICY IF EXISTS us_chat_logs ON public.chat_logs;
+--   DROP POLICY IF EXISTS us_chat_sessions ON public.chat_sessions;
 --   DROP FUNCTION IF EXISTS public.app_user_id();

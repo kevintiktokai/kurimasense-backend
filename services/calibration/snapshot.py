@@ -30,6 +30,13 @@ def _do_snapshot(
     if not conn:
         return
     try:
+        # FORCE-ready: WITH CHECK on yield_projections requires the row's tenant
+        # in the GUC. This is a background service write on the field's behalf,
+        # so arm with exactly that tenant (no-op filter for NULL-tenant rows,
+        # which predate the tenant model).
+        if tenant_id:
+            from tenancy import arm_rls_gucs
+            arm_rls_gucs(conn, "service:yield_snapshot", [str(tenant_id)])
         cur = conn.cursor()
         cur.execute(
             """

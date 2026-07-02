@@ -169,14 +169,22 @@ class ConversationMemory:
         self.max_turns = max_turns
         # self._memory removed in favor of SQL
     
+    @staticmethod
+    def _arm_user_guc(conn, user_id: str):
+        """Arm `app.user_id` for the us_chat_logs / us_chat_sessions RLS
+        policies (FORCE-ready). Personal data — no tenant lookup needed."""
+        from tenancy import arm_rls_gucs
+        arm_rls_gucs(conn, user_id, [])
+
     def add_message(self, user_id: str, message: ConversationMessage, session_id: Optional[str] = None):
         """Add a message to the conversation history (SQL)."""
         conn = get_db_connection()
         if not conn:
             print("⚠️ Memory persistent storage unavailable")
             return
-            
+
         try:
+            self._arm_user_guc(conn, user_id)
             cursor = conn.cursor()
             # Extract basic content
             content_str = message.content
@@ -221,8 +229,9 @@ class ConversationMemory:
             return []
             
         try:
+            self._arm_user_guc(conn, user_id)
             cursor = conn.cursor()
-            
+
             # Simple query filtering by user_id
             # If session_id is provided, we could filter by field_context_id if that's how we map it
             query = """
@@ -267,6 +276,7 @@ class ConversationMemory:
         if not conn: return
         
         try:
+            self._arm_user_guc(conn, user_id)
             cursor = conn.cursor()
             query = "DELETE FROM chat_logs WHERE user_id = %s"
             params = [user_id]

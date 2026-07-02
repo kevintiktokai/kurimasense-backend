@@ -69,7 +69,7 @@ from deps import (
     SUPABASE_URL, SUPABASE_ANON_KEY,
 )
 # Workstream 3.5: tenant-aware scoping for consumer `fields` endpoints.
-from tenancy import caller_tenant_ids, field_scope_sql, tenant_scoped_connection  # noqa: E402
+from tenancy import arm_rls_gucs, caller_tenant_ids, field_scope_sql, tenant_scoped_connection  # noqa: E402
 
 logger = logging.getLogger("kurimasense")
 
@@ -549,10 +549,15 @@ def get_fields(user_id: str = Depends(verify_token)):
 
 # BackgroundTasks imported at top level
 
-async def trigger_sentinel_analysis(field_id: str, lat: float, lon: float):
+async def trigger_sentinel_analysis(field_id: str, lat: float, lon: float,
+                                     tenant_id: Optional[str] = None):
     """
     Background task to fetch satellite data and update daily_logs.
     Now async to avoid asyncio.run() conflicts with FastAPI's event loop.
+
+    ``tenant_id`` is the field's tenant, passed by the (already-authorized)
+    caller so the daily_logs INSERT / fields UPDATE pass RLS under FORCE. When
+    absent, the all-tenant service grant is used (trusted internal task).
     """
     conn = get_db_connection()
     if not conn:
@@ -634,14 +639,21 @@ async def trigger_sentinel_analysis(field_id: str, lat: float, lon: float):
             print(f"Insight gen error: {e}")
             insight_text = "Analysis complete. Review new metrics."
 
+        # FORCE-ready: arm the RLS GUCs for the daily_logs INSERT + fields UPDATE.
+        from tenancy import arm_rls_gucs, arm_rls_gucs_all_tenants
+        if tenant_id:
+            arm_rls_gucs(conn, "service:sentinel_analysis", [str(tenant_id)])
+        else:
+            arm_rls_gucs_all_tenants(conn, service_user="service:sentinel_analysis")
+
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute("""
             INSERT INTO daily_logs (field_id, ndvi, evi, soil_moisture, cloud_cover, source, insight_text, sar_vv_db, sar_vh_db)
             VALUES (%s, %s, %s, %s, %s, 'Sentinel-2', %s, %s, %s)
         """, (field_id, real_ndvi, real_evi, real_moisture, data.get("cloud_cover_pct", 0), insight_text, sar_vv_db, sar_vh_db))
-        
+
         cursor.execute("UPDATE fields SET health_score = %s WHERE id = %s", (new_health, field_id))
-        
+
         conn.commit()
         print(f"Sentinel Analysis Complete for {field_id}")
         
@@ -665,20 +677,23 @@ async def trigger_sentinel_analysis(field_id: str, lat: float, lon: float):
 def analyze_field(field_id: str, background_tasks: BackgroundTasks, user_id: str = Depends(verify_token)):
     # Find coords to pass to analysis
     lat, lon = -17.82, 31.05 # Default
-    
+    field_tenant_id = None  # field's tenant, for the background task's RLS scope
+
     # RLS Step A: field read under tenant_scoped_connection (inert until FORCE).
     try:
         with tenant_scoped_connection(user_id) as (conn, tenant_ids):
             cursor = conn.cursor(cursor_factory=RealDictCursor)
-            # Verify ownership and get coords
+            # Verify ownership and get coords (+ tenant for the background task's
+            # RLS scope under FORCE)
             cursor.execute("""
-                SELECT polygon_coordinates FROM fields
+                SELECT polygon_coordinates, tenant_id::text AS tenant_id FROM fields
                 WHERE id = %s::uuid AND (tenant_id = ANY(%s::uuid[]) OR user_id = %s::uuid)
             """, (field_id, tenant_ids, user_id))
             row = cursor.fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail="Field not found or access denied")
 
+            field_tenant_id = row.get('tenant_id')
             coords = row['polygon_coordinates']
             if coords and isinstance(coords, list) and len(coords) > 0:
                 # Use the polygon CENTROID (mean of all vertices), not the first
@@ -708,7 +723,7 @@ def analyze_field(field_id: str, background_tasks: BackgroundTasks, user_id: str
     except Exception as e:
         print(f"Analyze Field DB Error: {e}")
 
-    background_tasks.add_task(trigger_sentinel_analysis, field_id, lat, lon)
+    background_tasks.add_task(trigger_sentinel_analysis, field_id, lat, lon, field_tenant_id)
     return {"status": "success", "message": "Analysis started"}
 
 @app.get("/fields/{field_id}/insight", deprecated=True)
@@ -1163,7 +1178,14 @@ def create_field(payload: dict, background_tasks: BackgroundTasks, user_id: str 
         # Resolve the owner tenant for this field. fields.tenant_id is NOT NULL
         # (Workstream 3); without this the insert violated the not-null constraint
         # and POST /fields returned 500.
+        # (Reads/writes tenants + tenant_members — bootstrap-exempt tables that
+        # are never FORCEd, so it works on this pre-GUC transaction.)
         tenant_id = _resolve_or_create_owner_tenant_id(cursor, user_id)
+
+        # FORCE-ready: arm the RLS GUCs on this same transaction so the fields
+        # INSERT below passes the ts_fields WITH CHECK under FORCE.
+        from tenancy import arm_rls_gucs
+        arm_rls_gucs(conn, user_id, [tenant_id])
 
         # Insert with all field data including planting info and transplant info
         cursor.execute("""
@@ -1184,6 +1206,9 @@ def create_field(payload: dict, background_tasks: BackgroundTasks, user_id: str 
         
         # Insert initial placeholder insight so field doesn't show "Pending..."
         try:
+            # Re-arm: the commit above cleared the transaction-local GUCs, and
+            # ts_daily_logs scopes through the parent field's tenant.
+            arm_rls_gucs(conn, user_id, [tenant_id])
             cursor.execute("""
                 INSERT INTO daily_logs (field_id, ndvi, soil_moisture, source, insight_text)
                 VALUES (%s, 0.65, 45, 'initial', %s)
@@ -1343,6 +1368,9 @@ def log_input(payload: dict, user_id: str = Depends(verify_token)):
         return {"status": "success", "id": new_id}
     
     try:
+        # FORCE-ready: ts_field_inputs scopes through the parent field's tenant.
+        from tenancy import arm_rls_gucs, caller_tenant_ids
+        arm_rls_gucs(conn, user_id, caller_tenant_ids(user_id))
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute("""
             INSERT INTO field_inputs (field_id, user_id, input_type, quantity, unit, input_date)
@@ -1491,10 +1519,12 @@ def post_generate_yield(field_id: str, user_id: str = Depends(verify_token)):
     # 1. Fetch Field Data from Database first
     field = None
     user_lang = "en"
+    caller_tids = []  # captured for the yield tool's NDVI read (RLS scope)
 
     # RLS Step A: field read under tenant_scoped_connection (inert until FORCE).
     try:
         with tenant_scoped_connection(user_id) as (conn, tenant_ids):
+            caller_tids = tenant_ids
             cursor = conn.cursor(cursor_factory=RealDictCursor)
             cursor.execute("""
                 SELECT id, name, crop_type, planting_date, variety, fertilizer_history, size_hectares
@@ -1559,7 +1589,9 @@ def post_generate_yield(field_id: str, user_id: str = Depends(verify_token)):
                 "area": field.get("area"),
                 "region": "Zimbabwe"
             },
-            user_lang
+            user_lang,
+            rls_user_id=user_id,
+            rls_tenant_ids=caller_tids,
         )
         if response.get("status") == "error":
              raise Exception(response.get("error_message"))
@@ -1756,7 +1788,7 @@ async def chat_adapter(payload: dict, user_id: str = Depends(verify_token)):
             try: return await _get_field_context(field_id, user_id)
             except Exception as e:
                 print(f"Field context fetch error: {e}")
-                recents = get_recent_field_activity(field_id)
+                recents = get_recent_field_activity(field_id, user_id=user_id)
                 return FieldContext(field_id=field_id, field_name="Selected Field", recent_activities=recents)
 
         async def _get_w_ctx():
@@ -1810,12 +1842,15 @@ def get_chat_history(limit: int = 50, user_id: str = Depends(verify_token)):
         return MOCK_CHATS[-limit:]
         
     try:
+        # FORCE-ready: us_chat_logs keys on app.user_id (personal data).
+        from tenancy import arm_rls_gucs
+        arm_rls_gucs(conn, user_id, [])
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute("""
-            SELECT role, content, to_char(created_at, 'HH:MI AM') as timestamp 
-            FROM chat_logs 
+            SELECT role, content, to_char(created_at, 'HH:MI AM') as timestamp
+            FROM chat_logs
             WHERE user_id = %s
-            ORDER BY created_at ASC 
+            ORDER BY created_at ASC
             LIMIT %s
         """, (user_id, limit))
         
@@ -1900,12 +1935,13 @@ async def chat_v2_send(payload: dict, user_id: str = Depends(verify_token)):
             try:
                 conn = get_db_connection()
                 if not conn: return []
+                arm_rls_gucs(conn, user_id, [])  # us_chat_logs (FORCE-ready)
                 cursor = conn.cursor(cursor_factory=RealDictCursor)
                 cursor.execute("""
-                    SELECT role, content, created_at 
-                    FROM chat_logs 
+                    SELECT role, content, created_at
+                    FROM chat_logs
                     WHERE user_id = %s AND (field_context_id = %s OR field_context_id IS NULL)
-                    ORDER BY created_at DESC 
+                    ORDER BY created_at DESC
                     LIMIT 10
                 """, (user_id, field_id))
                 rows = cursor.fetchall()
@@ -1975,6 +2011,7 @@ async def chat_v2_send(payload: dict, user_id: str = Depends(verify_token)):
             if not conn:
                 return
             try:
+                arm_rls_gucs(conn, user_id, [])  # us_chat_logs (FORCE-ready)
                 cursor = conn.cursor(cursor_factory=RealDictCursor)
                 # One round-trip: insert both rows
                 cursor.execute("""
@@ -2039,6 +2076,7 @@ async def chat_v2_stream(payload: dict, user_id: str = Depends(verify_token)):
             conn = get_db_connection()
             if not conn:
                 return []
+            arm_rls_gucs(conn, user_id, [])  # us_chat_logs (FORCE-ready)
             cursor = conn.cursor(cursor_factory=RealDictCursor)
             cursor.execute("""
                 SELECT role, content, created_at
@@ -2129,6 +2167,7 @@ async def chat_v2_stream(payload: dict, user_id: str = Depends(verify_token)):
                 if not conn:
                     return
                 try:
+                    arm_rls_gucs(conn, user_id, [])  # us_chat_logs (FORCE-ready)
                     cur = conn.cursor(cursor_factory=RealDictCursor)
                     cur.execute(
                         """INSERT INTO chat_logs (user_id, role, content, field_context_id)
@@ -2656,6 +2695,8 @@ async def get_farm_tasks(
         raise HTTPException(status_code=500, detail="Database connection failed")
 
     try:
+        # FORCE-ready: us_farm_tasks (user) + ts_fields (tenants, for the join).
+        arm_rls_gucs(conn, user_id, caller_tenant_ids(user_id))
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         query = """
             SELECT t.*, f.name as field_name
@@ -2717,8 +2758,9 @@ async def update_farm_task(
         raise HTTPException(status_code=500, detail="Database connection failed")
     
     try:
+        arm_rls_gucs(conn, user_id, [])  # us_farm_tasks (FORCE-ready)
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-        
+
         allowed_fields = ['completed', 'title', 'description', 'priority', 'activity_type']
         update_parts = []
         params = []
@@ -2770,6 +2812,7 @@ async def create_farm_task(
         raise HTTPException(status_code=500, detail="Database connection failed")
     
     try:
+        arm_rls_gucs(conn, user_id, [])  # us_farm_tasks (FORCE-ready)
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute("""
             INSERT INTO farm_tasks (user_id, field_id, title, description, activity_type, priority, task_date)
@@ -2811,6 +2854,8 @@ async def get_task_history(
         raise HTTPException(status_code=500, detail="Database connection failed")
 
     try:
+        # FORCE-ready: us_farm_tasks (user) + ts_fields (tenants, for the join).
+        arm_rls_gucs(conn, user_id, caller_tenant_ids(user_id))
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         query = """
             SELECT t.*, f.name as field_name
@@ -2881,6 +2926,7 @@ async def create_tasks_from_plan(
 
     created_tasks = []
     try:
+        arm_rls_gucs(conn, user_id, [])  # us_farm_tasks (FORCE-ready)
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         for action in actions:
             title = action if isinstance(action, str) else action.get("title", str(action))
@@ -2969,6 +3015,8 @@ async def get_agricultural_metrics(
         conn = get_db_connection()
         if conn:
             try:
+                # FORCE-ready: ts_fields scopes by the caller's tenants.
+                arm_rls_gucs(conn, user_id, caller_tenant_ids(user_id))
                 cursor = conn.cursor(cursor_factory=RealDictCursor)
                 cursor.execute("SELECT variety FROM fields WHERE id = %s", (field_id,))
                 row = cursor.fetchone()
@@ -3755,11 +3803,12 @@ async def get_yield_analytics(user_id: str = Depends(verify_token)):
         raise HTTPException(status_code=500, detail="Database unavailable")
     
     try:
+        arm_rls_gucs(conn, user_id, [])  # us_yield_history (FORCE-ready)
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-        
+
         # Overall statistics
         cursor.execute("""
-            SELECT 
+            SELECT
                 COUNT(DISTINCT field_id) as fields_with_data,
                 COUNT(*) as total_records,
                 AVG(yield_per_ha) as avg_yield_per_ha,

@@ -510,13 +510,20 @@ def generate_yield_projection(
     )
 
 
-def get_field_ndvi_history(field_id: str, days: int = 30) -> List[float]:
-    """Fetch NDVI history for a field from daily_logs."""
+def get_field_ndvi_history(field_id: str, days: int = 30,
+                           user_id: str = None, tenant_ids: list = None) -> List[float]:
+    """Fetch NDVI history for a field from daily_logs.
+
+    Pass the caller's ``user_id``/``tenant_ids`` so the RLS GUCs are armed
+    (FORCE-ready) — without them this read returns [] under FORCE."""
     conn = get_db_connection()
     if not conn:
         return []
-    
+
     try:
+        if user_id is not None or tenant_ids:
+            from tenancy import arm_rls_gucs  # lazy: avoid import cycle
+            arm_rls_gucs(conn, user_id or "", [str(t) for t in (tenant_ids or [])])
         cursor = conn.cursor()
         cursor.execute("""
             SELECT ndvi FROM daily_logs 

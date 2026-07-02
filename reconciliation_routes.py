@@ -13,6 +13,7 @@ from psycopg2.extras import RealDictCursor
 
 from auth_roles import get_authenticated_user
 from database import get_db_connection
+from tenancy import arm_rls_gucs
 from schemas import (
     AuthenticatedUser,
     GrowerReconciliationOut,
@@ -40,6 +41,9 @@ def get_reconciliation(
     conn = get_db_connection()
     if not conn:
         raise HTTPException(status_code=500, detail="Database unavailable")
+    # Arm the RLS GUCs (FORCE-ready). The path tenant is already authorized by
+    # _assert_tenant_access; union it in so admins keep access under FORCE.
+    arm_rls_gucs(conn, user.user_id, sorted({str(t) for t in user.tenant_ids} | {str(tenant_id)}))
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
 

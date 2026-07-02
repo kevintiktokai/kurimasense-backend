@@ -48,6 +48,6 @@ async def get_portfolio_aggregate(
         raise HTTPException(status_code=400, detail="No tenant specified")
 
     try:
-        return await compute_portfolio_aggregate(target)
+        return await compute_portfolio_aggregate(target, requester_id=user.user_id)
     except TenantNotFound:
         raise HTTPException(status_code=404, detail="Tenant not found or not institutional")

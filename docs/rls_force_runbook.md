@@ -78,9 +78,74 @@ prod smoke test — not as a bulk rewrite.
 - [x] `POST /fields/{id}/yield-history` (`record_yield`) — ownership read +
   yield_history write wrapped in one tenant-scoped transaction.
 
-**16 of 16 tenant-scoped sites wired — Step A complete.** `grep -c
-'caller_tenant_ids(user_id)' app.py` == 0. All bound `field_scope_sql` params
-until the drop; behavior-identical until FORCE flips.
+**16 of 16 tenant-scoped sites wired in app.py.** All bound `field_scope_sql`
+params until the drop; behavior-identical until FORCE flips.
+
+### Straggler audit + full wiring (July 2 2026, second pass)
+
+The "16/16 complete" above covered **app.py only**. A repo-wide audit (every
+`get_db_connection()` call site cross-referenced against the RLS-target tables)
+found ~30 more bare sites across 13 files — any of which would have returned
+zero rows / hard-failed under FORCE. All are now wired via `tenancy.
+arm_rls_gucs(conn, user_id, tenant_ids)` (the raw arming primitive, extracted
+from `tenant_scoped_connection` for call sites that manage their own connection
+lifecycle and already hold tenant ids from `AuthenticatedUser`):
+
+- **Institutional route files**: `financial_routes` (7 sites), `reconciliation_routes`,
+  `verification_routes` (2), `outcome_routes` (4), `scouting_routes` (2),
+  `grower_routes` (6), `portfolio_routes`→`services/portfolio/aggregate`.
+  Tenant-path routes union the already-authorized path tenant into the GUC so
+  admins (who may not be members) keep access.
+- **Field-state pipeline**: `resolve_access` + the `_q` best-effort fetchers in
+  `services/field_state/aggregator` (scope = caller tenants ∪ resolved field's
+  tenant); `services/calibration/snapshot` (background write, armed with the
+  field's tenant as `service:yield_snapshot`).
+- **app.py second wave**: `create_field` (arm after owner-tenant resolution;
+  re-arm after the mid-handler commit for the daily_logs insert),
+  `trigger_sentinel_analysis` (tenant threaded from the authorized caller),
+  `log_input`, 4 chat closures (`chat_logs`, user-GUC only), 5 farm_tasks
+  handlers, `get_agricultural_metrics`, `get_yield_analytics`.
+- **Personal-data paths**: `chat_session_routes` (5 sites) and
+  `ai_brain.ConversationMemory` (3 methods) arm the user GUC only (no tenant
+  lookup needed); `deps.get_field_context` / `deps.resolve_coordinates` use
+  `tenant_scoped_connection`; `database.get_recent_field_activity` and
+  `yield_model.get_field_ndvi_history` take optional caller identity, threaded
+  from their endpoints.
+
+Verified: compile clean + 277 unit tests pass (9 failures are pre-existing
+env-dependent tests needing DATABASE_URL).
+
+### Bootstrap exemption (design decision — read before FORCE)
+
+`tenants`, `tenant_members` (and `profiles`) must **NEVER be FORCEd**:
+
+1. `auth_roles.fetch_tenant_context` reads `tenant_members` to *derive* the
+   GUC value — forcing it is a chicken-and-egg that locks every user out.
+2. `_resolve_or_create_owner_tenant_id` (create_field) INSERTs a brand-new
+   tenant + membership; a WITH CHECK keyed on the GUC can never contain a
+   tenant id that doesn't exist yet.
+3. `me_routes` / `admin_routes` read/manage these tables cross-tenant by
+   design (admin console is admin-token-gated).
+
+These tables hold membership/identity rows, not farm data; the deny-by-default
+posture for PostgREST clients (anon/authenticated see zero rows) is preserved
+by the existing non-forced policies. `auth_roles.py`, `me_routes.py` and
+`admin_routes.py` therefore intentionally stay on bare connections.
+
+### Known FORCE consequences (accepted)
+
+- **403-vs-404 tightening**: `resolve_access`-style unfiltered lookups can't
+  see cross-tenant rows under FORCE, so probes resolve 404 instead of 403.
+  Arguably better (no existence oracle).
+- **Admin cross-tenant field reads** return 404 under FORCE unless the admin is
+  a member (or the path tenant is unioned in, which tenant-path routes do). A
+  SECURITY DEFINER resolver would be needed for unrestricted admin field
+  access — deferred until actually required.
+- **Global service paths** (`/admin/calibration/recompute`,
+  `trigger_sentinel_analysis` fallback) use `arm_rls_gucs_all_tenants` — a
+  deliberate all-tenant grant, only reachable from admin-gated/internal code.
+  It reads `tenants` to enumerate ids, which works precisely because of the
+  bootstrap exemption.
 
 Step B groundwork also shipped:
 - `tenant_scoped_connection` now sets **both** `app.tenant_ids` and `app.user_id`
@@ -105,10 +170,12 @@ deny the owner and break. Decide + add policies:
 - `farm_tasks`, `chat_logs` (personal): add an `app.user_id` GUC + a
   `USING (user_id = app_user_id())` policy; set `app.user_id` in
   `tenant_scoped_connection` (already plumbed to set both is trivial).
-- `model_calibration` (global model data, no tenant dimension): either keep a
-  dedicated **owner-only** service path that is exempt from FORCE (connect as a
-  role that isn't forced), or add a deliberate `USING (true)` policy after
-  confirming it holds no tenant PII. **Do not** FORCE it until this is decided.
+- `model_calibration` — **DECIDED (July 2 2026)**: it holds only aggregate
+  model-error statistics per segment (no ids/names/volumes/prices → no tenant
+  PII), and is read cross-tenant by design. `migrations/
+  011_rls_model_calibration_policy.sql` adds the deliberate `USING (true)`
+  policy; apply it alongside 010. Migration 010 was also extended to cover
+  `chat_sessions` (post-dates the original draft).
 - Audit every table the backend writes to for a matching policy — a missing
   policy under FORCE is a hard failure, not a silent row-filter.
 
@@ -149,7 +216,29 @@ Policies + the GUC helper can stay (they're inert without FORCE).
 
 - [x] Migration 008 (policies, no FORCE) — applied to prod, app unaffected.
 - [x] `tenant_scoped_connection` primitive — shipped, inert until FORCE.
-- [ ] Step A — incremental endpoint wiring (soak).
-- [ ] Step B — personal-table + model_calibration policies.
-- [ ] Step C — drop `fields.user_id` (irreversible, approval required).
-- [ ] Step D — per-table FORCE cut-over (approval + load test required).
+- [x] Step A — app.py wiring (16 sites) + repo-wide straggler audit and full
+      wiring (~30 more sites across 13 files, July 2 2026). Needs a prod soak
+      after deploy.
+- [x] Step B (code/migrations staged) — 010 extended (`chat_sessions`), 011
+      drafted (`model_calibration` USING(true)); bootstrap exemption decided
+      and documented. **Migrations not yet applied** (blocked on Supabase MCP
+      approval in the July 2 session — apply 010 + 011 first thing next
+      session; both are inert until FORCE).
+- [ ] Step C — drop `fields.user_id` (irreversible). ORDER MATTERS: the
+      `field_scope_sql` fallback-removal code change must be merged to main
+      AND deployed on Render BEFORE the column drop, or every fields query
+      500s on the missing column. Snapshot first:
+      `CREATE TABLE _backup_fields_user_id AS SELECT id, user_id FROM fields;`
+- [ ] Step D — per-table FORCE cut-over. Checklist per table:
+      `ALTER TABLE public.<t> FORCE ROW LEVEL SECURITY;` → hit the live
+      endpoints that read/write it with a real token (expect identical
+      results) → negative test (tenant A token must NOT see tenant B rows) →
+      next table. NEVER force `tenants` / `tenant_members` / `profiles`
+      (bootstrap exemption above). Rollback is one command:
+      `ALTER TABLE <t> NO FORCE ROW LEVEL SECURITY;`
+      Suggested order: `scouting_observations` (lowest traffic) →
+      `grower_contracts` / `input_disbursements` / `deliveries` /
+      `harvest_records` / `yield_projections` → `growers` → `field_inputs` /
+      `daily_logs` → `fields` (highest blast radius) → personal tables
+      (`farm_tasks`, `chat_logs`, `chat_sessions`, `yield_history`) →
+      `model_calibration`.

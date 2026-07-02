@@ -31,6 +31,56 @@ def _pg_uuid_array_literal(values: List[str]) -> str:
     return "{" + ",".join(str(v) for v in values if v) + "}"
 
 
+def arm_rls_gucs(conn, user_id: str, tenant_ids: List[str]) -> None:
+    """
+    Set `app.tenant_ids` + `app.user_id` transaction-locally on an already
+    checked-out connection. This is the raw arming primitive behind
+    `tenant_scoped_connection`, exposed for call sites that manage their own
+    connection lifecycle (the modular route files' `_conn_or_503` helpers) and
+    already hold the caller's tenant ids (e.g. from `AuthenticatedUser`), so no
+    second `fetch_tenant_context` round trip is needed.
+
+    Leak-safety is identical to `tenant_scoped_connection`: `is_local => true`
+    scopes both GUCs to the current transaction, so they are cleared on the
+    handler's commit/rollback (and pool checkin rolls back open transactions),
+    never bleeding into the next checkout.
+
+    NOTE: the GUCs die with the first commit/rollback. Handlers that commit
+    mid-way and keep querying must re-arm — the wired route files all follow
+    the single-commit-at-end pattern, keep it that way.
+    """
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT set_config('app.tenant_ids', %s, true), "
+        "       set_config('app.user_id', %s, true)",
+        (_pg_uuid_array_literal(tenant_ids or []), str(user_id)),
+    )
+    cur.close()
+
+
+def arm_rls_gucs_all_tenants(conn, service_user: str = "service:global") -> None:
+    """
+    Arm `app.tenant_ids` with EVERY tenant id — a deliberate global grant for
+    the few admin-token-gated service paths that legitimately operate across
+    the whole book (e.g. the calibration recompute, which pairs projections
+    with actuals across all tenants to compute global model-error stats).
+
+    Works under FORCE because `tenants` is a bootstrap-exempt table (never
+    FORCEd — it must be readable to derive tenant context in the first place;
+    see docs/rls_force_runbook.md). Only call this from endpoints that are
+    already admin-gated; never from a user-facing request path.
+    """
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT set_config('app.tenant_ids', "
+        "       COALESCE((SELECT '{' || string_agg(id::text, ',') || '}' FROM public.tenants), '{}'), "
+        "       true), "
+        "       set_config('app.user_id', %s, true)",
+        (service_user,),
+    )
+    cur.close()
+
+
 @contextmanager
 def tenant_scoped_connection(user_id: str):
     """
@@ -67,17 +117,10 @@ def tenant_scoped_connection(user_id: str):
     if conn is None:
         raise RuntimeError("Database unavailable")
     try:
-        cur = conn.cursor()
-        # is_local => true: both GUCs are scoped to this transaction only
-        # (auto-cleared on end). app.tenant_ids drives the ts_* tenant policies;
-        # app.user_id drives the personal-table policies (farm_tasks / chat_logs /
-        # yield_history) added for the FORCE step.
-        cur.execute(
-            "SELECT set_config('app.tenant_ids', %s, true), "
-            "       set_config('app.user_id', %s, true)",
-            (_pg_uuid_array_literal(tenant_ids), str(user_id)),
-        )
-        cur.close()
+        # app.tenant_ids drives the ts_* tenant policies; app.user_id drives the
+        # personal-table policies (farm_tasks / chat_logs / yield_history) added
+        # for the FORCE step. Both transaction-local (see arm_rls_gucs).
+        arm_rls_gucs(conn, user_id, tenant_ids)
         yield conn, tenant_ids
         conn.commit()
     except Exception:

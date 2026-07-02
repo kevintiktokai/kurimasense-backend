@@ -11,6 +11,7 @@ from psycopg2.extras import RealDictCursor
 
 from auth_roles import get_authenticated_user
 from database import get_db_connection
+from tenancy import arm_rls_gucs
 from schemas import (
     AuthenticatedUser,
     FieldVerificationResponse,
@@ -39,7 +40,7 @@ def get_field_verification(
     user: AuthenticatedUser = Depends(get_authenticated_user),
 ):
     try:
-        resolve_access(
+        field_row = resolve_access(
             field_id, user.user_id,
             tenant_ids=user.tenant_ids, is_admin=user.role == "admin",
         )
@@ -53,6 +54,13 @@ def get_field_verification(
     conn = get_db_connection()
     if not conn:
         raise HTTPException(status_code=500, detail="Database unavailable")
+    # Arm the RLS GUCs (FORCE-ready): field_inputs/daily_logs policies scope
+    # through the parent field's tenant, so union the resolved field's tenant in
+    # (covers admins who aren't members of that tenant).
+    scoped = {str(t) for t in user.tenant_ids}
+    if field_row.get("tenant_id"):
+        scoped.add(str(field_row["tenant_id"]))
+    arm_rls_gucs(conn, user.user_id, sorted(scoped))
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute(
@@ -106,6 +114,8 @@ def get_portfolio_verification(
     conn = get_db_connection()
     if not conn:
         raise HTTPException(status_code=500, detail="Database unavailable")
+    # Arm the RLS GUCs (FORCE-ready); path tenant already authorized above.
+    arm_rls_gucs(conn, user.user_id, sorted({str(t) for t in user.tenant_ids} | {str(tenant_id)}))
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute(

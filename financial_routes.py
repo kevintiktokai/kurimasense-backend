@@ -12,6 +12,7 @@ from psycopg2.extras import RealDictCursor
 
 from auth_roles import get_authenticated_user
 from database import get_db_connection
+from tenancy import arm_rls_gucs
 from schemas import (
     AuthenticatedUser,
     Contract,
@@ -52,10 +53,17 @@ def _assert_tenant_access(tenant_id: str, user: AuthenticatedUser) -> None:
     raise HTTPException(status_code=403, detail="Access denied")
 
 
-def _conn_or_503():
+def _conn_or_503(user: AuthenticatedUser, tenant_id: str):
+    """Checked-out connection with the RLS GUCs armed (FORCE-ready).
+
+    `tenant_id` is the path tenant, ALREADY authorized by `_assert_tenant_access`;
+    it is unioned in so admins (who may not be members) keep access under FORCE.
+    """
     conn = get_db_connection()
     if not conn:
         raise HTTPException(status_code=500, detail="Database unavailable")
+    scoped = {str(t) for t in user.tenant_ids} | {str(tenant_id)}
+    arm_rls_gucs(conn, user.user_id, sorted(scoped))
     return conn
 
 
@@ -83,7 +91,7 @@ def create_contract(
     user: AuthenticatedUser = Depends(get_authenticated_user),
 ):
     _assert_tenant_access(tenant_id, user)
-    conn = _conn_or_503()
+    conn = _conn_or_503(user, tenant_id)
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         _verify_grower(cur, body.grower_id, tenant_id)
@@ -117,7 +125,7 @@ def list_contracts(
     user: AuthenticatedUser = Depends(get_authenticated_user),
 ):
     _assert_tenant_access(tenant_id, user)
-    conn = _conn_or_503()
+    conn = _conn_or_503(user, tenant_id)
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute(
@@ -142,7 +150,7 @@ def create_disbursement(
     user: AuthenticatedUser = Depends(get_authenticated_user),
 ):
     _assert_tenant_access(tenant_id, user)
-    conn = _conn_or_503()
+    conn = _conn_or_503(user, tenant_id)
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         _verify_grower(cur, body.grower_id, tenant_id)
@@ -175,7 +183,7 @@ def list_disbursements(
     user: AuthenticatedUser = Depends(get_authenticated_user),
 ):
     _assert_tenant_access(tenant_id, user)
-    conn = _conn_or_503()
+    conn = _conn_or_503(user, tenant_id)
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute(
@@ -203,7 +211,7 @@ def create_delivery(
     value_usd = None
     if body.price_per_tonne is not None:
         value_usd = round(body.volume_tonnes * body.price_per_tonne, 2)
-    conn = _conn_or_503()
+    conn = _conn_or_503(user, tenant_id)
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         _verify_grower(cur, body.grower_id, tenant_id)
@@ -237,7 +245,7 @@ def list_deliveries(
     user: AuthenticatedUser = Depends(get_authenticated_user),
 ):
     _assert_tenant_access(tenant_id, user)
-    conn = _conn_or_503()
+    conn = _conn_or_503(user, tenant_id)
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute(
@@ -283,7 +291,7 @@ def get_exposure(
     )
     from services.field_state.aggregator import _fetch_yield, assemble_field_state
 
-    conn = _conn_or_503()
+    conn = _conn_or_503(user, tenant_id)
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
 

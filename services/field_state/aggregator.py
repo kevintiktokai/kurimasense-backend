@@ -673,6 +673,15 @@ def resolve_access(
     if not conn:
         raise FieldNotFound(field_id)
     try:
+        # Arm the RLS GUCs (FORCE-ready): under FORCE ROW LEVEL SECURITY the
+        # unfiltered lookup below only sees rows in the caller's tenants, so a
+        # cross-tenant probe resolves as 404 (row invisible) rather than 403 —
+        # an acceptable tightening (no existence oracle). Known limitation:
+        # admins with no membership in the field's tenant also get 404 under
+        # FORCE (needs a SECURITY DEFINER resolver if admin field access is
+        # required; tracked in docs/rls_force_runbook.md).
+        from tenancy import arm_rls_gucs
+        arm_rls_gucs(conn, requester_id, [str(t) for t in (tenant_ids or [])])
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute(
             """
@@ -721,10 +730,18 @@ async def build_field_state(
     crop_type = field_row.get("crop_type")
     variety_code = field_row.get("variety")
 
+    # RLS scope for the per-fetch connections below (FORCE-ready): the caller's
+    # tenants plus the resolved field's tenant (covers admins / officers whose
+    # membership list may not include it — access was already enforced above).
+    _scope_tenants = {str(t) for t in (tenant_ids or [])}
+    if field_row.get("tenant_id"):
+        _scope_tenants.add(str(field_row["tenant_id"]))
+    _scope_tenants = sorted(_scope_tenants)
+
     # --- DB reads (sync, fast) -------------------------------------------
-    daily_logs = _fetch_daily_logs(field_id)
-    input_count = _fetch_input_count(field_id)
-    plan_rows = _fetch_plan_items(field_id, requester_id)
+    daily_logs = _fetch_daily_logs(field_id, user_id=requester_id, tenant_ids=_scope_tenants)
+    input_count = _fetch_input_count(field_id, user_id=requester_id, tenant_ids=_scope_tenants)
+    plan_rows = _fetch_plan_items(field_id, requester_id, tenant_ids=_scope_tenants)
     scouting_rows = _fetch_scouting(field_id)
 
     # variety in tobacco DB?
@@ -811,7 +828,12 @@ async def build_field_state(
 
 
 # ---- DB fetch helpers (best-effort) ---------------------------------------
-def _q(sql: str, params: tuple) -> List[Dict[str, Any]]:
+def _q(sql: str, params: tuple,
+       user_id: Optional[str] = None,
+       tenant_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    """Best-effort query on a fresh pooled connection. When a caller identity
+    is provided, the RLS GUCs are armed first (FORCE-ready) — without it these
+    reads would silently return [] under FORCE ROW LEVEL SECURITY."""
     try:
         from database import get_db_connection
         from psycopg2.extras import RealDictCursor
@@ -819,6 +841,9 @@ def _q(sql: str, params: tuple) -> List[Dict[str, Any]]:
         if not conn:
             return []
         try:
+            if user_id is not None or tenant_ids:
+                from tenancy import arm_rls_gucs
+                arm_rls_gucs(conn, user_id or "", [str(t) for t in (tenant_ids or [])])
             cur = conn.cursor(cursor_factory=RealDictCursor)
             cur.execute(sql, params)
             rows = [dict(r) for r in cur.fetchall()]
@@ -833,7 +858,9 @@ def _q(sql: str, params: tuple) -> List[Dict[str, Any]]:
         return []
 
 
-def _fetch_daily_logs(field_id: str) -> List[Dict[str, Any]]:
+def _fetch_daily_logs(field_id: str,
+                      user_id: Optional[str] = None,
+                      tenant_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
     return _q(
         """
         SELECT log_date, ndvi, evi, soil_moisture, cloud_cover, sar_vv_db, sar_vh_db
@@ -841,15 +868,20 @@ def _fetch_daily_logs(field_id: str) -> List[Dict[str, Any]]:
         ORDER BY log_date ASC LIMIT 90
         """,
         (field_id,),
+        user_id=user_id, tenant_ids=tenant_ids,
     )
 
 
-def _fetch_input_count(field_id: str) -> int:
-    rows = _q("SELECT COUNT(*) AS n FROM field_inputs WHERE field_id = %s::uuid", (field_id,))
+def _fetch_input_count(field_id: str,
+                       user_id: Optional[str] = None,
+                       tenant_ids: Optional[List[str]] = None) -> int:
+    rows = _q("SELECT COUNT(*) AS n FROM field_inputs WHERE field_id = %s::uuid", (field_id,),
+              user_id=user_id, tenant_ids=tenant_ids)
     return int(rows[0]["n"]) if rows else 0
 
 
-def _fetch_plan_items(field_id: str, user_id: str) -> List[Dict[str, Any]]:
+def _fetch_plan_items(field_id: str, user_id: str,
+                      tenant_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
     return _q(
         """
         SELECT id, title, description, activity_type, task_date, completed, is_ai_generated
@@ -858,6 +890,7 @@ def _fetch_plan_items(field_id: str, user_id: str) -> List[Dict[str, Any]]:
         ORDER BY task_date ASC LIMIT 25
         """,
         (field_id, str(user_id)),
+        user_id=str(user_id), tenant_ids=tenant_ids,
     )
 
 

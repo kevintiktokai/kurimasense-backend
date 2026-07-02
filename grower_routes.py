@@ -22,6 +22,7 @@ from psycopg2.extras import RealDictCursor
 
 from database import get_db_connection
 from auth_roles import require_institutional
+from tenancy import arm_rls_gucs
 from schemas import AuthenticatedUser, Grower, CreateGrowerRequest, UpdateGrowerRequest
 
 logger = logging.getLogger("kurimasense")
@@ -35,10 +36,14 @@ _GROWER_COLS = (
 )
 
 
-def _conn_or_503():
+def _conn_or_503(user: AuthenticatedUser):
+    """Checked-out connection with the RLS GUCs armed (FORCE-ready).
+    Grower rows are scoped to the caller's tenants; the SQL additionally pins
+    writes to the primary tenant, so arming all memberships is safe."""
     conn = get_db_connection()
     if not conn:
         raise HTTPException(status_code=503, detail="Database unavailable")
+    arm_rls_gucs(conn, user.user_id, [str(t) for t in user.tenant_ids])
     return conn
 
 
@@ -57,7 +62,7 @@ def _require_tenant(user: AuthenticatedUser) -> str:
 def create_grower(body: CreateGrowerRequest, user: AuthenticatedUser = Depends(require_institutional)):
     tenant_id = _require_tenant(user)
     _require_write(user)
-    conn = _conn_or_503()
+    conn = _conn_or_503(user)
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute(
@@ -84,7 +89,7 @@ def list_growers(
     user: AuthenticatedUser = Depends(require_institutional),
 ):
     tenant_id = _require_tenant(user)
-    conn = _conn_or_503()
+    conn = _conn_or_503(user)
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute(
@@ -103,7 +108,7 @@ def list_growers(
 @router.get("/{grower_id}", response_model=Grower)
 def get_grower(grower_id: str, user: AuthenticatedUser = Depends(require_institutional)):
     _require_tenant(user)
-    row = _fetch_grower(grower_id)
+    row = _fetch_grower(grower_id, user)
     if not row:
         raise HTTPException(status_code=404, detail="Grower not found")
     if str(row["tenant_id"]) != str(user.tenant_id) and user.role != "admin":
@@ -115,7 +120,7 @@ def get_grower(grower_id: str, user: AuthenticatedUser = Depends(require_institu
 def update_grower(grower_id: str, body: UpdateGrowerRequest, user: AuthenticatedUser = Depends(require_institutional)):
     _require_tenant(user)
     _require_write(user)
-    existing = _fetch_grower(grower_id)
+    existing = _fetch_grower(grower_id, user)
     if not existing:
         raise HTTPException(status_code=404, detail="Grower not found")
     if str(existing["tenant_id"]) != str(user.tenant_id):
@@ -135,7 +140,7 @@ def update_grower(grower_id: str, body: UpdateGrowerRequest, user: Authenticated
     sets.append("updated_at = NOW()")
     params.extend([grower_id, user.tenant_id])
 
-    conn = _conn_or_503()
+    conn = _conn_or_503(user)
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute(
@@ -162,7 +167,7 @@ def update_grower(grower_id: str, body: UpdateGrowerRequest, user: Authenticated
 def delete_grower(grower_id: str, user: AuthenticatedUser = Depends(require_institutional)):
     _require_tenant(user)
     _require_write(user)
-    conn = _conn_or_503()
+    conn = _conn_or_503(user)
     try:
         cur = conn.cursor()
         cur.execute(
@@ -181,8 +186,8 @@ def delete_grower(grower_id: str, user: AuthenticatedUser = Depends(require_inst
 
 
 # --- helpers ---------------------------------------------------------------
-def _fetch_grower(grower_id: str):
-    conn = _conn_or_503()
+def _fetch_grower(grower_id: str, user: AuthenticatedUser):
+    conn = _conn_or_503(user)
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute(f"SELECT {_GROWER_COLS} FROM growers WHERE id = %s::uuid AND deleted_at IS NULL", (grower_id,))

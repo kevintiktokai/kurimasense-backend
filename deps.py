@@ -301,33 +301,32 @@ async def get_field_context(field_id: str, user_id: str) -> FieldContext:
     """
     context = FieldContext(field_id=field_id)
 
-    conn = get_db_connection()
-    if not conn:
-        return context
-
     try:
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
-        # Use LEFT JOIN LATERAL instead of 2 correlated subqueries — single index scan
-        cursor.execute("""
-            SELECT
-                f.name, f.crop_type, f.planting_date, f.variety, f.health_score,
-                f.transplant_date, f.is_transplanted,
-                latest.ndvi as current_ndvi,
-                latest.soil_moisture as soil_moisture
-            FROM fields f
-            LEFT JOIN LATERAL (
-                SELECT ndvi, soil_moisture
-                FROM daily_logs
-                WHERE field_id = f.id
-                ORDER BY log_date DESC
-                LIMIT 1
-            ) latest ON true
-            WHERE f.id = %s::uuid AND f.user_id = %s
-        """, (field_id, user_id))
+        # tenant_scoped_connection arms the RLS GUCs (FORCE-ready) — fields /
+        # daily_logs policies scope by the caller's tenants.
+        from tenancy import tenant_scoped_connection
+        with tenant_scoped_connection(user_id) as (conn, _tenant_ids):
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            # Use LEFT JOIN LATERAL instead of 2 correlated subqueries — single index scan
+            cursor.execute("""
+                SELECT
+                    f.name, f.crop_type, f.planting_date, f.variety, f.health_score,
+                    f.transplant_date, f.is_transplanted,
+                    latest.ndvi as current_ndvi,
+                    latest.soil_moisture as soil_moisture
+                FROM fields f
+                LEFT JOIN LATERAL (
+                    SELECT ndvi, soil_moisture
+                    FROM daily_logs
+                    WHERE field_id = f.id
+                    ORDER BY log_date DESC
+                    LIMIT 1
+                ) latest ON true
+                WHERE f.id = %s::uuid AND f.user_id = %s
+            """, (field_id, user_id))
 
-        row = cursor.fetchone()
-        cursor.close()
-        conn.close()
+            row = cursor.fetchone()
+            cursor.close()
 
         if row:
             context.field_name = row.get("name")
@@ -356,11 +355,9 @@ async def get_field_context(field_id: str, user_id: str) -> FieldContext:
                     logger.warning(f"Growth stage calculation failed: {e}")
 
     except Exception as e:
+        # RuntimeError (DB unavailable) and query errors both degrade to the
+        # bare context; tenant_scoped_connection handles rollback + release.
         logger.error(f"Field context fetch error: {e}")
-        try:
-            conn.close()
-        except Exception:
-            pass
 
     return context
 
@@ -372,32 +369,32 @@ async def resolve_coordinates(field_id: str = None, lat: float = None, lon: floa
     default_lat, default_lon = -17.82, 31.05
 
     if field_id:
-        conn = get_db_connection()
-        if conn:
-            try:
+        try:
+            # FORCE-ready: fields policy scopes by the caller's tenants.
+            from tenancy import tenant_scoped_connection
+            with tenant_scoped_connection(user_id) as (conn, _tenant_ids):
                 cursor = conn.cursor(cursor_factory=RealDictCursor)
                 cursor.execute("""
                     SELECT polygon_coordinates FROM fields WHERE id = %s::uuid AND user_id = %s::uuid
                 """, (field_id, user_id))
                 row = cursor.fetchone()
                 cursor.close()
-                conn.close()
 
-                if row and row.get('polygon_coordinates'):
-                    coords = row['polygon_coordinates']
-                    if isinstance(coords, list) and len(coords) > 0:
-                        lats = [p['lat'] for p in coords]
-                        lons = [p['lon'] for p in coords]
-                        return sum(lats) / len(lats), sum(lons) / len(lons)
-            except Exception as e:
-                logger.warning(f"Field lookup error: {e}")
-        else:
-            # Check mock fields
+            if row and row.get('polygon_coordinates'):
+                coords = row['polygon_coordinates']
+                if isinstance(coords, list) and len(coords) > 0:
+                    lats = [p['lat'] for p in coords]
+                    lons = [p['lon'] for p in coords]
+                    return sum(lats) / len(lats), sum(lons) / len(lons)
+        except RuntimeError:
+            # DB unavailable — check mock fields
             for f in MOCK_FIELDS:
                 if f.get("id") == field_id:
                     loc = f.get("location")
                     if loc:
                         return loc["lat"], loc["lon"]
+        except Exception as e:
+            logger.warning(f"Field lookup error: {e}")
 
     if lat is not None and lon is not None:
         return lat, lon

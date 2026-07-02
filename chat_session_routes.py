@@ -15,21 +15,26 @@ from psycopg2.extras import RealDictCursor
 
 from database import get_db_connection
 from deps import verify_token
+from tenancy import arm_rls_gucs
 
 router = APIRouter(prefix="/chat/sessions", tags=["chat-sessions"])
 
 
-def _conn_or_503():
+def _conn_or_503(user_id: str):
+    """Checked-out connection with `app.user_id` armed (FORCE-ready).
+    Sessions/messages are personal data — the us_* policies key on the user
+    GUC only, so no tenant lookup is needed (tenant_ids stays empty)."""
     conn = get_db_connection()
     if not conn:
         raise HTTPException(status_code=503, detail="Database unavailable")
+    arm_rls_gucs(conn, user_id, [])
     return conn
 
 
 @router.get("")
 def list_sessions(user_id: str = Depends(verify_token)):
     """Caller's sessions, most recently active first, with a preview snippet."""
-    conn = _conn_or_503()
+    conn = _conn_or_503(user_id)
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("""
@@ -62,7 +67,7 @@ def list_sessions(user_id: str = Depends(verify_token)):
 @router.post("")
 def create_session(payload: dict = None, user_id: str = Depends(verify_token)):
     title = (payload or {}).get("title") or "New chat"
-    conn = _conn_or_503()
+    conn = _conn_or_503(user_id)
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute(
@@ -93,7 +98,7 @@ def _assert_owner(cur, session_id: str, user_id: str):
 @router.get("/{session_id}/messages")
 def get_session_messages(session_id: str, user_id: str = Depends(verify_token)):
     """Full message list for one session, chronological."""
-    conn = _conn_or_503()
+    conn = _conn_or_503(user_id)
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         _assert_owner(cur, session_id, user_id)
@@ -124,7 +129,7 @@ def rename_session(session_id: str, payload: dict, user_id: str = Depends(verify
     title = (payload or {}).get("title", "").strip()
     if not title:
         raise HTTPException(status_code=400, detail="title required")
-    conn = _conn_or_503()
+    conn = _conn_or_503(user_id)
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         _assert_owner(cur, session_id, user_id)
@@ -142,7 +147,7 @@ def rename_session(session_id: str, payload: dict, user_id: str = Depends(verify
 @router.delete("/{session_id}")
 def delete_session(session_id: str, user_id: str = Depends(verify_token)):
     """Delete a session and its messages."""
-    conn = _conn_or_503()
+    conn = _conn_or_503(user_id)
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         _assert_owner(cur, session_id, user_id)

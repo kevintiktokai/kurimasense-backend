@@ -11,6 +11,7 @@ from psycopg2.extras import RealDictCursor
 
 from auth_roles import get_authenticated_user
 from database import get_db_connection
+from tenancy import arm_rls_gucs, arm_rls_gucs_all_tenants
 from schemas import (
     AuthenticatedUser,
     CalibrationEntry,
@@ -36,6 +37,9 @@ def _resolve_field_for_tenant(field_id: str, user: AuthenticatedUser) -> dict:
     if not conn:
         raise HTTPException(status_code=500, detail="Database unavailable")
     try:
+        # FORCE-ready: under FORCE the unfiltered lookup only sees the caller's
+        # tenants (cross-tenant probes become 404; see resolve_access note).
+        arm_rls_gucs(conn, user.user_id, [str(t) for t in user.tenant_ids])
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute(
             """
@@ -76,6 +80,12 @@ def create_harvest(
     conn = get_db_connection()
     if not conn:
         raise HTTPException(status_code=500, detail="Database unavailable")
+    # FORCE-ready: WITH CHECK on harvest_records requires the row's tenant in
+    # the GUC — union the resolved field's tenant (covers admin writers).
+    scoped = {str(t) for t in user.tenant_ids}
+    if field.get("tenant_id"):
+        scoped.add(str(field["tenant_id"]))
+    arm_rls_gucs(conn, user.user_id, sorted(scoped))
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute(
@@ -128,11 +138,15 @@ def list_harvests(
     field_id: str,
     user: AuthenticatedUser = Depends(get_authenticated_user),
 ):
-    _resolve_field_for_tenant(field_id, user)
+    field = _resolve_field_for_tenant(field_id, user)
 
     conn = get_db_connection()
     if not conn:
         raise HTTPException(status_code=500, detail="Database unavailable")
+    scoped = {str(t) for t in user.tenant_ids}
+    if field.get("tenant_id"):
+        scoped.add(str(field["tenant_id"]))
+    arm_rls_gucs(conn, user.user_id, sorted(scoped))
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute(
@@ -164,6 +178,10 @@ def get_calibration(
     conn = get_db_connection()
     if not conn:
         raise HTTPException(status_code=500, detail="Database unavailable")
+    # FORCE-ready: harvest_records reads scope by tenant; model_calibration is
+    # global (deliberate USING(true) policy, migration 011 — aggregate model
+    # stats, no tenant PII).
+    arm_rls_gucs(conn, user.user_id, sorted({str(t) for t in user.tenant_ids} | {str(tenant_id)}))
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute(
@@ -270,6 +288,9 @@ def admin_recompute_calibration(
     conn = get_db_connection()
     if not conn:
         raise HTTPException(status_code=500, detail="Database unavailable")
+    # Global service path (admin-token-gated): calibration pairs projections
+    # with actuals across ALL tenants by design — arm the all-tenant grant.
+    arm_rls_gucs_all_tenants(conn, service_user="service:calibration_recompute")
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute(
