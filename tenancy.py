@@ -68,10 +68,14 @@ def tenant_scoped_connection(user_id: str):
         raise RuntimeError("Database unavailable")
     try:
         cur = conn.cursor()
-        # is_local => true: scoped to this transaction only (auto-cleared on end).
+        # is_local => true: both GUCs are scoped to this transaction only
+        # (auto-cleared on end). app.tenant_ids drives the ts_* tenant policies;
+        # app.user_id drives the personal-table policies (farm_tasks / chat_logs /
+        # yield_history) added for the FORCE step.
         cur.execute(
-            "SELECT set_config('app.tenant_ids', %s, true)",
-            (_pg_uuid_array_literal(tenant_ids),),
+            "SELECT set_config('app.tenant_ids', %s, true), "
+            "       set_config('app.user_id', %s, true)",
+            (_pg_uuid_array_literal(tenant_ids), str(user_id)),
         )
         cur.close()
         yield conn, tenant_ids

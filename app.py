@@ -3645,76 +3645,73 @@ async def record_yield(field_id: str, payload: dict, user_id: str = Depends(veri
         "notes": "Drought in February affected yield"  # optional
     }
     """
-    conn = get_db_connection()
-    if not conn:
-        raise HTTPException(status_code=500, detail="Database unavailable")
-    
+    # RLS Step A: ownership read + yield_history write under one tenant-scoped
+    # transaction (inert until FORCE; the fields read is tenant-scoped, the
+    # yield_history insert is user-scoped via migration 010's us_yield_history).
     try:
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
-        
-        # Verify field ownership
-        cursor.execute("""
-            SELECT id, crop_type FROM fields
-            WHERE id = %s::uuid AND (tenant_id = ANY(%s::uuid[]) OR user_id = %s::uuid)
-        """, (field_id, caller_tenant_ids(user_id), user_id))
-        
-        field = cursor.fetchone()
-        if not field:
-            cursor.close()
-            conn.close()
-            raise HTTPException(status_code=404, detail="Field not found")
-        
-        # Extract and validate payload
-        season_year = payload.get('season_year')
-        season_type = payload.get('season_type', 'summer')
-        crop_type = payload.get('crop_type') or field['crop_type']
-        variety = payload.get('variety')
-        planting_date = _clean_date(payload.get('planting_date'))
-        harvest_date = _clean_date(payload.get('harvest_date'))
-        area_harvested_ha = payload.get('area_harvested_ha')
-        actual_yield_tonnes = payload.get('actual_yield_tonnes')
-        
-        if not season_year or not area_harvested_ha or actual_yield_tonnes is None:
-            raise HTTPException(
-                status_code=400, 
-                detail="Required: season_year, area_harvested_ha, actual_yield_tonnes"
-            )
-        
-        # Optional fields
-        quality_grade = payload.get('quality_grade')
-        moisture_at_harvest = payload.get('moisture_at_harvest')
-        projected_yield_tonnes = payload.get('projected_yield_tonnes')
-        sale_price_per_tonne = payload.get('sale_price_per_tonne')
-        notes = payload.get('notes')
-        
-        # Insert yield record
-        cursor.execute("""
-            INSERT INTO yield_history (
+        with tenant_scoped_connection(user_id) as (conn, tenant_ids):
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+            # Verify field ownership
+            cursor.execute("""
+                SELECT id, crop_type FROM fields
+                WHERE id = %s::uuid AND (tenant_id = ANY(%s::uuid[]) OR user_id = %s::uuid)
+            """, (field_id, tenant_ids, user_id))
+
+            field = cursor.fetchone()
+            if not field:
+                raise HTTPException(status_code=404, detail="Field not found")
+
+            # Extract and validate payload
+            season_year = payload.get('season_year')
+            season_type = payload.get('season_type', 'summer')
+            crop_type = payload.get('crop_type') or field['crop_type']
+            variety = payload.get('variety')
+            planting_date = _clean_date(payload.get('planting_date'))
+            harvest_date = _clean_date(payload.get('harvest_date'))
+            area_harvested_ha = payload.get('area_harvested_ha')
+            actual_yield_tonnes = payload.get('actual_yield_tonnes')
+
+            if not season_year or not area_harvested_ha or actual_yield_tonnes is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Required: season_year, area_harvested_ha, actual_yield_tonnes"
+                )
+
+            # Optional fields
+            quality_grade = payload.get('quality_grade')
+            moisture_at_harvest = payload.get('moisture_at_harvest')
+            projected_yield_tonnes = payload.get('projected_yield_tonnes')
+            sale_price_per_tonne = payload.get('sale_price_per_tonne')
+            notes = payload.get('notes')
+
+            # Insert yield record
+            cursor.execute("""
+                INSERT INTO yield_history (
+                    field_id, user_id, season_year, season_type,
+                    crop_type, variety, planting_date, harvest_date,
+                    area_harvested_ha, actual_yield_tonnes,
+                    quality_grade, moisture_at_harvest,
+                    projected_yield_tonnes, sale_price_per_tonne, notes
+                ) VALUES (
+                    %s::uuid, %s::uuid, %s, %s,
+                    %s, %s, %s, %s,
+                    %s, %s,
+                    %s, %s,
+                    %s, %s, %s
+                ) RETURNING id
+            """, (
                 field_id, user_id, season_year, season_type,
                 crop_type, variety, planting_date, harvest_date,
                 area_harvested_ha, actual_yield_tonnes,
                 quality_grade, moisture_at_harvest,
                 projected_yield_tonnes, sale_price_per_tonne, notes
-            ) VALUES (
-                %s::uuid, %s::uuid, %s, %s,
-                %s, %s, %s, %s,
-                %s, %s,
-                %s, %s,
-                %s, %s, %s
-            ) RETURNING id
-        """, (
-            field_id, user_id, season_year, season_type,
-            crop_type, variety, planting_date, harvest_date,
-            area_harvested_ha, actual_yield_tonnes,
-            quality_grade, moisture_at_harvest,
-            projected_yield_tonnes, sale_price_per_tonne, notes
-        ))
-        
-        result = cursor.fetchone()
-        conn.commit()
-        cursor.close()
-        conn.close()
-        
+            ))
+
+            result = cursor.fetchone()
+            conn.commit()
+            cursor.close()
+
         # Log the event
         log_user_event(user_id, "feature_usage", "record_yield", {
             "field_id": field_id,
