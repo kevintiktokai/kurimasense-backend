@@ -3151,31 +3151,29 @@ async def get_field_proactive_alerts(field_id: str, user_id: str = Depends(verif
     print(f"🧠 Generating proactive alerts for field: {field_id}")
     
     # 1. Fetch field data
-    conn = get_db_connection()
-    if not conn:
-        raise HTTPException(status_code=500, detail="Database connection unavailable")
-    
+    # RLS Step A: field read under tenant_scoped_connection (inert until FORCE).
     try:
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
-        cursor.execute("""
-            SELECT 
-                f.id, f.name, f.crop_type, f.planting_date, f.variety,
-                f.polygon_coordinates, f.health_score,
-                f.transplant_date, f.is_transplanted
-            FROM fields f
-            WHERE f.id = %s::uuid AND (f.tenant_id = ANY(%s::uuid[]) OR f.user_id = %s::uuid)
-        """, (field_id, caller_tenant_ids(user_id), user_id))
+        with tenant_scoped_connection(user_id) as (conn, tenant_ids):
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            cursor.execute("""
+                SELECT
+                    f.id, f.name, f.crop_type, f.planting_date, f.variety,
+                    f.polygon_coordinates, f.health_score,
+                    f.transplant_date, f.is_transplanted
+                FROM fields f
+                WHERE f.id = %s::uuid AND (f.tenant_id = ANY(%s::uuid[]) OR f.user_id = %s::uuid)
+            """, (field_id, tenant_ids, user_id))
+            field = cursor.fetchone()
+            cursor.close()
+    except RuntimeError:
+        raise HTTPException(status_code=500, detail="Database connection unavailable")
 
-        field = cursor.fetchone()
-        cursor.close()
-        
+    try:
         if not field:
-            conn.close()
             raise HTTPException(status_code=404, detail="Field not found")
-        
+
         # Check required fields
         if not field.get('planting_date'):
-            conn.close()
             return {
                 "field_id": field_id,
                 "field_name": field.get('name'),
@@ -3212,9 +3210,7 @@ async def get_field_proactive_alerts(field_id: str, user_id: str = Depends(verif
                 }
         except Exception as e:
             print(f"Weather fetch for proactive alerts failed: {e}")
-        
-        conn.close()
-        
+
         # 3. Generate proactive alerts using the intelligence service
         from datetime import date as date_type
         
@@ -3333,11 +3329,7 @@ async def get_field_proactive_alerts(field_id: str, user_id: str = Depends(verif
         print(f"❌ Proactive Alerts Error: {e}")
         import traceback
         traceback.print_exc()
-        if conn:
-            try:
-                conn.close()
-            except:
-                pass
+        # Connection lifecycle is owned by tenant_scoped_connection (already released).
         raise HTTPException(status_code=500, detail=f"Failed to generate alerts: {str(e)}")
 
 
@@ -3347,21 +3339,17 @@ async def get_growth_stage(field_id: str, user_id: str = Depends(verify_token)):
     Get detailed growth stage information for a field.
     Uses variety-specific maturity data for accurate staging.
     """
-    conn = get_db_connection()
-    if not conn:
-        raise HTTPException(status_code=500, detail="Database unavailable")
-    
+    # RLS Step A: field read under tenant_scoped_connection (inert until FORCE).
     try:
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
-        cursor.execute("""
-            SELECT crop_type, planting_date, variety, name
-            FROM fields
-            WHERE id = %s::uuid AND (tenant_id = ANY(%s::uuid[]) OR user_id = %s::uuid)
-        """, (field_id, caller_tenant_ids(user_id), user_id))
-        
-        field = cursor.fetchone()
-        cursor.close()
-        conn.close()
+        with tenant_scoped_connection(user_id) as (conn, tenant_ids):
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            cursor.execute("""
+                SELECT crop_type, planting_date, variety, name
+                FROM fields
+                WHERE id = %s::uuid AND (tenant_id = ANY(%s::uuid[]) OR user_id = %s::uuid)
+            """, (field_id, tenant_ids, user_id))
+            field = cursor.fetchone()
+            cursor.close()
         
         if not field:
             raise HTTPException(status_code=404, detail="Field not found")
@@ -3426,21 +3414,17 @@ async def get_disease_risk(field_id: str, user_id: str = Depends(verify_token)):
     """
     Get disease risk assessment based on variety resistance + current weather.
     """
-    conn = get_db_connection()
-    if not conn:
-        raise HTTPException(status_code=500, detail="Database unavailable")
-    
+    # RLS Step A: field read under tenant_scoped_connection (inert until FORCE).
     try:
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
-        cursor.execute("""
-            SELECT crop_type, planting_date, variety, name, polygon_coordinates
-            FROM fields
-            WHERE id = %s::uuid AND (tenant_id = ANY(%s::uuid[]) OR user_id = %s::uuid)
-        """, (field_id, caller_tenant_ids(user_id), user_id))
-        
-        field = cursor.fetchone()
-        cursor.close()
-        conn.close()
+        with tenant_scoped_connection(user_id) as (conn, tenant_ids):
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            cursor.execute("""
+                SELECT crop_type, planting_date, variety, name, polygon_coordinates
+                FROM fields
+                WHERE id = %s::uuid AND (tenant_id = ANY(%s::uuid[]) OR user_id = %s::uuid)
+            """, (field_id, tenant_ids, user_id))
+            field = cursor.fetchone()
+            cursor.close()
         
         if not field:
             raise HTTPException(status_code=404, detail="Field not found")
@@ -3532,44 +3516,39 @@ async def get_yield_history(field_id: str, user_id: str = Depends(verify_token))
     Returns list of past season yields with projected vs actual comparison.
     Useful for trend analysis and model calibration.
     """
-    conn = get_db_connection()
-    if not conn:
-        raise HTTPException(status_code=500, detail="Database unavailable")
-    
+    # RLS Step A: field reads under tenant_scoped_connection (inert until FORCE).
     try:
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
-        
-        # Verify field ownership
-        cursor.execute("""
-            SELECT id, name, crop_type FROM fields
-            WHERE id = %s::uuid AND (tenant_id = ANY(%s::uuid[]) OR user_id = %s::uuid)
-        """, (field_id, caller_tenant_ids(user_id), user_id))
+        with tenant_scoped_connection(user_id) as (conn, tenant_ids):
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        field = cursor.fetchone()
-        if not field:
+            # Verify field ownership
+            cursor.execute("""
+                SELECT id, name, crop_type FROM fields
+                WHERE id = %s::uuid AND (tenant_id = ANY(%s::uuid[]) OR user_id = %s::uuid)
+            """, (field_id, tenant_ids, user_id))
+
+            field = cursor.fetchone()
+            if not field:
+                raise HTTPException(status_code=404, detail="Field not found")
+
+            # Fetch yield history
+            cursor.execute("""
+                SELECT
+                    id, season_year, season_type,
+                    crop_type, variety, planting_date, harvest_date,
+                    area_harvested_ha, actual_yield_tonnes, yield_per_ha,
+                    quality_grade, moisture_at_harvest,
+                    projected_yield_tonnes, variance_percent,
+                    sale_price_per_tonne, total_revenue,
+                    notes, created_at
+                FROM yield_history
+                WHERE field_id = %s::uuid
+                ORDER BY season_year DESC, harvest_date DESC
+            """, (field_id,))
+
+            records = cursor.fetchall()
             cursor.close()
-            conn.close()
-            raise HTTPException(status_code=404, detail="Field not found")
-        
-        # Fetch yield history
-        cursor.execute("""
-            SELECT 
-                id, season_year, season_type,
-                crop_type, variety, planting_date, harvest_date,
-                area_harvested_ha, actual_yield_tonnes, yield_per_ha,
-                quality_grade, moisture_at_harvest,
-                projected_yield_tonnes, variance_percent,
-                sale_price_per_tonne, total_revenue,
-                notes, created_at
-            FROM yield_history
-            WHERE field_id = %s::uuid
-            ORDER BY season_year DESC, harvest_date DESC
-        """, (field_id,))
-        
-        records = cursor.fetchall()
-        cursor.close()
-        conn.close()
-        
+
         # Calculate summary statistics
         if records:
             yields = [float(r['yield_per_ha']) for r in records if r['yield_per_ha']]
@@ -3890,7 +3869,7 @@ async def fertilizer_recommendation(
     # RLS Step A: field read under tenant_scoped_connection (inert until FORCE).
     try:
         with tenant_scoped_connection(user_id) as (conn, tenant_ids):
-            cursor = conn.cursor()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
             cursor.execute(
                 "SELECT crop_type, planting_date FROM fields WHERE id = %s AND (tenant_id = ANY(%s::uuid[]) OR user_id = %s::uuid)",
                 (field_id, tenant_ids, user_id),
@@ -3929,7 +3908,7 @@ async def ipm_recommendations(
     # RLS Step A: field read under tenant_scoped_connection (inert until FORCE).
     try:
         with tenant_scoped_connection(user_id) as (conn, tenant_ids):
-            cursor = conn.cursor()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
             cursor.execute(
                 "SELECT crop_type, planting_date, polygon_coordinates FROM fields WHERE id = %s AND (tenant_id = ANY(%s::uuid[]) OR user_id = %s::uuid)",
                 (field_id, tenant_ids, user_id),
@@ -3983,7 +3962,7 @@ async def irrigation_advice(
     # RLS Step A: field read under tenant_scoped_connection (inert until FORCE).
     try:
         with tenant_scoped_connection(user_id) as (conn, tenant_ids):
-            cursor = conn.cursor()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
             cursor.execute(
                 "SELECT crop_type, planting_date FROM fields WHERE id = %s AND (tenant_id = ANY(%s::uuid[]) OR user_id = %s::uuid)",
                 (field_id, tenant_ids, user_id),
@@ -4018,7 +3997,7 @@ async def harvest_readiness(
     # RLS Step A: field read under tenant_scoped_connection (inert until FORCE).
     try:
         with tenant_scoped_connection(user_id) as (conn, tenant_ids):
-            cursor = conn.cursor()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
             cursor.execute(
                 "SELECT crop_type, planting_date, variety FROM fields WHERE id = %s AND (tenant_id = ANY(%s::uuid[]) OR user_id = %s::uuid)",
                 (field_id, tenant_ids, user_id),
@@ -4041,7 +4020,7 @@ async def harvest_readiness(
             conn2 = get_db_connection()
             if conn2:
                 try:
-                    cur2 = conn2.cursor()
+                    cur2 = conn2.cursor(cursor_factory=RealDictCursor)
                     cur2.execute(
                         "SELECT days_to_maturity FROM crop_varieties WHERE LOWER(variety_name) LIKE LOWER(%s) LIMIT 1",
                         (f"%{variety}%",),
@@ -4076,7 +4055,7 @@ async def crop_intelligence(
     # RLS Step A: field read under tenant_scoped_connection (inert until FORCE).
     try:
         with tenant_scoped_connection(user_id) as (conn, tenant_ids):
-            cursor = conn.cursor()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
             cursor.execute(
                 "SELECT crop_type, planting_date, variety, polygon_coordinates, name FROM fields WHERE id = %s AND (tenant_id = ANY(%s::uuid[]) OR user_id = %s::uuid)",
                 (field_id, tenant_ids, user_id),
@@ -4120,7 +4099,7 @@ async def crop_intelligence(
             conn2 = get_db_connection()
             if conn2:
                 try:
-                    cur2 = conn2.cursor()
+                    cur2 = conn2.cursor(cursor_factory=RealDictCursor)
                     cur2.execute(
                         "SELECT days_to_maturity FROM crop_varieties WHERE LOWER(variety_name) LIKE LOWER(%s) LIMIT 1",
                         (f"%{variety}%",),
