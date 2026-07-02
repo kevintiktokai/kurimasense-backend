@@ -60,18 +60,29 @@ prod smoke test — not as a bulk rewrite.
 - [x] `GET /fields` (list) — wired + verified.
 - [x] `get_dashboard_stats` (feeds `/dashboard/init`) — wired + verified; also
   fixed a latent connection leak on the success path.
-- [ ] `POST /fields/{id}/analyze` (~663) — read for coords + ownership.
-- [ ] `GET /fields/{id}/insight` (~728, deprecated) — field+NDVI read.
-- [ ] field state / detail reads (~936, ~954, ~1497).
-- [ ] `DELETE /fields/{id}` (~1217, ~1239) — **write**; verify commit path with a
-  throwaway field, not a real one.
-- [ ] tasks field-list (~2277) — list read.
-- [ ] AI / agronomy field reads (~3189, ~3382, ~3461, ~3568, ~3684).
-- [ ] crop-plan / yield field reads (~3920, ~3964, ~4021, ~4059, ~4120).
+- [x] `POST /fields/{id}/analyze` — coords + ownership read.
+- [x] `GET /fields/{id}/insight` (deprecated) — field+NDVI read.
+- [x] `GET /fields/{id}/history` — two field reads, one connection.
+- [x] `DELETE /fields/{id}` — write; verified via throwaway create→delete. Also
+  fixed a pre-existing bug: it called the non-existent `_cache_invalidate_prefix`,
+  so every delete 500'd *after* removing the field.
+- [x] `_fetch_fields_and_tasks` (feeds `/ai/insights`) — fields scoped;
+  farm_tasks stays user-scoped.
+- [x] `POST /fields/{id}/yield` — field + profiles read on one scoped connection.
+- [x] `/agro/fertilizer|ipm|irrigation|harvest|crop-intelligence` — top field
+  read scoped. Also fixed pre-existing tuple-cursor 500s (default cursor +
+  by-key access) → RealDictCursor.
+- [x] `/ai/growth-stage`, `/ai/disease-risk` — field reads scoped.
+- [x] `GET /fields/{id}/yield-history` — ownership + history reads scoped.
+- [x] `/ai/proactive-alerts/{id}` — field read scoped (scattered closes removed).
+- [ ] `POST /fields/{id}/yield-history` (`record_yield`) — **only remaining site.**
+  Writes to the user-scoped `yield_history` table (not in the ts_* tenant
+  policies); its lone tenant-scoped op is the ownership read. Wire before FORCE
+  (needs the full-body wrap + an `app.user_id` policy per Step B).
 
-All bind `field_scope_sql` params today, so each is behavior-identical after
-wrapping until FORCE flips. Line numbers drift as edits land — re-grep
-`caller_tenant_ids(user_id)` for the live list.
+15 of 16 tenant-scoped sites wired. All bind `field_scope_sql` params today, so
+each is behavior-identical until FORCE flips. Re-grep `caller_tenant_ids(user_id)`
+for the live remaining list (should show only `record_yield`).
 
 ### Verification for Step A
 - Functionally unchanged in prod (FORCE still off). Watch error rates + p95 —
