@@ -1378,6 +1378,104 @@ def delete_field(field_id: str, user_id: str = Depends(verify_token)):
         raise HTTPException(status_code=500, detail=f"Failed to delete field: {str(e)}")
 
 
+# Fields a farmer may edit after creation (Phase 4 — field management). Geometry
+# (polygon/area) is intentionally excluded here; changing it re-runs satellite
+# sampling and belongs to the map flow, not this metadata patch.
+_EDITABLE_FIELD_COLUMNS = {
+    "name": "name",
+    "crop": "crop_type",
+    "variety": "variety",
+    "plantingDate": "planting_date",
+    "transplantDate": "transplant_date",
+    "fertilizerHistory": "fertilizer_history",
+}
+
+
+@app.patch("/fields/{field_id}")
+def update_field(field_id: str, payload: dict, user_id: str = Depends(verify_token)):
+    """Edit a field's agronomic metadata after creation (Phase 4).
+
+    Owner/tenant-scoped, partial update: only the keys present in the payload are
+    changed. Changing the crop re-derives ``is_transplanted`` and, when the
+    resulting crop is not transplanted, clears any stale transplant date so GDD
+    tracking stays correct. Invalidates the field's cached state so the edit is
+    reflected immediately.
+    """
+    sets: list[str] = []
+    params: list = []
+
+    for body_key, column in _EDITABLE_FIELD_COLUMNS.items():
+        if body_key not in payload:
+            continue
+        value = payload[body_key]
+        if body_key in ("plantingDate", "transplantDate"):
+            value = _clean_date(value)
+        if body_key == "name" and (value is None or not str(value).strip()):
+            raise HTTPException(status_code=400, detail="Field name cannot be empty")
+        sets.append(f"{column} = %s")
+        params.append(value)
+
+    # Re-derive transplant status when the crop changes.
+    new_crop = payload.get("crop")
+    if new_crop is not None:
+        TRANSPLANTED = ['Tomato', 'Cabbage', 'Onion', 'Potato', 'Paprika', 'Green Pepper',
+                        'Strawberries', 'Tea', 'Blueberries', 'Coffee', 'Tobacco', 'Covo',
+                        'Rape', 'Mustard']
+        is_tp = new_crop in TRANSPLANTED or bool(payload.get("isTransplanted", False))
+        sets.append("is_transplanted = %s")
+        params.append(is_tp)
+        if not is_tp:
+            sets.append("transplant_date = NULL")
+
+    if not sets:
+        raise HTTPException(status_code=400, detail="No editable fields supplied")
+
+    try:
+        with tenant_scoped_connection(user_id) as (conn, tenant_ids):
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            cursor.execute(
+                f"""
+                UPDATE fields SET {', '.join(sets)}
+                WHERE id = %s::uuid AND (tenant_id = ANY(%s::uuid[]) OR user_id = %s::uuid)
+                RETURNING id, name, crop_type, variety, planting_date, transplant_date,
+                          is_transplanted, fertilizer_history
+                """,
+                (*params, field_id, tenant_ids, user_id),
+            )
+            row = cursor.fetchone()
+            if not row:
+                conn.rollback()
+                raise HTTPException(status_code=404, detail="Field not found or you don't have permission to edit it")
+            conn.commit()
+            cursor.close()
+
+        log_user_event(user_id, "field_management", "field_updated",
+                       {"field_id": field_id, "changed": list(payload.keys())})
+        # Metadata that feeds analysis (crop/variety/dates) changed → drop caches.
+        _invalidate_field_caches(field_id, user_id)
+
+        return {
+            "status": "success",
+            "field": {
+                "id": str(row["id"]),
+                "name": row.get("name"),
+                "crop": row.get("crop_type"),
+                "variety": row.get("variety"),
+                "planting_date": row["planting_date"].isoformat() if row.get("planting_date") else None,
+                "transplant_date": row["transplant_date"].isoformat() if row.get("transplant_date") else None,
+                "is_transplanted": row.get("is_transplanted"),
+                "fertilizer_history": row.get("fertilizer_history"),
+            },
+        }
+    except HTTPException:
+        raise
+    except RuntimeError:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    except Exception as e:
+        print(f"Update Field Error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to update field: {str(e)}")
+
+
 @app.get("/user")
 def get_user_profile(user_id: str = Depends(verify_token)):
     conn = get_db_connection()
