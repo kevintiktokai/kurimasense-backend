@@ -92,10 +92,22 @@ first list of fields needing a physical check.
 - Cross-check against `input_disbursements` (institutional credit) once
   disbursement→field attribution is modelled (disbursements are per-grower today).
 
-## Slice 3 — Sentinel-1 SAR (planned, infra)
-Persist `sar_vv_db`/`ndre`/`ndmi`/`savi` (currently computed-not-stored, G2).
-Needs a `daily_logs` column migration + a CDSE Sentinel-1 fetch path; gives a
-wet-season floor when optical NDVI is cloud-blocked.
+## Slice 3 — Sentinel-1 SAR (done)
+Radar penetrates cloud → a canopy-structure floor when optical NDVI is blocked.
+- `tools/get_sar_backscatter.py`: CDSE Sentinel-1 GRD fetch (IW/DV,
+  GAMMA0_TERRAIN, linear→dB), reusing the Sentinel-2 OAuth/Statistics helpers +
+  the same `SATELLITE_API_CLIENT_ID/SECRET` (server-side only). Best-effort.
+- `migrations/009` + `init_db` self-heal: `daily_logs.sar_vv_db` / `sar_vh_db`
+  (idempotent `ADD COLUMN IF NOT EXISTS`).
+- `trigger_sentinel_analysis` fetches SAR alongside the optical pass and persists
+  it; a SAR failure never blocks the optical write.
+- Aggregator reads `sar_vv_db` from the latest log (was hardcoded None) → flows
+  into field state (`indices.current.sar_vv_db`).
+- Verified structurally in prod: columns exist, field-state exposes the key.
+  Actual value population depends on an S1 pass for the field/window (revisit
+  ~6–12 days); observable via the field-state endpoint.
+- Follow-up (still G2): red-edge/SWIR optical indices `ndre`/`ndmi`/`savi` (needs
+  extending the Sentinel-2 evalscript with B05/B8A/B11).
 
 ## Slice 4 — RLS provable isolation (planned, last)
 Per CLAUDE.md: finish Workstream 3.5 first (migrate ~25 `fields.user_id`

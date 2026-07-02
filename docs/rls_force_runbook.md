@@ -75,14 +75,20 @@ prod smoke test — not as a bulk rewrite.
 - [x] `/ai/growth-stage`, `/ai/disease-risk` — field reads scoped.
 - [x] `GET /fields/{id}/yield-history` — ownership + history reads scoped.
 - [x] `/ai/proactive-alerts/{id}` — field read scoped (scattered closes removed).
-- [ ] `POST /fields/{id}/yield-history` (`record_yield`) — **only remaining site.**
-  Writes to the user-scoped `yield_history` table (not in the ts_* tenant
-  policies); its lone tenant-scoped op is the ownership read. Wire before FORCE
-  (needs the full-body wrap + an `app.user_id` policy per Step B).
+- [x] `POST /fields/{id}/yield-history` (`record_yield`) — ownership read +
+  yield_history write wrapped in one tenant-scoped transaction.
 
-15 of 16 tenant-scoped sites wired. All bind `field_scope_sql` params today, so
-each is behavior-identical until FORCE flips. Re-grep `caller_tenant_ids(user_id)`
-for the live remaining list (should show only `record_yield`).
+**16 of 16 tenant-scoped sites wired — Step A complete.** `grep -c
+'caller_tenant_ids(user_id)' app.py` == 0. All bound `field_scope_sql` params
+until the drop; behavior-identical until FORCE flips.
+
+Step B groundwork also shipped:
+- `tenant_scoped_connection` now sets **both** `app.tenant_ids` and `app.user_id`
+  (transaction-local).
+- `migrations/010_rls_personal_policies.sql` drafted: `app_user_id()` +
+  type-robust `us_*` policies on `farm_tasks` / `chat_logs` / `yield_history`.
+  Apply during the FORCE step (safe/no-op until FORCE). `model_calibration`
+  decision still open.
 
 ### Verification for Step A
 - Functionally unchanged in prod (FORCE still off). Watch error rates + p95 —
