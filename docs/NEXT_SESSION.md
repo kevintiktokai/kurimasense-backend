@@ -63,7 +63,15 @@ deploy from `main` (Render auto-deploys backend; Vercel the frontend).
   05807a41-4362-48f3-b134-346a51de9bfd, 22 fields). Mint a token via Supabase
   password grant with the anon key to smoke-test authenticated endpoints.
 - Supabase MCP approval prompts: allowlist committed in
-  `.claude/settings.json` (`mcp__Supabase`) — should apply from session start.
+  `.claude/settings.json` (`mcp__Supabase`) — BUT in the July 2 remote session
+  the server re-registered under a UUID name (`mcp__a131210d-…`), so the
+  allowlist didn't match and every call after the early-session window hit an
+  un-answerable approval gate. This is what blocked applying migrations 010/011.
+  Next session: verify the Supabase MCP server's registered name first; if it's
+  a UUID again, the allowlist entry needs to match it (or Kevin approves the
+  prompts interactively). First DB actions once unblocked: apply
+  `migrations/010_rls_personal_policies.sql` + `011_rls_model_calibration_policy.sql`
+  (both inert until FORCE).
 - Cleanup owed: ~~delete the `__RLS_SMOKE__` row in `yield_history`~~ (done);
   recommend Render paid plan to Kevin (cold start measured 526s; keep-warm
   workflow mitigates).
