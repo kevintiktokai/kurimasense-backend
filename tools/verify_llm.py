@@ -2,6 +2,7 @@ import os
 import sys
 from dotenv import load_dotenv
 import openai
+from llm_models import CHAT_MODEL
 
 def verify_llm():
     """
@@ -19,7 +20,7 @@ def verify_llm():
     try:
         print("🔄 Attempting to contact LLM Brain...")
         response = client.chat.completions.create(
-            model="gpt-4o-mini", # or whatever is available
+            model=CHAT_MODEL, # or whatever is available
             messages=[{"role": "user", "content": "Say 'Connection Verified' if you can hear me."}],
             max_tokens=10
         )

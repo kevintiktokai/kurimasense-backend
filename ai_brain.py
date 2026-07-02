@@ -23,6 +23,7 @@ import asyncio
 from openai import OpenAI, AsyncOpenAI
 from dotenv import load_dotenv
 from database import get_db_connection
+from llm_models import CHAT_MODEL, DEEP_MODEL, VISION_MODEL, prepare_chat_params
 from tools.retrieve_context import search_knowledge_base
 from crop_profiles import (
     get_crop_profile, build_crop_context_for_ai,
@@ -320,7 +321,7 @@ class LLMRouter:
     
     async def generate(self,
                        messages: List[Dict[str, Any]],
-                       model: str = "gpt-4o-mini",
+                       model: str = CHAT_MODEL,
                        max_tokens: int = 1000,
                        temperature: float = 0.3,
                        response_format: Optional[Dict] = None) -> str:
@@ -338,13 +339,14 @@ class LLMRouter:
         
         if response_format:
             kwargs["response_format"] = response_format
-        
+
+        kwargs = prepare_chat_params(kwargs)
         response = await self.openai_async_client.chat.completions.create(**kwargs)
         return response.choices[0].message.content or ""
 
     async def generate_stream(self,
                               messages: List[Dict[str, Any]],
-                              model: str = "gpt-4o-mini",
+                              model: str = CHAT_MODEL,
                               max_tokens: int = 1000,
                               temperature: float = 0.3):
         """Generate a streaming response using the selected model."""
@@ -358,7 +360,8 @@ class LLMRouter:
             "temperature": temperature,
             "stream": True # Force Stream to True
         }
-        
+
+        kwargs = prepare_chat_params(kwargs)
         stream = await self.openai_async_client.chat.completions.create(**kwargs)
         async for chunk in stream:
             if chunk.choices[0].delta.content is not None:
@@ -862,7 +865,7 @@ Respond with a JSON object:
         try:
             response = await self.llm_router.generate(
                 messages=[{"role": "user", "content": prompt}],
-                model="gpt-4o-mini",
+                model=CHAT_MODEL,
                 max_tokens=80,
                 temperature=0.3
             )
@@ -925,7 +928,7 @@ Respond with a JSON object:
         try:
             response_text = await self.llm_router.generate(
                 messages=[{"role": "user", "content": prompt}],
-                model="gpt-4o-mini", # Efficient, good enough for structure
+                model=CHAT_MODEL,  # structured extraction — chat tier is sufficient
                 max_tokens=1000,
                 temperature=0.4,
                 response_format={"type": "json_object"}
@@ -990,7 +993,7 @@ Respond with a JSON object:
         try:
             response_text = await self.llm_router.generate(
                 messages=[{"role": "user", "content": prompt}],
-                model="gpt-4o",  # Higher quality for full planning
+                model=DEEP_MODEL,  # quality-critical: full crop-plan generation
                 max_tokens=2000,
                 temperature=0.3,
                 response_format={"type": "json_object"}
@@ -1087,7 +1090,7 @@ If the image is unclear or not a crop image, indicate this in your response."""
         try:
             response = await self.llm_router.generate(
                 messages=messages,
-                model="gpt-4o",  # Use GPT-4o for vision
+                model=VISION_MODEL,  # image diagnosis
                 max_tokens=1500,
                 temperature=0.2,
                 response_format={"type": "json_object"}

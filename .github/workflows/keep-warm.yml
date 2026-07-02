@@ -1,0 +1,25 @@
+name: Keep backend warm
+
+# Render's free tier spins the service down after ~15 min of no traffic; the next
+# visitor then eats a 60-120s cold start (measured 90s+ in the July 2026 perf
+# audit — this is the "app is slow from login" experience). Pinging /health every
+# 10 minutes keeps the instance resident. A single always-on free service fits
+# within Render's 750 free instance-hours/month (~720h). Remove this workflow if
+# the service is upgraded to a paid always-on plan.
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Ping /health
+        run: |
+          code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 120 \
+            https://kurimasense-backend.onrender.com/health || true)
+          echo "health -> $code"
+          # Don't fail the job on cold-start timeouts; the ping itself wakes it.

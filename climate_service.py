@@ -9,6 +9,7 @@ from typing import Optional, Dict, Any, List, Tuple
 import asyncio
 from database import get_db_connection
 from crop_constants import CROP_BASE_TEMPS as _CANONICAL_BASE_TEMPS, TRANSPLANTED_CROPS as _CANONICAL_TRANSPLANTED
+from llm_models import CHAT_MODEL
 
 # Open-Meteo API base URLs
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
@@ -1073,7 +1074,7 @@ Requirements:
 Return ONLY a JSON array of 3-4 recommendation strings, nothing else."""
 
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=CHAT_MODEL,
             messages=[{"role": "user", "content": context}],
             response_format={"type": "json_object"},
             temperature=0.3,

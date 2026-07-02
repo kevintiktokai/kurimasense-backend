@@ -5,6 +5,7 @@ from datetime import datetime
 
 from dotenv import load_dotenv
 from openai import OpenAI
+from llm_models import CHAT_MODEL
 
 
 REQUEST_TIMEOUT_SECONDS = 30
@@ -213,7 +214,7 @@ def main():
         for _ in range(RETRY_ATTEMPTS):
             try:
                 response = client.chat.completions.create(
-                    model="gpt-4o-mini",
+                    model=CHAT_MODEL,
                     messages=messages,
                     response_format={"type": "json_object"},
                     temperature=0.2,

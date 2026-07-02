@@ -4,6 +4,7 @@ import sys
 
 from dotenv import load_dotenv
 from openai import OpenAI
+from llm_models import CHAT_MODEL
 
 
 def _error(message):
@@ -38,7 +39,7 @@ def main():
             "Text:\n" + text
         )
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=CHAT_MODEL,
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
             temperature=0.0,
