@@ -804,7 +804,7 @@ async def get_field_insight(field_id: str, user_id: str = Depends(verify_token))
     crop_stage = None
     crop_profile = None
     try:
-        from crop_knowledge import get_crop_profile, get_current_stage_for_crop
+        from crop_profiles import get_crop_profile, get_current_stage_for_crop
         crop_profile = get_crop_profile(crop)
         if days_since_planting > 0:
             crop_stage = get_current_stage_for_crop(crop, days_since_planting)
@@ -2185,10 +2185,11 @@ async def vision_analyze_endpoint(payload: dict, user_id: str = Depends(verify_t
             additional_context=additional_context
         )
         
+        from llm_models import VISION_MODEL
         return {
             "analysis": result,
             "timestamp": datetime.now().isoformat(),
-            "model": "gpt-4o-vision"
+            "model": VISION_MODEL
         }
         
     except HTTPException:

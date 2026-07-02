@@ -48,15 +48,6 @@ class IntentType(Enum):
     UNKNOWN = "unknown"
 
 
-class LLMProvider(Enum):
-    """Available LLM providers."""
-    OPENAI_GPT4O = "gpt-4o"
-    OPENAI_GPT4O_MINI = "gpt-4o-mini"
-    OPENAI_O1 = "o1-mini"  # For complex reasoning
-    CLAUDE_SONNET = "claude-3-5-sonnet-20241022"  # If configured
-    GEMINI_PRO = "gemini-1.5-pro"  # If configured
-
-
 @dataclass
 class ConversationMessage:
     """A single message in the conversation history."""
@@ -313,28 +304,26 @@ class LLMRouter:
             self.openai_client = OpenAI(api_key=self.openai_key)
             self.openai_async_client = AsyncOpenAI(api_key=self.openai_key)
     
-    def select_model(self, 
-                     has_image: bool = False, 
+    def select_model(self,
+                     has_image: bool = False,
                      requires_reasoning: bool = False,
                      complexity: str = "normal") -> Tuple[str, str]:
         """
-        Select the best model for the task.
-        Returns: (provider, model_name)
+        Select the best model for the task from the central, env-overridable
+        tiers in llm_models.py (single source of truth). Returns:
+        (provider, model_name).
         """
-        # Vision requires GPT-4o or similar
+        # Vision diagnosis — highest-capability tier.
         if has_image:
-            return ("openai", "gpt-4o")
-        
-        # Complex reasoning might use o1
+            return ("openai", VISION_MODEL)
+
+        # Reasoning-heavy tasks flagged as high complexity warrant the deep tier
+        # for quality; the interactive chat path uses the fast conversational
+        # tier by default.
         if requires_reasoning and complexity == "high":
-            return ("openai", "gpt-4o")  # o1 would be here if needed
-        
-        # Normal tasks use cost-effective models
-        if complexity == "simple":
-            return ("openai", "gpt-4o-mini")
-        
-        # Default to GPT-4o for quality
-        return ("openai", "gpt-4o-mini")
+            return ("openai", DEEP_MODEL)
+
+        return ("openai", CHAT_MODEL)
     
     async def generate(self,
                        messages: List[Dict[str, Any]],
