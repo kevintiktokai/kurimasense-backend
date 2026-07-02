@@ -1,27 +1,56 @@
 """
 Climate Intelligence Service for KurimaSense
 Integrates with Open-Meteo API for agricultural weather data
+
+Resilience model (added July 2026 after a production incident where Open-Meteo
+rate-limited the shared Render egress IP with a persistent 429, and the service
+— which only cached on success and raised on failure — served a permanent
+outage): every upstream call now goes through `_get_json` (retry + backoff
+honouring Retry-After, optional API key) and every public fetcher is wrapped in
+`_cached` (TTL cache + single-flight coalescing + serve-stale-on-error). The net
+effect: transient upstream failures degrade to slightly-stale data, never to a
+500, and a burst of concurrent field/weather views collapses to one upstream
+call per (endpoint, location) window instead of a stampede.
 """
+import os
 import httpx
 import time
+import random
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Tuple, Callable, Awaitable
 import asyncio
 from database import get_db_connection
 from crop_constants import CROP_BASE_TEMPS as _CANONICAL_BASE_TEMPS, TRANSPLANTED_CROPS as _CANONICAL_TRANSPLANTED
 from llm_models import CHAT_MODEL
 
-# Open-Meteo API base URLs
-FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
-HISTORICAL_URL = "https://archive-api.open-meteo.com/v1/archive"
+# Open-Meteo API base URLs (overridable via env for a commercial tier / mirror).
+FORECAST_URL = os.getenv("OPENMETEO_FORECAST_URL", "https://api.open-meteo.com/v1/forecast")
+HISTORICAL_URL = os.getenv("OPENMETEO_ARCHIVE_URL", "https://archive-api.open-meteo.com/v1/archive")
+# Optional Open-Meteo API key (commercial/registered tier lifts the shared-IP
+# rate limit that causes the free-tier 429s). Drop OPENMETEO_API_KEY into the
+# Render env to use it — no code change needed.
+OPENMETEO_API_KEY = os.getenv("OPENMETEO_API_KEY", "").strip()
 
 # Default location (Zimbabwe - Harare area)
 DEFAULT_LAT = -17.82
 DEFAULT_LON = 31.05
 
 _http: Optional[httpx.AsyncClient] = None
-_weather_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
-_WEATHER_TTL = 60 * 5  # 5 minutes
+
+# Unified resilience cache: key -> (fetched_at, ttl_seconds, value). Expired
+# entries are deliberately RETAINED (not evicted) up to _STALE_MAX_AGE so they
+# can be served if the upstream is failing — the property whose absence turned a
+# transient 429 into a permanent outage.
+_cache: Dict[str, Tuple[float, float, Any]] = {}
+_inflight: Dict[str, "asyncio.Future"] = {}
+_STALE_MAX_AGE = 60 * 60 * 24  # serve last-known-good up to 24h during an outage
+
+# Per-tier TTLs (seconds). Weather changes slowly; the old blanket 5-min TTL was
+# both too short (needless upstream load) and useless during an outage.
+_TTL_CURRENT = 60 * 15          # current conditions: 15 min
+_TTL_FORECAST = 60 * 60         # daily/hourly forecast: 1 h
+_TTL_AGRI = 60 * 60 * 3         # soil / ET metrics: 3 h
+_TTL_HISTORY = 60 * 60 * 6      # historical archive (past days don't change): 6 h
 
 def _get_http() -> httpx.AsyncClient:
     global _http
@@ -44,178 +73,251 @@ def _join_params(params: Dict[str, Any]) -> Dict[str, str]:
     return out
 
 
+_RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+
+
+async def _get_json(url: str, params: Dict[str, Any], *, retries: int = 3) -> Dict[str, Any]:
+    """Resilient Open-Meteo GET.
+
+    Retries on 429 / 5xx with exponential backoff + jitter, honouring the
+    server's ``Retry-After`` header when present. Injects the API key if one is
+    configured. Raises the last error only after exhausting retries (the caller —
+    normally ``_cached`` — then decides whether to serve stale).
+    """
+    p = _join_params(params)
+    if OPENMETEO_API_KEY:
+        p["apikey"] = OPENMETEO_API_KEY
+    client = _get_http()
+    last_exc: Optional[Exception] = None
+    for attempt in range(retries + 1):
+        try:
+            resp = await client.get(url, params=p)
+            if resp.status_code in _RETRYABLE_STATUS and attempt < retries:
+                ra = resp.headers.get("Retry-After", "")
+                delay = float(ra) if ra.isdigit() else min(2 ** attempt, 8)
+                await asyncio.sleep(delay + random.uniform(0, 0.5))
+                continue
+            resp.raise_for_status()
+            return resp.json()
+        except (httpx.HTTPStatusError, httpx.TransportError, httpx.TimeoutException) as e:
+            last_exc = e
+            if attempt < retries:
+                await asyncio.sleep(min(2 ** attempt, 8) + random.uniform(0, 0.5))
+                continue
+            raise
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("unreachable")
+
+
+async def _cached(key: str, ttl: float, producer: "Callable[[], Awaitable[Any]]") -> Any:
+    """Cache + single-flight + serve-stale-on-error around an async producer.
+
+    * Fresh hit (< ttl) → return cached value.
+    * Concurrent misses for the same key coalesce onto one producer call
+      (single-flight) — collapses the field/weather-view stampede that was
+      driving the rate limit.
+    * Producer failure → serve last-known-good if we have any within
+      ``_STALE_MAX_AGE``; otherwise propagate the error.
+    """
+    now = time.time()
+    hit = _cache.get(key)
+    if hit and (now - hit[0]) < hit[1]:
+        return hit[2]
+
+    inflight = _inflight.get(key)
+    if inflight is not None:
+        return await inflight
+
+    loop = asyncio.get_event_loop()
+    fut: "asyncio.Future" = loop.create_future()
+    # Mark any exception "retrieved" so a producer failure with no concurrent
+    # waiter doesn't emit asyncio's "Future exception was never retrieved"
+    # warning (waiters still receive it via `await inflight`).
+    fut.add_done_callback(lambda f: f.cancelled() or f.exception())
+    _inflight[key] = fut
+    try:
+        value = await producer()
+        _cache[key] = (now, ttl, value)
+        if not fut.done():
+            fut.set_result(value)
+        return value
+    except Exception as e:
+        if hit and (now - hit[0]) < _STALE_MAX_AGE:
+            stale = hit[2]
+            print(f"⚠️ Climate upstream failed for '{key}' ({type(e).__name__}); serving stale data.")
+            if not fut.done():
+                fut.set_result(stale)
+            return stale
+        if not fut.done():
+            fut.set_exception(e)
+        raise
+    finally:
+        _inflight.pop(key, None)
+
+
 async def get_current_weather(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON) -> Dict[str, Any]:
     """
     Get current weather conditions for a location.
     Returns: temperature, humidity, wind speed/direction, precipitation, UV index, weather code
     """
-    key = _cache_key(lat, lon)
-    now = time.time()
-    cached = _weather_cache.get(key)
-    if cached and (now - cached[0]) < _WEATHER_TTL:
-        return cached[1]
+    async def _produce():
+        params = {
+            "latitude": lat,
+            "longitude": lon,
+            "current": [
+                "temperature_2m",
+                "relative_humidity_2m",
+                "apparent_temperature",
+                "precipitation",
+                "weather_code",
+                "wind_speed_10m",
+                "wind_direction_10m",
+                "uv_index",
+                "cloud_cover",
+                "pressure_msl"
+            ],
+            "timezone": "auto"
+        }
+        data = await _get_json(FORECAST_URL, params)
+        current = data.get("current", {})
+        return {
+            "temperature": current.get("temperature_2m"),
+            "feels_like": current.get("apparent_temperature"),
+            "humidity": current.get("relative_humidity_2m"),
+            "precipitation": current.get("precipitation"),
+            "weather_code": current.get("weather_code"),
+            "weather_description": get_weather_description(current.get("weather_code", 0)),
+            "wind_speed": current.get("wind_speed_10m"),
+            "wind_direction": current.get("wind_direction_10m"),
+            "wind_direction_text": get_wind_direction_text(current.get("wind_direction_10m", 0)),
+            "uv_index": current.get("uv_index"),
+            "uv_level": get_uv_level(current.get("uv_index", 0)),
+            "cloud_cover": current.get("cloud_cover"),
+            "pressure": current.get("pressure_msl"),
+            "time": current.get("time"),
+            "timezone": data.get("timezone"),
+            "location": {"lat": lat, "lon": lon}
+        }
 
-    params = _join_params({
-        "latitude": lat,
-        "longitude": lon,
-        "current": [
-            "temperature_2m",
-            "relative_humidity_2m",
-            "apparent_temperature",
-            "precipitation",
-            "weather_code",
-            "wind_speed_10m",
-            "wind_direction_10m",
-            "uv_index",
-            "cloud_cover",
-            "pressure_msl"
-        ],
-        "timezone": "auto"
-    })
-
-    client = _get_http()
-    response = await client.get(FORECAST_URL, params=params)
-    response.raise_for_status()
-    data = response.json()
-
-    current = data.get("current", {})
-
-    result = {
-        "temperature": current.get("temperature_2m"),
-        "feels_like": current.get("apparent_temperature"),
-        "humidity": current.get("relative_humidity_2m"),
-        "precipitation": current.get("precipitation"),
-        "weather_code": current.get("weather_code"),
-        "weather_description": get_weather_description(current.get("weather_code", 0)),
-        "wind_speed": current.get("wind_speed_10m"),
-        "wind_direction": current.get("wind_direction_10m"),
-        "wind_direction_text": get_wind_direction_text(current.get("wind_direction_10m", 0)),
-        "uv_index": current.get("uv_index"),
-        "uv_level": get_uv_level(current.get("uv_index", 0)),
-        "cloud_cover": current.get("cloud_cover"),
-        "pressure": current.get("pressure_msl"),
-        "time": current.get("time"),
-        "timezone": data.get("timezone"),
-        "location": {"lat": lat, "lon": lon}
-    }
-    _weather_cache[key] = (now, result)
-    return result
+    return await _cached(f"current:{_cache_key(lat, lon)}", _TTL_CURRENT, _produce)
 
 
 async def get_hourly_forecast(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON, hours: int = 48) -> Dict[str, Any]:
     """
     Get hourly forecast for next N hours (max 168 = 7 days).
     """
-    params = _join_params({
-        "latitude": lat,
-        "longitude": lon,
-        "hourly": [
-            "temperature_2m",
-            "relative_humidity_2m",
-            "precipitation_probability",
-            "precipitation",
-            "weather_code",
-            "wind_speed_10m",
-            "uv_index"
-        ],
-        "forecast_hours": min(hours, 168),
-        "timezone": "auto"
-    })
+    hours = min(hours, 168)
 
-    client = _get_http()
-    response = await client.get(FORECAST_URL, params=params)
-    response.raise_for_status()
-    data = response.json()
-    
-    hourly = data.get("hourly", {})
-    times = hourly.get("time", [])
-    
-    forecast = []
-    for i, time in enumerate(times[:hours]):
-        forecast.append({
-            "time": time,
-            "temperature": hourly.get("temperature_2m", [])[i] if i < len(hourly.get("temperature_2m", [])) else None,
-            "humidity": hourly.get("relative_humidity_2m", [])[i] if i < len(hourly.get("relative_humidity_2m", [])) else None,
-            "precipitation_probability": hourly.get("precipitation_probability", [])[i] if i < len(hourly.get("precipitation_probability", [])) else None,
-            "precipitation": hourly.get("precipitation", [])[i] if i < len(hourly.get("precipitation", [])) else None,
-            "weather_code": hourly.get("weather_code", [])[i] if i < len(hourly.get("weather_code", [])) else None,
-            "wind_speed": hourly.get("wind_speed_10m", [])[i] if i < len(hourly.get("wind_speed_10m", [])) else None,
-            "uv_index": hourly.get("uv_index", [])[i] if i < len(hourly.get("uv_index", [])) else None,
-        })
-    
-    return {
-        "location": {"lat": lat, "lon": lon},
-        "timezone": data.get("timezone"),
-        "hourly": forecast
-    }
+    async def _produce():
+        params = {
+            "latitude": lat,
+            "longitude": lon,
+            "hourly": [
+                "temperature_2m",
+                "relative_humidity_2m",
+                "precipitation_probability",
+                "precipitation",
+                "weather_code",
+                "wind_speed_10m",
+                "uv_index"
+            ],
+            "forecast_hours": hours,
+            "timezone": "auto"
+        }
+        data = await _get_json(FORECAST_URL, params)
+        hourly = data.get("hourly", {})
+        times = hourly.get("time", [])
+        forecast = []
+        for i, t in enumerate(times[:hours]):
+            forecast.append({
+                "time": t,
+                "temperature": hourly.get("temperature_2m", [])[i] if i < len(hourly.get("temperature_2m", [])) else None,
+                "humidity": hourly.get("relative_humidity_2m", [])[i] if i < len(hourly.get("relative_humidity_2m", [])) else None,
+                "precipitation_probability": hourly.get("precipitation_probability", [])[i] if i < len(hourly.get("precipitation_probability", [])) else None,
+                "precipitation": hourly.get("precipitation", [])[i] if i < len(hourly.get("precipitation", [])) else None,
+                "weather_code": hourly.get("weather_code", [])[i] if i < len(hourly.get("weather_code", [])) else None,
+                "wind_speed": hourly.get("wind_speed_10m", [])[i] if i < len(hourly.get("wind_speed_10m", [])) else None,
+                "uv_index": hourly.get("uv_index", [])[i] if i < len(hourly.get("uv_index", [])) else None,
+            })
+        return {
+            "location": {"lat": lat, "lon": lon},
+            "timezone": data.get("timezone"),
+            "hourly": forecast
+        }
+
+    return await _cached(f"hourly:{_cache_key(lat, lon)}:{hours}", _TTL_FORECAST, _produce)
 
 
 async def get_daily_forecast(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON, days: int = 7) -> Dict[str, Any]:
     """
     Get daily forecast for next N days (max 16).
     """
-    params = _join_params({
-        "latitude": lat,
-        "longitude": lon,
-        "daily": [
-            "temperature_2m_max",
-            "temperature_2m_min",
-            "apparent_temperature_max",
-            "apparent_temperature_min",
-            "precipitation_sum",
-            "precipitation_probability_max",
-            "weather_code",
-            "sunrise",
-            "sunset",
-            "uv_index_max",
-            "wind_speed_10m_max",
-            "et0_fao_evapotranspiration"
-        ],
-        "forecast_days": min(days, 16),
-        "timezone": "auto"
-    })
+    days = min(days, 16)
 
-    client = _get_http()
-    response = await client.get(FORECAST_URL, params=params)
-    response.raise_for_status()
-    data = response.json()
-    
-    daily = data.get("daily", {})
-    times = daily.get("time", [])
-    
-    forecast = []
-    for i, date in enumerate(times[:days]):
-        weather_code = daily.get("weather_code", [])[i] if i < len(daily.get("weather_code", [])) else 0
-        forecast.append({
-            "date": date,
-            "temp_max": daily.get("temperature_2m_max", [])[i] if i < len(daily.get("temperature_2m_max", [])) else None,
-            "temp_min": daily.get("temperature_2m_min", [])[i] if i < len(daily.get("temperature_2m_min", [])) else None,
-            "feels_like_max": daily.get("apparent_temperature_max", [])[i] if i < len(daily.get("apparent_temperature_max", [])) else None,
-            "feels_like_min": daily.get("apparent_temperature_min", [])[i] if i < len(daily.get("apparent_temperature_min", [])) else None,
-            "precipitation": daily.get("precipitation_sum", [])[i] if i < len(daily.get("precipitation_sum", [])) else None,
-            "precipitation_probability": daily.get("precipitation_probability_max", [])[i] if i < len(daily.get("precipitation_probability_max", [])) else None,
-            "weather_code": weather_code,
-            "weather_description": get_weather_description(weather_code),
-            "weather_icon": get_weather_icon(weather_code),
-            "sunrise": daily.get("sunrise", [])[i] if i < len(daily.get("sunrise", [])) else None,
-            "sunset": daily.get("sunset", [])[i] if i < len(daily.get("sunset", [])) else None,
-            "uv_index_max": daily.get("uv_index_max", [])[i] if i < len(daily.get("uv_index_max", [])) else None,
-            "wind_speed_max": daily.get("wind_speed_10m_max", [])[i] if i < len(daily.get("wind_speed_10m_max", [])) else None,
-            "evapotranspiration": daily.get("et0_fao_evapotranspiration", [])[i] if i < len(daily.get("et0_fao_evapotranspiration", [])) else None,
-        })
-    
-    return {
-        "location": {"lat": lat, "lon": lon},
-        "timezone": data.get("timezone"),
-        "daily": forecast
-    }
+    async def _produce():
+        params = {
+            "latitude": lat,
+            "longitude": lon,
+            "daily": [
+                "temperature_2m_max",
+                "temperature_2m_min",
+                "apparent_temperature_max",
+                "apparent_temperature_min",
+                "precipitation_sum",
+                "precipitation_probability_max",
+                "weather_code",
+                "sunrise",
+                "sunset",
+                "uv_index_max",
+                "wind_speed_10m_max",
+                "et0_fao_evapotranspiration"
+            ],
+            "forecast_days": days,
+            "timezone": "auto"
+        }
+        data = await _get_json(FORECAST_URL, params)
+        daily = data.get("daily", {})
+        times = daily.get("time", [])
+        forecast = []
+        for i, date in enumerate(times[:days]):
+            weather_code = daily.get("weather_code", [])[i] if i < len(daily.get("weather_code", [])) else 0
+            forecast.append({
+                "date": date,
+                "temp_max": daily.get("temperature_2m_max", [])[i] if i < len(daily.get("temperature_2m_max", [])) else None,
+                "temp_min": daily.get("temperature_2m_min", [])[i] if i < len(daily.get("temperature_2m_min", [])) else None,
+                "feels_like_max": daily.get("apparent_temperature_max", [])[i] if i < len(daily.get("apparent_temperature_max", [])) else None,
+                "feels_like_min": daily.get("apparent_temperature_min", [])[i] if i < len(daily.get("apparent_temperature_min", [])) else None,
+                "precipitation": daily.get("precipitation_sum", [])[i] if i < len(daily.get("precipitation_sum", [])) else None,
+                "precipitation_probability": daily.get("precipitation_probability_max", [])[i] if i < len(daily.get("precipitation_probability_max", [])) else None,
+                "weather_code": weather_code,
+                "weather_description": get_weather_description(weather_code),
+                "weather_icon": get_weather_icon(weather_code),
+                "sunrise": daily.get("sunrise", [])[i] if i < len(daily.get("sunrise", [])) else None,
+                "sunset": daily.get("sunset", [])[i] if i < len(daily.get("sunset", [])) else None,
+                "uv_index_max": daily.get("uv_index_max", [])[i] if i < len(daily.get("uv_index_max", [])) else None,
+                "wind_speed_max": daily.get("wind_speed_10m_max", [])[i] if i < len(daily.get("wind_speed_10m_max", [])) else None,
+                "evapotranspiration": daily.get("et0_fao_evapotranspiration", [])[i] if i < len(daily.get("et0_fao_evapotranspiration", [])) else None,
+            })
+        return {
+            "location": {"lat": lat, "lon": lon},
+            "timezone": data.get("timezone"),
+            "daily": forecast
+        }
+
+    return await _cached(f"daily:{_cache_key(lat, lon)}:{days}", _TTL_FORECAST, _produce)
 
 
 async def get_agricultural_metrics(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON) -> Dict[str, Any]:
     """
     Get agricultural-specific metrics: soil moisture, soil temperature, evapotranspiration.
     """
-    params = _join_params({
+    return await _cached(f"agri:{_cache_key(lat, lon)}", _TTL_AGRI,
+                         lambda: _produce_agricultural_metrics(lat, lon))
+
+
+async def _produce_agricultural_metrics(lat: float, lon: float) -> Dict[str, Any]:
+    params = {
         "latitude": lat,
         "longitude": lon,
         "hourly": [
@@ -233,16 +335,12 @@ async def get_agricultural_metrics(lat: float = DEFAULT_LAT, lon: float = DEFAUL
         ],
         "forecast_days": 7,
         "timezone": "auto"
-    })
+    }
+    data = await _get_json(FORECAST_URL, params)
 
-    client = _get_http()
-    response = await client.get(FORECAST_URL, params=params)
-    response.raise_for_status()
-    data = response.json()
-    
     hourly = data.get("hourly", {})
     daily = data.get("daily", {})
-    
+
     # Get current values (first/latest hourly reading)
     current_soil_temp_surface = hourly.get("soil_temperature_0cm", [None])[0]
     current_soil_temp_6cm = hourly.get("soil_temperature_6cm", [None])[0]
@@ -296,53 +394,43 @@ async def get_agricultural_metrics(lat: float = DEFAULT_LAT, lon: float = DEFAUL
     }
 
 
-# Simple in-process cache for historical daily windows (no DB, no migration).
-_history_cache: Dict[str, Tuple[float, list]] = {}
-_HISTORY_TTL = 60 * 60 * 6  # 6 hours — archive data for past days does not change
-
-
 async def get_daily_history(lat: float, lon: float, start_date: str, end_date: str) -> list:
     """Daily tmax / tmin / precipitation for a point over [start_date, end_date]
     from the Open-Meteo historical archive.
 
     Returns an ordered list of ``{"date", "tmax", "tmin", "precip"}`` dicts (one
-    per day the provider returns). Reuses the shared client; results are cached
-    in-process for 6h keyed by location+window. Raises on a non-2xx response.
+    per day the provider returns). Goes through the shared resilient layer
+    (``_get_json`` retry/backoff + ``_cached`` 6h TTL, single-flight, serve-stale):
+    archive data for past days never changes, so a cache hit is authoritative and
+    a transient upstream failure degrades to stale rather than raising.
     """
-    key = f"{round(lat, 3)}:{round(lon, 3)}:{start_date}:{end_date}"
-    now = time.time()
-    cached = _history_cache.get(key)
-    if cached and (now - cached[0]) < _HISTORY_TTL:
-        return cached[1]
+    key = f"history:{round(lat, 3)}:{round(lon, 3)}:{start_date}:{end_date}"
 
-    params = _join_params({
-        "latitude": lat,
-        "longitude": lon,
-        "start_date": start_date,
-        "end_date": end_date,
-        "daily": ["temperature_2m_max", "temperature_2m_min", "precipitation_sum"],
-        "timezone": "auto",
-    })
-    client = _get_http()
-    response = await client.get(HISTORICAL_URL, params=params)
-    response.raise_for_status()
-    daily = response.json().get("daily", {}) or {}
+    async def _produce():
+        params = {
+            "latitude": lat,
+            "longitude": lon,
+            "start_date": start_date,
+            "end_date": end_date,
+            "daily": ["temperature_2m_max", "temperature_2m_min", "precipitation_sum"],
+            "timezone": "auto",
+        }
+        daily = (await _get_json(HISTORICAL_URL, params)).get("daily", {}) or {}
+        dates = daily.get("time", []) or []
+        tmax = daily.get("temperature_2m_max", []) or []
+        tmin = daily.get("temperature_2m_min", []) or []
+        precip = daily.get("precipitation_sum", []) or []
+        out = []
+        for i, d in enumerate(dates):
+            out.append({
+                "date": d,
+                "tmax": tmax[i] if i < len(tmax) else None,
+                "tmin": tmin[i] if i < len(tmin) else None,
+                "precip": precip[i] if i < len(precip) else None,
+            })
+        return out
 
-    dates = daily.get("time", []) or []
-    tmax = daily.get("temperature_2m_max", []) or []
-    tmin = daily.get("temperature_2m_min", []) or []
-    precip = daily.get("precipitation_sum", []) or []
-
-    out = []
-    for i, d in enumerate(dates):
-        out.append({
-            "date": d,
-            "tmax": tmax[i] if i < len(tmax) else None,
-            "tmin": tmin[i] if i < len(tmin) else None,
-            "precip": precip[i] if i < len(precip) else None,
-        })
-    _history_cache[key] = (now, out)
-    return out
+    return await _cached(key, _TTL_HISTORY, _produce)
 
 
 async def calculate_gdd(
@@ -700,39 +788,23 @@ async def get_historical_comparison(lat: float = DEFAULT_LAT, lon: float = DEFAU
     current = await get_current_weather(lat, lon)
     daily = await get_daily_forecast(lat, lon, days=7)
     
-    # Get historical data for same week, 1 year ago
+    # Get historical data for same week, 1 year ago. Reuse the cached, resilient
+    # get_daily_history helper rather than a bespoke raw archive call — one fewer
+    # place to rate-limit, and it shares the archive cache with the GDD path.
     today = datetime.now()
     historical_start = (today - timedelta(days=365)).strftime("%Y-%m-%d")
     historical_end = (today - timedelta(days=365) + timedelta(days=7)).strftime("%Y-%m-%d")
-    
-    params = _join_params({
-        "latitude": lat,
-        "longitude": lon,
-        "start_date": historical_start,
-        "end_date": historical_end,
-        "daily": [
-            "temperature_2m_max",
-            "temperature_2m_min",
-            "precipitation_sum"
-        ],
-        "timezone": "auto"
-    })
 
     try:
-        client = _get_http()
-        response = await client.get(HISTORICAL_URL, params=params)
-        response.raise_for_status()
-        historical_data = response.json()
-        
-        hist_daily = historical_data.get("daily", {})
-        hist_temps_max = [t for t in hist_daily.get("temperature_2m_max", []) if t is not None]
-        hist_temps_min = [t for t in hist_daily.get("temperature_2m_min", []) if t is not None]
-        hist_precip = [p for p in hist_daily.get("precipitation_sum", []) if p is not None]
-        
+        hist_rows = await get_daily_history(lat, lon, historical_start, historical_end)
+        hist_temps_max = [r["tmax"] for r in hist_rows if r.get("tmax") is not None]
+        hist_temps_min = [r["tmin"] for r in hist_rows if r.get("tmin") is not None]
+        hist_precip = [r["precip"] for r in hist_rows if r.get("precip") is not None]
+
         hist_avg_max = sum(hist_temps_max) / len(hist_temps_max) if hist_temps_max else None
         hist_avg_min = sum(hist_temps_min) / len(hist_temps_min) if hist_temps_min else None
         hist_avg_precip = sum(hist_precip) / len(hist_precip) if hist_precip else None
-        
+
     except Exception:
         hist_avg_max = None
         hist_avg_min = None

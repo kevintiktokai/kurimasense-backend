@@ -3008,12 +3008,23 @@ async def get_current_weather(lat: float = None, lon: float = None, field_id: st
     try:
         data = await climate_service.get_current_weather(resolved_lat, resolved_lon)
         # Log usage (only if user triggered explicitly or we interpret it as such)
-        if field_id or user_id: 
+        if field_id or user_id:
              log_user_event(user_id, "feature_usage", "weather_check", {"location": {"lat": resolved_lat, "lon": resolved_lon}})
         return data
     except Exception as e:
+        # Upstream (Open-Meteo) failed AND no cached/stale value was available.
+        # Return a soft, unavailable payload (HTTP 200) so the client can show a
+        # "temporarily unavailable — retry" state instead of a hard error, and
+        # keep polling; the resilient service will serve stale as soon as any
+        # call succeeds. Raising 500 here is what made a transient 429 look like
+        # a dead feature.
         print(f"Climate Current Error: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch weather data: {str(e)}")
+        return {
+            "available": False,
+            "temperature": None,
+            "location": {"lat": resolved_lat, "lon": resolved_lon},
+            "message": "Weather data is temporarily unavailable. Retrying shortly.",
+        }
 
 
 @app.get("/climate/forecast")
@@ -3034,8 +3045,16 @@ async def get_forecast(lat: float = None, lon: float = None, field_id: str = Non
             "timezone": daily.get("timezone")
         }
     except Exception as e:
+        # Soft-fail (HTTP 200) with empty series so the page renders its
+        # skeleton/empty states instead of white-screening on a 500.
         print(f"Climate Forecast Error: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch forecast: {str(e)}")
+        return {
+            "available": False,
+            "location": {"lat": resolved_lat, "lon": resolved_lon},
+            "daily": [],
+            "hourly": [],
+            "message": "Forecast is temporarily unavailable. Retrying shortly.",
+        }
 
 
 @app.get("/climate/agricultural")
@@ -3118,7 +3137,8 @@ async def get_weather_alerts(lat: float = None, lon: float = None, field_id: str
         return data
     except Exception as e:
         print(f"Weather Alerts Error: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch alerts: {str(e)}")
+        return {"available": False, "location": {"lat": resolved_lat, "lon": resolved_lon},
+                "alert_count": 0, "has_critical": False, "alerts": []}
 
 
 @app.get("/climate/spray-window")
@@ -3133,7 +3153,8 @@ async def get_spray_window(lat: float = None, lon: float = None, field_id: str =
         return data
     except Exception as e:
         print(f"Spray Window Error: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to calculate spray windows: {str(e)}")
+        return {"available": False, "location": {"lat": resolved_lat, "lon": resolved_lon},
+                "ideal_windows": []}
 
 
 @app.get("/climate/historical")
@@ -3148,7 +3169,8 @@ async def get_historical_comparison(lat: float = None, lon: float = None, field_
         return data
     except Exception as e:
         print(f"Historical Comparison Error: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch historical data: {str(e)}")
+        return {"available": False, "location": {"lat": resolved_lat, "lon": resolved_lon},
+                "deviation": {}}
 
 
 @app.get("/climate/full")
@@ -3163,7 +3185,7 @@ async def get_full_climate_data(lat: float = None, lon: float = None, field_id: 
         return data
     except Exception as e:
         print(f"Full Climate Data Error: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch climate data: {str(e)}")
+        return {"available": False, "location": {"lat": resolved_lat, "lon": resolved_lon}}
 
 
 @app.get("/crops/{crop_name}/varieties")
