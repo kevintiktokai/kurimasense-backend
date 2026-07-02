@@ -734,27 +734,48 @@ async def build_field_state(
     lat, lon = _centroid(field_row.get("polygon_coordinates"))
 
     # --- climate (async, best-effort) ------------------------------------
-    weather_raw = agri_raw = gdd_raw = None
-    try:
-        import climate_service
-        cur = await climate_service.get_current_weather(lat, lon)
-        fc = await climate_service.get_daily_forecast(lat, lon, days=6)
-        weather_raw = {"current": cur, "daily": (fc or {}).get("daily", [])}
-    except Exception:
-        pass
-    try:
-        import climate_service
-        agri_raw = await climate_service.get_agricultural_metrics(lat, lon)
-    except Exception:
-        pass
-    try:
-        import climate_service
-        anchor = field_row.get("transplant_date") or field_row.get("planting_date")
-        gdd_raw = await climate_service.calculate_gdd(
-            lat, lon, start_date=_iso(anchor), crop_type=crop_type, variety=variety_code,
-        )
-    except Exception:
-        pass
+    # The four climate fetches are independent of each other, so they run
+    # CONCURRENTLY. Awaiting them sequentially made an uncached field-state
+    # request cost the SUM of four external round trips — measured at 26s on
+    # first load (July 2026 perf audit). Concurrent, it costs the slowest one.
+    # Each remains individually best-effort (arg-building included).
+    import asyncio
+    import climate_service
+
+    async def _safe_weather():
+        try:
+            return await climate_service.get_current_weather(lat, lon)
+        except Exception:
+            return None
+
+    async def _safe_forecast():
+        try:
+            return await climate_service.get_daily_forecast(lat, lon, days=6)
+        except Exception:
+            return None
+
+    async def _safe_agri():
+        try:
+            return await climate_service.get_agricultural_metrics(lat, lon)
+        except Exception:
+            return None
+
+    async def _safe_gdd():
+        try:
+            anchor = field_row.get("transplant_date") or field_row.get("planting_date")
+            return await climate_service.calculate_gdd(
+                lat, lon, start_date=_iso(anchor), crop_type=crop_type, variety=variety_code,
+            )
+        except Exception:
+            return None
+
+    cur, fc, agri_raw, gdd_raw = await asyncio.gather(
+        _safe_weather(), _safe_forecast(), _safe_agri(), _safe_gdd(),
+    )
+    weather_raw = (
+        {"current": cur, "daily": (fc or {}).get("daily", [])}
+        if (cur is not None or fc is not None) else None
+    )
 
     # --- yield (sync, best-effort) ---------------------------------------
     yield_raw = _fetch_yield(field_row, daily_logs)
