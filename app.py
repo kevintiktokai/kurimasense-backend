@@ -1122,6 +1122,33 @@ def _resolve_or_create_owner_tenant_id(cursor, user_id: str) -> str:
     return tenant_id
 
 
+async def _prefetch_field_history(lat: float, lon: float,
+                                  start_date: Optional[str], crop: Optional[str],
+                                  variety: Optional[str]):
+    """Warm the 6h daily-history cache for a freshly created field.
+
+    The first-ever field-state view pays ~15-30s of Open-Meteo archive latency
+    because ``calculate_gdd`` fetches the daily window on a cache miss (July 2026
+    perf audit). Priming that exact window here — right after field creation, off
+    the request path — means the farmer's first field open is already warm and
+    returns in ~2s. Best-effort: any failure just leaves the cache cold (the view
+    then pays the latency as before). Idempotent via the shared cache key.
+    """
+    try:
+        from datetime import datetime as _dt, timedelta as _td
+        eff_start = start_date or (_dt.now() - _td(days=90)).strftime("%Y-%m-%d")
+        end_date = _dt.now().strftime("%Y-%m-%d")
+        # Warm the raw history window (what calculate_gdd reads on a miss)...
+        await climate_service.get_daily_history(lat, lon, eff_start, end_date)
+        # ...and the derived GDD result, so /field/{id}/state's GDD card is warm too.
+        await climate_service.calculate_gdd(
+            lat, lon, start_date=eff_start, crop_type=crop, variety=variety,
+        )
+        print(f"🔥 Prefetched field history + GDD for ({lat:.3f},{lon:.3f}) from {eff_start}")
+    except Exception as e:
+        print(f"Field history prefetch skipped (non-fatal): {e}")
+
+
 @app.post("/fields")
 def create_field(payload: dict, background_tasks: BackgroundTasks, user_id: str = Depends(verify_token)):
     conn = get_db_connection()
@@ -1216,7 +1243,23 @@ def create_field(payload: dict, background_tasks: BackgroundTasks, user_id: str 
             conn.commit()
         except Exception as insight_err:
             print(f"Initial insight creation warning: {insight_err}")
-        
+
+        # Warm the field-history / GDD cache off the request path so the farmer's
+        # first field-state view is fast (see _prefetch_field_history). Uses the
+        # polygon centroid — the same point the aggregator/GDD paths sample.
+        try:
+            if coords and isinstance(coords, list) and len(coords) > 0:
+                p_lats = [p['lat'] for p in coords]
+                p_lons = [p['lon'] for p in coords]
+                p_lat, p_lon = sum(p_lats) / len(p_lats), sum(p_lons) / len(p_lons)
+                # GDD tracks from transplant_date for transplanted crops, else planting.
+                anchor = str(transplant_date) if (is_transplanted and transplant_date) else (
+                    str(planting_date) if planting_date else None)
+                background_tasks.add_task(
+                    _prefetch_field_history, p_lat, p_lon, anchor, crop, variety)
+        except Exception as prefetch_err:
+            print(f"Field history prefetch scheduling warning: {prefetch_err}")
+
         return {"status": "success", "id": str(new_id)}
         
     except Exception as e:

@@ -30,15 +30,26 @@ deploy from `main` (Render auto-deploys backend; Vercel the frontend).
    understand. Review every AI feature end-to-end (chat, vision diagnosis,
    insights, crop plan, yield) — ideally with a live token once `openai` deps are
    installed, since the sandbox can't import `ai_brain`.
-2. **RLS FORCE cut-over** — fully staged; execute per `docs/rls_force_runbook.md`
-   Steps B–D: apply `migrations/010_rls_personal_policies.sql`, decide
-   `model_calibration`, drop `fields.user_id` (irreversible — snapshot first),
-   per-table FORCE with negative tests. All 16 endpoints already wired to
-   `tenant_scoped_connection`. Needs Kevin's explicit go at the FORCE step.
-3. **Field-history background prefetch** — first-ever field-state view still
-   pays ~15-30s Open-Meteo archive latency (GDD). Prefetch
-   `climate_service.get_daily_history` after field creation + a warm-up pass;
-   repeats are already ~2s (6h cache).
+2. **RLS FORCE cut-over** — Steps A + B now code-complete (see
+   `docs/rls_force_runbook.md` Status). This session did the repo-wide straggler
+   audit and wired ALL ~30 remaining bare DB sites (not just the original 16
+   app.py ones) via `tenancy.arm_rls_gucs`, extended migration 010
+   (`chat_sessions`), added migration 011 (`model_calibration` USING(true)), and
+   documented the bootstrap exemption + Step C/D checklists.
+   **Still to do next session:**
+   (a) APPLY migrations 010 + 011 (blocked this session on a Supabase MCP
+   approval prompt — they're inert until FORCE, safe to apply anytime);
+   (b) prod soak of the wiring (watch error rates / p95 — each wrapped query
+   adds one `set_config` round trip);
+   (c) Step C drop `fields.user_id` — CODE FIRST: remove the `field_scope_sql`
+   fallback and deploy to Render BEFORE the column drop, snapshot first;
+   (d) Step D per-table FORCE with negative tests. Needs Kevin's go at FORCE.
+3. ~~**Field-history background prefetch**~~ — DONE. `POST /fields` now schedules
+   `app._prefetch_field_history` as a background task: warms both
+   `climate_service.get_daily_history` and the derived `calculate_gdd` for the
+   field's centroid + planting/transplant window, so the first field-state view
+   is served from the 6h cache (~2s) instead of paying ~15-30s archive latency.
+   Best-effort; offline/mock create path skips it.
 4. **Smaller audit items**: slowapi rate limiting on AI endpoints; structured
    logging + Sentry; restrict `/db-schema` + `/jwt-config` to admin; keep
    splitting app.py; consolidate Leaflet vs MapLibre on the frontend.
