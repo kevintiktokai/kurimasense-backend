@@ -420,24 +420,15 @@ async def calculate_gdd(
 
     end_date = datetime.now().strftime("%Y-%m-%d")
     
-    params = _join_params({
-        "latitude": lat,
-        "longitude": lon,
-        "start_date": effective_start_date,
-        "end_date": end_date,
-        "daily": ["temperature_2m_max", "temperature_2m_min"],
-        "timezone": "auto"
-    })
-
-    client = _get_http()
-    response = await client.get(HISTORICAL_URL, params=params)
-    response.raise_for_status()
-    data = response.json()
-    
-    daily = data.get("daily", {})
-    dates = daily.get("time", [])
-    t_max_list = daily.get("temperature_2m_max", [])
-    t_min_list = daily.get("temperature_2m_min", [])
+    # Fetch via the shared 6h-cached history helper. The raw archive API call
+    # here was the field-state first-load hog (~15s per uncached request, July
+    # 2026 perf audit); with the cache, only the FIRST view of a field location
+    # per 6h pays the archive latency — every subsequent GDD computation for
+    # that field is served from memory.
+    history = await get_daily_history(lat, lon, effective_start_date, end_date)
+    dates = [h["date"] for h in history]
+    t_max_list = [h["tmax"] for h in history]
+    t_min_list = [h["tmin"] for h in history]
     
     total_gdd = 0
     daily_gdd = []
