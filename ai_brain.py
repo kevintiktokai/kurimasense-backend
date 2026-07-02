@@ -187,20 +187,35 @@ class ConversationMemory:
             
         try:
             cursor = conn.cursor()
-            # Store in chat_logs
-            # We map session_id to field_context_id for now, or just rely on user_id
-            # The schema has user_id, role, content, field_context_id
-            
             # Extract basic content
             content_str = message.content
             if isinstance(content_str, list) or isinstance(content_str, dict):
                 content_str = str(content_str) # Simple fallback serialization
-                
+
+            # session_id lives in its own column (chat_sessions FK). It is also
+            # mirrored into field_context_id for backward compat with rows/readers
+            # from the pre-session era, where the session was hacked onto that
+            # column.
             cursor.execute("""
-                INSERT INTO chat_logs (user_id, role, content, field_context_id, created_at)
-                VALUES (%s, %s, %s, %s, NOW())
-            """, (user_id, message.role, content_str, session_id))
-            
+                INSERT INTO chat_logs (user_id, role, content, field_context_id, session_id, created_at)
+                VALUES (%s, %s, %s, %s, %s::uuid, NOW())
+            """, (user_id, message.role, content_str, session_id, session_id))
+
+            # Touch the session and auto-title it from the first user message
+            # (only while it still has no real title). No-op for legacy/absent
+            # session rows.
+            if session_id:
+                cursor.execute("""
+                    UPDATE chat_sessions
+                    SET updated_at = NOW(),
+                        title = CASE
+                            WHEN (title IS NULL OR title = 'New chat') AND %s = 'user'
+                            THEN LEFT(%s, 60)
+                            ELSE title
+                        END
+                    WHERE id = %s::uuid AND user_id = %s
+                """, (message.role, content_str, session_id, user_id))
+
             conn.commit()
             cursor.close()
             conn.close()
@@ -227,9 +242,11 @@ class ConversationMemory:
             params = [user_id]
             
             if session_id:
-                query += " AND field_context_id = %s"
-                params.append(session_id)
-                
+                # session_id column for new rows; field_context_id catches rows
+                # written before the session column existed.
+                query += " AND (session_id = %s::uuid OR field_context_id = %s)"
+                params.extend([session_id, session_id])
+
             query += " ORDER BY created_at DESC LIMIT %s"
             params.append(limit * 2) # *2 for pairing
             
@@ -264,9 +281,9 @@ class ConversationMemory:
             params = [user_id]
             
             if session_id:
-                query += " AND field_context_id = %s"
-                params.append(session_id)
-                
+                query += " AND (session_id = %s::uuid OR field_context_id = %s)"
+                params.extend([session_id, session_id])
+
             cursor.execute(query, tuple(params))
             conn.commit()
             cursor.close()

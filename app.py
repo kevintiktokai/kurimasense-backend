@@ -119,6 +119,10 @@ app.include_router(reconciliation_router)
 from verification_routes import router as verification_router  # noqa: E402
 app.include_router(verification_router)
 
+# Chat sessions (LLM-style advisor UI: history sidebar, new/resume chats).
+from chat_session_routes import router as chat_session_router  # noqa: E402
+app.include_router(chat_session_router)
+
 # CORS Configuration
 # Allow specific origins from environment or default to known frontends
 allowed_origins_env = os.environ.get("CORS_ORIGINS", "").strip()

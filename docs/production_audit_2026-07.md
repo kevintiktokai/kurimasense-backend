@@ -46,8 +46,12 @@ seconds** on first hit.
 | Path | Measured | Notes |
 |---|---|---|
 | Supabase login | ~1.7s | acceptable (includes TLS setup) |
-| **Backend cold start** | **90–240+ s** | Render free tier spins down after ~15 min idle. THE dominant "app feels slow" cause |
-| Warm `/dashboard/init` | see below | consolidated 1-request loader + 120s cache already in place (good design) |
+| **Backend cold start** | **526 s measured** | Render free tier spin-down. THE dominant "app feels slow" cause |
+| `/dashboard/init` warm | 2.3s → 0.84s cached | consolidated 1-request loader + 120s cache (good design) |
+| `/fields` warm | ~1.6s | fine |
+| **`/field/{id}/state` first load** | **26.2s** → 1.8s cached | the "field analysis is slow" experience. Aggregator does synchronous external work (climate/satellite fetches) on a cache miss. **Next perf target:** parallelize the external calls / serve stale-while-revalidate |
+| `/ai/insights` | 4.2s → 0.7s cached | LLM call on miss; acceptable with cache |
+| Vercel HTML shell | 0.7–1.0s | fine |
 
 Actions:
 - ✅ `.github/workflows/keep-warm.yml` — pings `/health` every 10 min so the

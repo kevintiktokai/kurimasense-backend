@@ -102,6 +102,24 @@ def init_db():
                 )
             """)
             
+            # Chat sessions (LLM-style chat: history sidebar, new/resume chats).
+            # chat_logs.session_id joins messages to a session; legacy rows keep
+            # NULL (the old single-thread history). Self-heals like the SAR cols.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS chat_sessions (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    user_id TEXT NOT NULL,
+                    title TEXT,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                )
+            """)
+            cursor.execute("""
+                ALTER TABLE chat_logs ADD COLUMN IF NOT EXISTS session_id UUID;
+                CREATE INDEX IF NOT EXISTS idx_chat_sessions_user ON chat_sessions(user_id, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_chat_logs_session ON chat_logs(session_id, created_at);
+            """)
+
             # Fields Table (matches Supabase schema)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS fields (
