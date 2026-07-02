@@ -293,7 +293,8 @@ def assemble_field_state(
         as_of_date=_iso(latest_date),
         ndvi=current_ndvi,
         evi=_num(latest.get("evi")),
-        ndre=None, ndmi=None, savi=None, sar_vv_db=None,  # not stored today (audit G2)
+        ndre=None, ndmi=None, savi=None,  # optical red-edge/SWIR indices: still G2
+        sar_vv_db=_num(latest.get("sar_vv_db")),  # Sentinel-1 backscatter (Slice 3)
         observation_quality=obs_quality,
         cloud_pct=cloud_pct,
         ndvi_label=ndvi_cls["label"],
@@ -814,7 +815,7 @@ def _q(sql: str, params: tuple) -> List[Dict[str, Any]]:
 def _fetch_daily_logs(field_id: str) -> List[Dict[str, Any]]:
     return _q(
         """
-        SELECT log_date, ndvi, evi, soil_moisture, cloud_cover
+        SELECT log_date, ndvi, evi, soil_moisture, cloud_cover, sar_vv_db, sar_vh_db
         FROM daily_logs WHERE field_id = %s::uuid
         ORDER BY log_date ASC LIMIT 90
         """,

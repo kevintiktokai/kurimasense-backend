@@ -39,6 +39,7 @@ from proactive_intelligence import (
     generate_harvest_alert
 )
 from tools.get_crop_health import run as run_crop_health
+from tools.get_sar_backscatter import run as run_sar_backscatter
 from tools.generate_yield import run as run_generate_yield
 from tools.get_weather_forecast import fetch_weather as fetch_weather_data
 import climate_service
@@ -593,6 +594,23 @@ async def trigger_sentinel_analysis(field_id: str, lat: float, lon: float):
 
         print(f"Satellite Analysis Result: NDVI={real_ndvi}, EVI={real_evi}")
 
+        # Sentinel-1 SAR backscatter (best-effort; radar sees through cloud). Never
+        # let a SAR failure block the optical insert — this is a supplementary
+        # wet-season floor, not a hard dependency.
+        sar_vv_db = None
+        sar_vh_db = None
+        try:
+            sar_out = run_sar_backscatter(lat, lon)
+            if sar_out.get("status") == "ok":
+                sar_data = sar_out.get("data", {})
+                sar_vv_db = sar_data.get("sar_vv_db")
+                sar_vh_db = sar_data.get("sar_vh_db")
+                print(f"SAR backscatter: VV={sar_vv_db} dB, VH={sar_vh_db} dB")
+            else:
+                print(f"SAR fetch skipped: {sar_out.get('error_message')}")
+        except Exception as sar_e:
+            print(f"SAR fetch error (non-fatal): {sar_e}")
+
         # Update Field Health based on NDVI
         new_health = 0.9 if real_ndvi > 0.6 else 0.5
 
@@ -614,9 +632,9 @@ async def trigger_sentinel_analysis(field_id: str, lat: float, lon: float):
 
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute("""
-            INSERT INTO daily_logs (field_id, ndvi, evi, soil_moisture, cloud_cover, source, insight_text)
-            VALUES (%s, %s, %s, %s, %s, 'Sentinel-2', %s)
-        """, (field_id, real_ndvi, real_evi, real_moisture, data.get("cloud_cover_pct", 0), insight_text))
+            INSERT INTO daily_logs (field_id, ndvi, evi, soil_moisture, cloud_cover, source, insight_text, sar_vv_db, sar_vh_db)
+            VALUES (%s, %s, %s, %s, %s, 'Sentinel-2', %s, %s, %s)
+        """, (field_id, real_ndvi, real_evi, real_moisture, data.get("cloud_cover_pct", 0), insight_text, sar_vv_db, sar_vh_db))
         
         cursor.execute("UPDATE fields SET health_score = %s WHERE id = %s", (new_health, field_id))
         

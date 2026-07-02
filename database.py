@@ -158,7 +158,14 @@ def init_db():
                     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
                 )
             """)
-            
+
+            # Sentinel-1 SAR backscatter columns (migration 009) — self-heal on
+            # deploy so the SAR persistence path never inserts a missing column.
+            cursor.execute("""
+                ALTER TABLE daily_logs ADD COLUMN IF NOT EXISTS sar_vv_db DOUBLE PRECISION;
+                ALTER TABLE daily_logs ADD COLUMN IF NOT EXISTS sar_vh_db DOUBLE PRECISION;
+            """)
+
             # Field Inputs Table (matches Supabase schema)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS field_inputs (
