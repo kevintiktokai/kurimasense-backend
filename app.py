@@ -644,29 +644,19 @@ def analyze_field(field_id: str, background_tasks: BackgroundTasks, user_id: str
     # Find coords to pass to analysis
     lat, lon = -17.82, 31.05 # Default
     
-    conn = get_db_connection()
-    if not conn:
-        # Find in mock
-        for f in MOCK_FIELDS:
-            if f["id"] == field_id:
-                loc = f.get("location")
-                if loc:
-                    lat, lon = loc["lat"], loc["lon"]
-                break
-    else:
-        try:
+    # RLS Step A: field read under tenant_scoped_connection (inert until FORCE).
+    try:
+        with tenant_scoped_connection(user_id) as (conn, tenant_ids):
             cursor = conn.cursor(cursor_factory=RealDictCursor)
             # Verify ownership and get coords
             cursor.execute("""
                 SELECT polygon_coordinates FROM fields
                 WHERE id = %s::uuid AND (tenant_id = ANY(%s::uuid[]) OR user_id = %s::uuid)
-            """, (field_id, caller_tenant_ids(user_id), user_id))
+            """, (field_id, tenant_ids, user_id))
             row = cursor.fetchone()
             if not row:
-                cursor.close()
-                conn.close()
                 raise HTTPException(status_code=404, detail="Field not found or access denied")
-            
+
             coords = row['polygon_coordinates']
             if coords and isinstance(coords, list) and len(coords) > 0:
                 # Use the polygon CENTROID (mean of all vertices), not the first
@@ -683,13 +673,19 @@ def analyze_field(field_id: str, background_tasks: BackgroundTasks, user_id: str
                     lat, lon = coords[0]['lat'], coords[0]['lon']
 
             cursor.close()
-            conn.close()
-        except HTTPException:
-            raise
-        except Exception as e:
-            print(f"Analyze Field DB Error: {e}")
-            if conn: conn.close()
-        
+    except HTTPException:
+        raise
+    except RuntimeError:
+        # DB unavailable — fall back to mock coords.
+        for f in MOCK_FIELDS:
+            if f["id"] == field_id:
+                loc = f.get("location")
+                if loc:
+                    lat, lon = loc["lat"], loc["lon"]
+                break
+    except Exception as e:
+        print(f"Analyze Field DB Error: {e}")
+
     background_tasks.add_task(trigger_sentinel_analysis, field_id, lat, lon)
     return {"status": "success", "message": "Analysis started"}
 
@@ -707,34 +703,29 @@ async def get_field_insight(field_id: str, user_id: str = Depends(verify_token))
     likely_cause / recommended_action``. Kept running during the frontend
     transition; remove once all clients read from the aggregator.
     """
-    conn = get_db_connection()
-    if not conn:
-        return {"insight": "Database unavailable. Please try again shortly.", "source": "error"}
-
+    # RLS Step A: field read under tenant_scoped_connection (inert until FORCE).
     row = None
     try:
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
-        cursor.execute("""
-            SELECT f.crop_type, f.variety, f.planting_date, f.size_hectares,
-                   f.health_score, f.polygon_coordinates, f.natural_region,
-                   dl.ndvi, dl.soil_moisture, dl.evi, dl.insight_text, dl.log_date
-            FROM fields f
-            LEFT JOIN LATERAL (
-                SELECT ndvi, soil_moisture, evi, insight_text, log_date
-                FROM daily_logs WHERE field_id = f.id
-                ORDER BY log_date DESC LIMIT 1
-            ) dl ON true
-            WHERE f.id = %s::uuid AND (f.tenant_id = ANY(%s::uuid[]) OR f.user_id = %s::uuid)
-        """, (field_id, caller_tenant_ids(user_id), user_id))
-        row = cursor.fetchone()
-        cursor.close()
+        with tenant_scoped_connection(user_id) as (conn, tenant_ids):
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            cursor.execute("""
+                SELECT f.crop_type, f.variety, f.planting_date, f.size_hectares,
+                       f.health_score, f.polygon_coordinates, f.natural_region,
+                       dl.ndvi, dl.soil_moisture, dl.evi, dl.insight_text, dl.log_date
+                FROM fields f
+                LEFT JOIN LATERAL (
+                    SELECT ndvi, soil_moisture, evi, insight_text, log_date
+                    FROM daily_logs WHERE field_id = f.id
+                    ORDER BY log_date DESC LIMIT 1
+                ) dl ON true
+                WHERE f.id = %s::uuid AND (f.tenant_id = ANY(%s::uuid[]) OR f.user_id = %s::uuid)
+            """, (field_id, tenant_ids, user_id))
+            row = cursor.fetchone()
+            cursor.close()
+    except RuntimeError:
+        return {"insight": "Database unavailable. Please try again shortly.", "source": "error"}
     except Exception as e:
         print(f"Insight DB query error: {e}")
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
 
     if not row:
         return {"insight": "Field not found. Add field data to receive insights.", "source": "error"}
@@ -922,18 +913,18 @@ async def get_field_insight(field_id: str, user_id: str = Depends(verify_token))
 
 @app.get("/fields/{field_id}/history")
 async def get_field_history(field_id: str, user_id: str = Depends(verify_token)):
-    conn = get_db_connection()
     satellite_history = []
     field_lat, field_lon = -17.82, 31.05
 
-    if conn:
-        try:
+    # RLS Step A: field reads under tenant_scoped_connection (inert until FORCE).
+    try:
+        with tenant_scoped_connection(user_id) as (conn, tenant_ids):
             cursor = conn.cursor(cursor_factory=RealDictCursor)
             # Get field coordinates
             cursor.execute("""
                 SELECT polygon_coordinates FROM fields
                 WHERE id = %s::uuid AND (tenant_id = ANY(%s::uuid[]) OR user_id = %s::uuid)
-            """, (field_id, caller_tenant_ids(user_id), user_id))
+            """, (field_id, tenant_ids, user_id))
             field_row = cursor.fetchone()
             if field_row and field_row.get('polygon_coordinates'):
                 coords = field_row['polygon_coordinates']
@@ -951,7 +942,7 @@ async def get_field_history(field_id: str, user_id: str = Depends(verify_token))
                 WHERE dl.field_id = %s::uuid AND (f.tenant_id = ANY(%s::uuid[]) OR f.user_id = %s::uuid)
                 ORDER BY dl.log_date ASC
                 LIMIT 30
-            """, (field_id, caller_tenant_ids(user_id), user_id))
+            """, (field_id, tenant_ids, user_id))
             rows = cursor.fetchall()
             for row in rows:
                 satellite_history.append({
@@ -961,12 +952,10 @@ async def get_field_history(field_id: str, user_id: str = Depends(verify_token))
                     "source": "satellite"
                 })
             cursor.close()
-            conn.close()
-        except Exception as e:
-            print(f"History Query Error: {e}")
-            if conn:
-                try: conn.close()
-                except: pass
+    except RuntimeError:
+        pass  # DB unavailable — fall through to the climate-data supplement below
+    except Exception as e:
+        print(f"History Query Error: {e}")
 
     # If satellite history is sparse, supplement with Open-Meteo climate data
     if len(satellite_history) < 7:
@@ -1199,51 +1188,43 @@ def delete_field(field_id: str, user_id: str = Depends(verify_token)):
     Delete a field and all associated data (daily_logs, field_inputs).
     Only the owner can delete their field.
     """
-    conn = get_db_connection()
-    
-    if not conn:
-        # Handle mock mode
-        global MOCK_FIELDS
-        MOCK_FIELDS = [f for f in MOCK_FIELDS if f.get("id") != field_id]
-        return {"status": "success", "message": "Field deleted (mock mode)"}
-    
+    # RLS Step A: delete under tenant_scoped_connection — sets app.tenant_ids
+    # (inert until FORCE) and guarantees commit/rollback + connection release.
     try:
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
-        
-        # First verify the field belongs to this user
-        cursor.execute("""
-            SELECT id, name FROM fields
-            WHERE id = %s::uuid AND (tenant_id = ANY(%s::uuid[]) OR user_id = %s::uuid)
-        """, (field_id, caller_tenant_ids(user_id), user_id))
-        
-        field = cursor.fetchone()
-        if not field:
+        with tenant_scoped_connection(user_id) as (conn, tenant_ids):
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+            # First verify the field belongs to this user
+            cursor.execute("""
+                SELECT id, name FROM fields
+                WHERE id = %s::uuid AND (tenant_id = ANY(%s::uuid[]) OR user_id = %s::uuid)
+            """, (field_id, tenant_ids, user_id))
+
+            field = cursor.fetchone()
+            if not field:
+                raise HTTPException(status_code=404, detail="Field not found or you don't have permission to delete it")
+
+            field_name = field.get('name', 'Unknown')
+
+            # Delete associated daily_logs first (foreign key constraint)
+            cursor.execute("DELETE FROM daily_logs WHERE field_id = %s::uuid", (field_id,))
+            logs_deleted = cursor.rowcount
+
+            # Delete associated field_inputs if table exists
+            try:
+                cursor.execute("DELETE FROM field_inputs WHERE field_id = %s::uuid", (field_id,))
+                inputs_deleted = cursor.rowcount
+            except Exception:
+                inputs_deleted = 0
+
+            # Delete the field itself
+            cursor.execute("DELETE FROM fields WHERE id = %s::uuid AND (tenant_id = ANY(%s::uuid[]) OR user_id = %s::uuid)", (field_id, tenant_ids, user_id))
+
+            conn.commit()
             cursor.close()
-            conn.close()
-            raise HTTPException(status_code=404, detail="Field not found or you don't have permission to delete it")
-        
-        field_name = field.get('name', 'Unknown')
-        
-        # Delete associated daily_logs first (foreign key constraint)
-        cursor.execute("DELETE FROM daily_logs WHERE field_id = %s::uuid", (field_id,))
-        logs_deleted = cursor.rowcount
-        
-        # Delete associated field_inputs if table exists
-        try:
-            cursor.execute("DELETE FROM field_inputs WHERE field_id = %s::uuid", (field_id,))
-            inputs_deleted = cursor.rowcount
-        except Exception:
-            inputs_deleted = 0
-        
-        # Delete the field itself
-        cursor.execute("DELETE FROM fields WHERE id = %s::uuid AND (tenant_id = ANY(%s::uuid[]) OR user_id = %s::uuid)", (field_id, caller_tenant_ids(user_id), user_id))
-        
-        conn.commit()
-        cursor.close()
-        conn.close()
-        
+
         print(f"🗑️ Field deleted: {field_name} (id={field_id}), logs={logs_deleted}, inputs={inputs_deleted}")
-        
+
         # Log the event
         log_user_event(user_id, "field_management", "field_deleted", {"field_id": field_id, "field_name": field_name})
 
@@ -1252,7 +1233,7 @@ def delete_field(field_id: str, user_id: str = Depends(verify_token)):
         _cache_invalidate_prefix(f"yield:{user_id}:")
 
         return {
-            "status": "success", 
+            "status": "success",
             "message": f"Field '{field_name}' deleted successfully",
             "deleted": {
                 "field_id": field_id,
@@ -1260,16 +1241,18 @@ def delete_field(field_id: str, user_id: str = Depends(verify_token)):
                 "field_inputs": inputs_deleted
             }
         }
-        
+
     except HTTPException:
         raise
+    except RuntimeError:
+        # DB unavailable — mock-mode delete.
+        global MOCK_FIELDS
+        MOCK_FIELDS = [f for f in MOCK_FIELDS if f.get("id") != field_id]
+        return {"status": "success", "message": "Field deleted (mock mode)"}
     except Exception as e:
         print(f"Delete Field Error: {e}")
         import traceback
         traceback.print_exc()
-        if conn:
-            conn.rollback()
-            conn.close()
         raise HTTPException(status_code=500, detail=f"Failed to delete field: {str(e)}")
 
 
