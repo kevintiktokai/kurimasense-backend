@@ -306,6 +306,36 @@ def _cache_invalidate(prefix: str):
             del _response_cache[k]
 
 
+# Field-state freshness policy (Phase 7). The /field/{id}/state aggregate is a
+# composition whose slowest-changing expensive inputs are satellite/NDVI
+# (~5-day Sentinel revisit, only updated by an explicit /analyze) and weather
+# (cached upstream 15 min – 6 h). A short blanket TTL therefore rebuilt the whole
+# aggregate — 4 climate fetches + yield recompute + snapshot — far more often than
+# any input actually changed. We use a longer TTL and invalidate on the events
+# that genuinely change a field's state, so views are cheap by default yet never
+# stale after a user action ("event-driven cache").
+_FIELD_STATE_TTL = 600  # 10 min — aligned with the fastest input (weather)
+
+
+def _invalidate_field_caches(field_id: str, user_id: Optional[str] = None):
+    """Evict every cached view derived from a field after it changes.
+
+    Field-state keys are ``field_state:{requester_id}:{field_id}`` — different
+    tenant members have different requester ids, so we match on the ``field_id``
+    suffix to clear the view for ALL viewers, not just the actor. Also clears the
+    user's derived insights/yield rollups.
+    """
+    with _cache_lock:
+        drop = [k for k in _response_cache
+                if k.startswith("field_state:") and k.endswith(f":{field_id}")]
+        if user_id:
+            drop += [k for k in _response_cache
+                     if k.startswith(f"insights:{user_id}") or k.startswith(f"yield:{user_id}:")
+                     or k == f"dashboard_init:{user_id}"]
+        for k in set(drop):
+            _response_cache.pop(k, None)
+
+
 @app.get("/health")
 def health_check():
     """
@@ -655,6 +685,9 @@ async def trigger_sentinel_analysis(field_id: str, lat: float, lon: float,
         cursor.execute("UPDATE fields SET health_score = %s WHERE id = %s", (new_health, field_id))
 
         conn.commit()
+        # Fresh satellite data landed — drop the cached field-state so the next
+        # view reflects the new NDVI/health immediately rather than after the TTL.
+        _invalidate_field_caches(field_id)
         print(f"Sentinel Analysis Complete for {field_id}")
         
     except Exception as e:
@@ -1319,8 +1352,7 @@ def delete_field(field_id: str, user_id: str = Depends(verify_token)):
         log_user_event(user_id, "field_management", "field_deleted", {"field_id": field_id, "field_name": field_name})
 
         # Invalidate cached responses that include this field's data
-        _cache_invalidate(f"insights:{user_id}")
-        _cache_invalidate(f"yield:{user_id}:")
+        _invalidate_field_caches(field_id, user_id)
 
         return {
             "status": "success",
@@ -1423,8 +1455,12 @@ def log_input(payload: dict, user_id: str = Depends(verify_token)):
         
         new_id = cursor.fetchone()['id']
         conn.commit()
+        # Event-driven invalidation: a new input changes the field's verification,
+        # activity list, and any derived rollups — refresh them on next view.
+        if field_id:
+            _invalidate_field_caches(field_id, user_id)
         return {"status": "success", "id": str(new_id)}
-        
+
     except Exception as e:
         print(f"Log Input Error: {e}")
         conn.rollback()
@@ -1702,7 +1738,7 @@ async def get_field_state(field_id: str, principal: dict = Depends(get_state_pri
     an out-of-scope field returns 403 (not 404), an absent field returns 404.
     """
     cache_key = f"field_state:{principal['requester_id']}:{field_id}"
-    cached = _cache_get(cache_key, 120)
+    cached = _cache_get(cache_key, _FIELD_STATE_TTL)
     if cached is not None:
         return cached
     try:
