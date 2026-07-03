@@ -11,11 +11,24 @@ Reuses `auth_roles.fetch_tenant_context` (indexed lookup on `tenant_members`,
 degrades to [] so auth never breaks).
 """
 
+import os
 from contextlib import contextmanager
 from typing import List
 
 from auth_roles import fetch_tenant_context
 from database import get_db_connection
+
+
+def rls_tenant_only() -> bool:
+    """Cut-over switch for dropping the legacy ``fields.user_id`` fallback.
+
+    Off (default): field scoping is ``tenant membership OR user_id`` — the safe
+    state while the column still exists. On (env ``RLS_TENANT_ONLY=true``):
+    scoping is tenant-only and no query references ``fields.user_id``, so the
+    column can be dropped. Read per-call so the cut-over is a config flip + restart,
+    not a code deploy. See docs/rls_force_runbook.md Step C.
+    """
+    return os.getenv("RLS_TENANT_ONLY", "false").strip().lower() in ("1", "true", "yes")
 
 
 def caller_tenant_ids(user_id: str) -> List[str]:
@@ -140,6 +153,15 @@ def field_scope_sql(alias: str = "") -> str:
     used as ``%s::uuid[]`` then ``%s::uuid``.
 
         cur.execute(f"... WHERE {field_scope_sql('f')}", (tenant_ids, user_id))
+
+    Param binding is IDENTICAL in both modes — ``(tenant_ids, user_id)`` — so call
+    sites never change. When ``rls_tenant_only()`` is on, the second placeholder
+    still consumes the bound ``user_id`` but compares a literal
+    (``%s::uuid IS NULL``, always false) instead of the ``fields.user_id`` column,
+    so the fragment references no dropped column and keeps working after
+    ``ALTER TABLE fields DROP COLUMN user_id``.
     """
     p = f"{alias}." if alias else ""
+    if rls_tenant_only():
+        return f"({p}tenant_id = ANY(%s::uuid[]) OR %s::uuid IS NULL)"
     return f"({p}tenant_id = ANY(%s::uuid[]) OR {p}user_id = %s::uuid)"
