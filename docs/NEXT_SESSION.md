@@ -4,6 +4,26 @@ Read this first, then `docs/production_audit_2026-07.md` and
 `docs/rls_force_runbook.md`. Both repos (`kurimasense-backend`, `kurima-sense`)
 deploy from `main` (Render auto-deploys backend; Vercel the frontend).
 
+## Engineering audit pass (see docs/ENGINEERING_AUDIT_2026-07.md)
+
+Full evidence-driven audit + fixes this session. Headlines:
+- **Climate outage ROOT-CAUSED + FIXED**: Open-Meteo 429 on the shared Render IP;
+  service had no resilience so a transient limit was a permanent outage. Added a
+  shared retry/backoff + cache + single-flight + serve-stale layer; endpoints
+  soft-fail (200 `{available:false}`) instead of 500; frontend self-heals.
+  **Durable fix owed by Kevin**: set `OPENMETEO_API_KEY` env on Render (commercial
+  tier) or move off the free-tier shared IP.
+- **Variety picker regression FIXED**: `crop_varieties` was never seeded on prod →
+  picker fell back to a text box. `init_db()` now self-seeds it idempotently.
+- **Field-analysis refresh FIXED**: field-state cache 120s→600s + event-driven
+  invalidation (analyze/log_input/delete) instead of blanket rebuild every 2 min.
+- **Field editing (Phase 4)**: `PATCH /fields/{id}` + `api.updateField` shipped
+  with 7 tests. **Remaining**: the edit *UI* (couldn't build frontend here) and
+  activity/record editing.
+- **AI advisor (Phase 5)**: backend already field-aware (`/chat/v2` takes
+  field_id, injects FieldContext). **Remaining**: a field selector in the chat
+  frontend (`agronomist-chat.tsx`).
+
 ## Done since this handoff was written
 
 - **AI plumbing fixes** (branch `claude/handoff-continuation-s252ch`): the model

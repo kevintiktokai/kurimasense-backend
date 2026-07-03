@@ -306,6 +306,36 @@ def _cache_invalidate(prefix: str):
             del _response_cache[k]
 
 
+# Field-state freshness policy (Phase 7). The /field/{id}/state aggregate is a
+# composition whose slowest-changing expensive inputs are satellite/NDVI
+# (~5-day Sentinel revisit, only updated by an explicit /analyze) and weather
+# (cached upstream 15 min – 6 h). A short blanket TTL therefore rebuilt the whole
+# aggregate — 4 climate fetches + yield recompute + snapshot — far more often than
+# any input actually changed. We use a longer TTL and invalidate on the events
+# that genuinely change a field's state, so views are cheap by default yet never
+# stale after a user action ("event-driven cache").
+_FIELD_STATE_TTL = 600  # 10 min — aligned with the fastest input (weather)
+
+
+def _invalidate_field_caches(field_id: str, user_id: Optional[str] = None):
+    """Evict every cached view derived from a field after it changes.
+
+    Field-state keys are ``field_state:{requester_id}:{field_id}`` — different
+    tenant members have different requester ids, so we match on the ``field_id``
+    suffix to clear the view for ALL viewers, not just the actor. Also clears the
+    user's derived insights/yield rollups.
+    """
+    with _cache_lock:
+        drop = [k for k in _response_cache
+                if k.startswith("field_state:") and k.endswith(f":{field_id}")]
+        if user_id:
+            drop += [k for k in _response_cache
+                     if k.startswith(f"insights:{user_id}") or k.startswith(f"yield:{user_id}:")
+                     or k == f"dashboard_init:{user_id}"]
+        for k in set(drop):
+            _response_cache.pop(k, None)
+
+
 @app.get("/health")
 def health_check():
     """
@@ -655,6 +685,9 @@ async def trigger_sentinel_analysis(field_id: str, lat: float, lon: float,
         cursor.execute("UPDATE fields SET health_score = %s WHERE id = %s", (new_health, field_id))
 
         conn.commit()
+        # Fresh satellite data landed — drop the cached field-state so the next
+        # view reflects the new NDVI/health immediately rather than after the TTL.
+        _invalidate_field_caches(field_id)
         print(f"Sentinel Analysis Complete for {field_id}")
         
     except Exception as e:
@@ -1319,8 +1352,7 @@ def delete_field(field_id: str, user_id: str = Depends(verify_token)):
         log_user_event(user_id, "field_management", "field_deleted", {"field_id": field_id, "field_name": field_name})
 
         # Invalidate cached responses that include this field's data
-        _cache_invalidate(f"insights:{user_id}")
-        _cache_invalidate(f"yield:{user_id}:")
+        _invalidate_field_caches(field_id, user_id)
 
         return {
             "status": "success",
@@ -1344,6 +1376,104 @@ def delete_field(field_id: str, user_id: str = Depends(verify_token)):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to delete field: {str(e)}")
+
+
+# Fields a farmer may edit after creation (Phase 4 — field management). Geometry
+# (polygon/area) is intentionally excluded here; changing it re-runs satellite
+# sampling and belongs to the map flow, not this metadata patch.
+_EDITABLE_FIELD_COLUMNS = {
+    "name": "name",
+    "crop": "crop_type",
+    "variety": "variety",
+    "plantingDate": "planting_date",
+    "transplantDate": "transplant_date",
+    "fertilizerHistory": "fertilizer_history",
+}
+
+
+@app.patch("/fields/{field_id}")
+def update_field(field_id: str, payload: dict, user_id: str = Depends(verify_token)):
+    """Edit a field's agronomic metadata after creation (Phase 4).
+
+    Owner/tenant-scoped, partial update: only the keys present in the payload are
+    changed. Changing the crop re-derives ``is_transplanted`` and, when the
+    resulting crop is not transplanted, clears any stale transplant date so GDD
+    tracking stays correct. Invalidates the field's cached state so the edit is
+    reflected immediately.
+    """
+    sets: list[str] = []
+    params: list = []
+
+    for body_key, column in _EDITABLE_FIELD_COLUMNS.items():
+        if body_key not in payload:
+            continue
+        value = payload[body_key]
+        if body_key in ("plantingDate", "transplantDate"):
+            value = _clean_date(value)
+        if body_key == "name" and (value is None or not str(value).strip()):
+            raise HTTPException(status_code=400, detail="Field name cannot be empty")
+        sets.append(f"{column} = %s")
+        params.append(value)
+
+    # Re-derive transplant status when the crop changes.
+    new_crop = payload.get("crop")
+    if new_crop is not None:
+        TRANSPLANTED = ['Tomato', 'Cabbage', 'Onion', 'Potato', 'Paprika', 'Green Pepper',
+                        'Strawberries', 'Tea', 'Blueberries', 'Coffee', 'Tobacco', 'Covo',
+                        'Rape', 'Mustard']
+        is_tp = new_crop in TRANSPLANTED or bool(payload.get("isTransplanted", False))
+        sets.append("is_transplanted = %s")
+        params.append(is_tp)
+        if not is_tp:
+            sets.append("transplant_date = NULL")
+
+    if not sets:
+        raise HTTPException(status_code=400, detail="No editable fields supplied")
+
+    try:
+        with tenant_scoped_connection(user_id) as (conn, tenant_ids):
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            cursor.execute(
+                f"""
+                UPDATE fields SET {', '.join(sets)}
+                WHERE id = %s::uuid AND (tenant_id = ANY(%s::uuid[]) OR user_id = %s::uuid)
+                RETURNING id, name, crop_type, variety, planting_date, transplant_date,
+                          is_transplanted, fertilizer_history
+                """,
+                (*params, field_id, tenant_ids, user_id),
+            )
+            row = cursor.fetchone()
+            if not row:
+                conn.rollback()
+                raise HTTPException(status_code=404, detail="Field not found or you don't have permission to edit it")
+            conn.commit()
+            cursor.close()
+
+        log_user_event(user_id, "field_management", "field_updated",
+                       {"field_id": field_id, "changed": list(payload.keys())})
+        # Metadata that feeds analysis (crop/variety/dates) changed → drop caches.
+        _invalidate_field_caches(field_id, user_id)
+
+        return {
+            "status": "success",
+            "field": {
+                "id": str(row["id"]),
+                "name": row.get("name"),
+                "crop": row.get("crop_type"),
+                "variety": row.get("variety"),
+                "planting_date": row["planting_date"].isoformat() if row.get("planting_date") else None,
+                "transplant_date": row["transplant_date"].isoformat() if row.get("transplant_date") else None,
+                "is_transplanted": row.get("is_transplanted"),
+                "fertilizer_history": row.get("fertilizer_history"),
+            },
+        }
+    except HTTPException:
+        raise
+    except RuntimeError:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    except Exception as e:
+        print(f"Update Field Error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to update field: {str(e)}")
 
 
 @app.get("/user")
@@ -1423,8 +1553,12 @@ def log_input(payload: dict, user_id: str = Depends(verify_token)):
         
         new_id = cursor.fetchone()['id']
         conn.commit()
+        # Event-driven invalidation: a new input changes the field's verification,
+        # activity list, and any derived rollups — refresh them on next view.
+        if field_id:
+            _invalidate_field_caches(field_id, user_id)
         return {"status": "success", "id": str(new_id)}
-        
+
     except Exception as e:
         print(f"Log Input Error: {e}")
         conn.rollback()
@@ -1702,7 +1836,7 @@ async def get_field_state(field_id: str, principal: dict = Depends(get_state_pri
     an out-of-scope field returns 403 (not 404), an absent field returns 404.
     """
     cache_key = f"field_state:{principal['requester_id']}:{field_id}"
-    cached = _cache_get(cache_key, 120)
+    cached = _cache_get(cache_key, _FIELD_STATE_TTL)
     if cached is not None:
         return cached
     try:
@@ -3008,12 +3142,23 @@ async def get_current_weather(lat: float = None, lon: float = None, field_id: st
     try:
         data = await climate_service.get_current_weather(resolved_lat, resolved_lon)
         # Log usage (only if user triggered explicitly or we interpret it as such)
-        if field_id or user_id: 
+        if field_id or user_id:
              log_user_event(user_id, "feature_usage", "weather_check", {"location": {"lat": resolved_lat, "lon": resolved_lon}})
         return data
     except Exception as e:
+        # Upstream (Open-Meteo) failed AND no cached/stale value was available.
+        # Return a soft, unavailable payload (HTTP 200) so the client can show a
+        # "temporarily unavailable — retry" state instead of a hard error, and
+        # keep polling; the resilient service will serve stale as soon as any
+        # call succeeds. Raising 500 here is what made a transient 429 look like
+        # a dead feature.
         print(f"Climate Current Error: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch weather data: {str(e)}")
+        return {
+            "available": False,
+            "temperature": None,
+            "location": {"lat": resolved_lat, "lon": resolved_lon},
+            "message": "Weather data is temporarily unavailable. Retrying shortly.",
+        }
 
 
 @app.get("/climate/forecast")
@@ -3034,8 +3179,16 @@ async def get_forecast(lat: float = None, lon: float = None, field_id: str = Non
             "timezone": daily.get("timezone")
         }
     except Exception as e:
+        # Soft-fail (HTTP 200) with empty series so the page renders its
+        # skeleton/empty states instead of white-screening on a 500.
         print(f"Climate Forecast Error: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch forecast: {str(e)}")
+        return {
+            "available": False,
+            "location": {"lat": resolved_lat, "lon": resolved_lon},
+            "daily": [],
+            "hourly": [],
+            "message": "Forecast is temporarily unavailable. Retrying shortly.",
+        }
 
 
 @app.get("/climate/agricultural")
@@ -3118,7 +3271,8 @@ async def get_weather_alerts(lat: float = None, lon: float = None, field_id: str
         return data
     except Exception as e:
         print(f"Weather Alerts Error: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch alerts: {str(e)}")
+        return {"available": False, "location": {"lat": resolved_lat, "lon": resolved_lon},
+                "alert_count": 0, "has_critical": False, "alerts": []}
 
 
 @app.get("/climate/spray-window")
@@ -3133,7 +3287,8 @@ async def get_spray_window(lat: float = None, lon: float = None, field_id: str =
         return data
     except Exception as e:
         print(f"Spray Window Error: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to calculate spray windows: {str(e)}")
+        return {"available": False, "location": {"lat": resolved_lat, "lon": resolved_lon},
+                "ideal_windows": []}
 
 
 @app.get("/climate/historical")
@@ -3148,7 +3303,8 @@ async def get_historical_comparison(lat: float = None, lon: float = None, field_
         return data
     except Exception as e:
         print(f"Historical Comparison Error: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch historical data: {str(e)}")
+        return {"available": False, "location": {"lat": resolved_lat, "lon": resolved_lon},
+                "deviation": {}}
 
 
 @app.get("/climate/full")
@@ -3163,7 +3319,7 @@ async def get_full_climate_data(lat: float = None, lon: float = None, field_id: 
         return data
     except Exception as e:
         print(f"Full Climate Data Error: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch climate data: {str(e)}")
+        return {"available": False, "location": {"lat": resolved_lat, "lon": resolved_lon}}
 
 
 @app.get("/crops/{crop_name}/varieties")

@@ -270,8 +270,82 @@ def init_db():
 
         conn.close()
 
+        # Self-heal the crop_varieties catalogue on boot (idempotent). This is
+        # what the crop-variety picker in field creation reads; on prod the
+        # table was empty because the manual seed script had never been run, so
+        # the picker silently degraded to a free-text box (a regression). Seeding
+        # here — like the table/column self-healing above — guarantees the picker
+        # works on every environment without a manual step.
+        try:
+            seed_crop_varieties()
+        except Exception as e:
+            print(f"⚠️ Crop-variety seed skipped: {e}")
+
     else:
         print("❌ Database connection failed. App will run in degraded/mock mode.")
+
+def seed_crop_varieties():
+    """Idempotently ensure the crop_varieties catalogue is populated.
+
+    Reads the canonical Zimbabwe variety list from
+    ``scripts/seed_zimbabwe_crops.py`` (single source of truth, also usable as a
+    standalone CLI) and upserts it. Runs at startup from ``init_db``. Cheap and
+    self-limiting: it first counts existing rows and only does the upsert when the
+    table is under-populated, so warm reboots pay just one COUNT query.
+    """
+    import os
+    import importlib.util
+
+    conn = get_db_connection()
+    if not conn:
+        return
+
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) AS n FROM crop_varieties")
+        row = cursor.fetchone()
+        existing = (row['n'] if isinstance(row, dict) else row[0]) or 0
+
+        # Load the canonical data list without executing the script's CLI entrypoint.
+        seed_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "scripts", "seed_zimbabwe_crops.py")
+        spec = importlib.util.spec_from_file_location("_variety_seed", seed_path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        varieties = getattr(mod, "ZIMBABWE_VARIETIES", [])
+
+        # Already fully seeded — nothing to do (warm-reboot fast path).
+        if existing >= len(varieties) and existing > 0:
+            cursor.close()
+            conn.close()
+            return
+
+        seeded = 0
+        for v in varieties:
+            cursor.execute("""
+                INSERT INTO crop_varieties
+                    (crop_name, variety_name, breeder, days_to_maturity,
+                     yield_potential_low, yield_potential_high, description, characteristics)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (crop_name, variety_name) DO NOTHING
+            """, (
+                v.get('crop_name'), v.get('variety_name'), v.get('breeder'),
+                v.get('days_to_maturity'), v.get('yield_potential_low'),
+                v.get('yield_potential_high'), v.get('description'),
+                _json.dumps(v.get('characteristics') or {}),
+            ))
+            seeded += 1
+        conn.commit()
+        cursor.close()
+        conn.close()
+        print(f"🌱 Crop-variety catalogue ensured ({seeded} varieties upserted; had {existing}).")
+    except Exception as e:
+        print(f"⚠️ seed_crop_varieties failed: {e}")
+        try:
+            conn.close()
+        except Exception:
+            pass
+
 
 import threading
 import json as _json
