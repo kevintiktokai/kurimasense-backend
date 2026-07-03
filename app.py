@@ -179,6 +179,14 @@ app.include_router(chat_session_router)
 from soil_routes import router as soil_router  # noqa: E402
 app.include_router(soil_router)
 
+# Team management (institutional ops): members, roles, invites.
+from team_routes import router as team_router  # noqa: E402
+app.include_router(team_router)
+
+# Agronomist activities + field assignments (institutional ops).
+from activity_routes import router as activity_router  # noqa: E402
+app.include_router(activity_router)
+
 # CORS Configuration
 # Allow specific origins from environment or default to known frontends
 allowed_origins_env = os.environ.get("CORS_ORIGINS", "").strip()

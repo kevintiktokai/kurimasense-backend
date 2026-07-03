@@ -115,11 +115,15 @@ def fetch_tenant_context(user_id: str):
         return None, [], None
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
+        # Suspended members (migration 013) keep their row for history but lose
+        # tenant context platform-wide: excluding them here means every
+        # tenant-scoped endpoint sees them as a user with no memberships.
         cur.execute(
             """
             SELECT tenant_id::text AS tenant_id, member_role
             FROM tenant_members
             WHERE user_id = %s::uuid
+              AND COALESCE(status, 'active') = 'active'
             ORDER BY joined_at ASC, tenant_id ASC
             """,
             (user_id,),
@@ -240,14 +244,36 @@ def user_can_access_field(user: AuthenticatedUser, field_tenant_id) -> bool:
     return str(field_tenant_id) in user.tenant_ids
 
 
+# Member-role permission tiers (migration 013). Legacy roles map into the new
+# vocabulary: officer ≈ manager (can write + assign), viewer/analyst read-only.
+# Keep these as module-level sets so the tiers stay in one place and future
+# roles slot in by editing a set, not call sites.
+MANAGE_TEAM_ROLES = frozenset({"owner", "admin"})
+ASSIGN_FIELD_ROLES = frozenset({"owner", "admin", "manager", "officer"})
+WRITE_FIELD_ROLES = frozenset({"owner", "admin", "manager", "agronomist",
+                               "field_officer", "officer"})
+
+
 def user_can_modify_field(user: AuthenticatedUser, field_tenant_id) -> bool:
-    """True if ``user`` may WRITE fields in ``field_tenant_id``. Owners and
-    officers can modify; viewers cannot; admin always can."""
+    """True if ``user`` may WRITE fields in ``field_tenant_id``. Writing roles
+    (owner/admin/manager/agronomist/field_officer + legacy officer) can modify;
+    analysts and viewers cannot; platform admin always can."""
     if user.role == "admin":
         return True
     if field_tenant_id is None or str(field_tenant_id) not in user.tenant_ids:
         return False
-    return user.member_role in ("owner", "officer")
+    return user.member_role in WRITE_FIELD_ROLES
+
+
+def user_can_manage_team(user: AuthenticatedUser) -> bool:
+    """True if ``user`` may manage tenant membership (invite/suspend/remove/
+    change roles). Platform admin or tenant owner/admin."""
+    return user.role == "admin" or user.member_role in MANAGE_TEAM_ROLES
+
+
+def user_can_assign_fields(user: AuthenticatedUser) -> bool:
+    """True if ``user`` may assign fields to team members."""
+    return user.role == "admin" or user.member_role in ASSIGN_FIELD_ROLES
 
 
 # ---------------------------------------------------------------------------

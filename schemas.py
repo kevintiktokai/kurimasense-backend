@@ -118,7 +118,11 @@ class UpdateFarmTaskRequest(BaseModel):
 
 Role = Literal["consumer", "institutional", "admin"]
 InstitutionalType = Literal["buyer", "lender", "insurer", "grower"]
-MemberRole = Literal["owner", "officer", "viewer"]
+# Extended in migration 013: owner/admin manage the org; manager runs
+# operations; agronomist & field_officer do field work; analyst & viewer are
+# read-only. Legacy officer/viewer stay valid so existing rows never break.
+MemberRole = Literal["owner", "admin", "manager", "agronomist",
+                     "field_officer", "analyst", "officer", "viewer"]
 
 
 class AuthenticatedUser(BaseModel):
@@ -633,3 +637,121 @@ class PortfolioVerificationResponse(BaseModel):
     total_inputs: int
     fields: List[FieldVerificationSummary] = []
 
+
+
+# ========== Team management (migration 013) ==========
+
+# Roles an org admin may grant. `owner` is excluded — ownership transfers are a
+# deliberate future workflow, not a dropdown option.
+GrantableMemberRole = Literal["admin", "manager", "agronomist",
+                              "field_officer", "analyst", "viewer"]
+
+
+class TeamMember(BaseModel):
+    user_id: str
+    member_role: MemberRole
+    status: Literal["active", "suspended"] = "active"
+    display_name: Optional[str] = None
+    email: Optional[str] = None
+    full_name: Optional[str] = None       # from profiles, when present
+    joined_at: Optional[str] = None
+    assigned_fields: int = 0              # active assignment count (workload)
+    activities_30d: int = 0               # recent activity count
+
+
+class AddTeamMemberRequest(BaseModel):
+    """Directly attach an EXISTING platform user to the tenant by user id."""
+    user_id: str
+    member_role: GrantableMemberRole = "field_officer"
+    display_name: Optional[str] = Field(None, max_length=120)
+    email: Optional[str] = Field(None, max_length=200)
+
+
+class UpdateTeamMemberRequest(BaseModel):
+    member_role: Optional[GrantableMemberRole] = None
+    status: Optional[Literal["active", "suspended"]] = None
+    display_name: Optional[str] = Field(None, max_length=120)
+
+
+class CreateInviteRequest(BaseModel):
+    email: Optional[str] = Field(None, max_length=200)
+    member_role: GrantableMemberRole = "field_officer"
+
+
+class TeamInvite(BaseModel):
+    id: str
+    email: Optional[str] = None
+    member_role: str
+    code: str
+    created_at: Optional[str] = None
+    accepted_at: Optional[str] = None
+    revoked_at: Optional[str] = None
+
+
+class AcceptInviteRequest(BaseModel):
+    code: str = Field(..., min_length=4, max_length=64)
+
+
+# ========== Agronomist field activities (migration 013) ==========
+
+ActivityType = Literal["visit", "inspection", "recommendation",
+                       "fertilizer_advice", "chemical_advice",
+                       "irrigation_advice", "pest_observation",
+                       "disease_observation", "consultation", "note", "other"]
+
+
+class CreateActivityRequest(BaseModel):
+    activity_type: ActivityType = "visit"
+    title: str = Field(..., min_length=1, max_length=200)
+    notes: Optional[str] = Field(None, max_length=4000)
+    recommendation: Optional[str] = Field(None, max_length=4000)
+    visit_date: Optional[str] = None      # ISO date; defaults to today
+    lat: Optional[float] = None
+    lon: Optional[float] = None
+    photo_url: Optional[str] = Field(None, max_length=1000)
+
+
+class UpdateActivityRequest(BaseModel):
+    activity_type: Optional[ActivityType] = None
+    title: Optional[str] = Field(None, min_length=1, max_length=200)
+    notes: Optional[str] = Field(None, max_length=4000)
+    recommendation: Optional[str] = Field(None, max_length=4000)
+    visit_date: Optional[str] = None
+    photo_url: Optional[str] = Field(None, max_length=1000)
+
+
+class FieldActivity(BaseModel):
+    id: str
+    field_id: str
+    tenant_id: Optional[str] = None
+    user_id: str
+    author_name: Optional[str] = None
+    activity_type: str
+    title: str
+    notes: Optional[str] = None
+    recommendation: Optional[str] = None
+    visit_date: Optional[str] = None
+    lat: Optional[float] = None
+    lon: Optional[float] = None
+    photo_url: Optional[str] = None
+    created_at: Optional[str] = None
+    # Present on tenant-wide feeds so rows are readable without a field lookup.
+    field_name: Optional[str] = None
+
+
+# ========== Field assignments (migration 013) ==========
+
+class AssignFieldRequest(BaseModel):
+    assignee_user_id: Optional[str] = None   # None = unassign
+    note: Optional[str] = Field(None, max_length=500)
+
+
+class FieldAssignment(BaseModel):
+    id: str
+    field_id: str
+    assignee_user_id: str
+    assignee_name: Optional[str] = None
+    assigned_by_user_id: Optional[str] = None
+    note: Optional[str] = None
+    assigned_at: Optional[str] = None
+    unassigned_at: Optional[str] = None
