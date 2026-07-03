@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import hashlib
 import random
 import traceback
 import urllib.request
@@ -78,9 +79,51 @@ logger = logging.getLogger("kurimasense")
 
 app = FastAPI(title="KurimaSense AI")
 
+# ---------------------------------------------------------------------------
+# Rate limiting (slowapi) — protects the token-spending AI endpoints and write
+# paths from abuse / runaway clients. Keyed PER USER (hash of the bearer token)
+# so one heavy user can't exhaust everyone's budget, falling back to client IP
+# for unauthenticated calls. In-memory storage (single Render instance); swap in
+# a Redis URI here if the backend is ever scaled horizontally.
+# ---------------------------------------------------------------------------
+from slowapi import Limiter  # noqa: E402
+from slowapi.errors import RateLimitExceeded  # noqa: E402
+from slowapi.util import get_remote_address  # noqa: E402
+from fastapi.responses import JSONResponse  # noqa: E402
+
+
+def _rate_limit_key(request: Request) -> str:
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        # Hash the token so we key per-user without storing it. Not a security
+        # boundary (auth still verifies the JWT) — just a stable per-caller key.
+        return "u:" + hashlib.sha256(auth[7:].encode()).hexdigest()[:24]
+    return "ip:" + get_remote_address(request)
+
+
+# headers_enabled stays False: with it on, slowapi tries to inject X-RateLimit-*
+# headers into the endpoint's return value, which 500s for the many handlers that
+# return a plain dict (not a starlette Response). Enforcement (the 429) is
+# unaffected — only the informational headers are omitted.
+limiter = Limiter(key_func=_rate_limit_key)
+app.state.limiter = limiter
+
+
+async def _rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):
+    # Clean 429 with a friendly message. RobustCORSMiddleware (below) still adds
+    # the CORS headers, so the browser surfaces the 429 instead of a CORS error.
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "You're doing that a bit too fast — please wait a moment and try again."},
+    )
+
+
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 # Admin role-management endpoints (Workstream 1). Gated by X-Admin-Token; kept in
 # a light router module so it does not depend on the AI stack.
 from admin_routes import router as admin_router  # noqa: E402
+from auth_roles import require_admin_token  # noqa: E402  (gates the debug endpoints)
 app.include_router(admin_router)
 
 # Current-user role endpoint (Workstream 2): GET /me/role for frontend routing.
@@ -375,9 +418,12 @@ def health_check():
 
 
 @app.get("/jwt-config")
-def jwt_config_check(user_id: str = Depends(verify_token)):
+def jwt_config_check(_admin: bool = Depends(require_admin_token)):
     """
     Debug endpoint to check JWT configuration (doesn't expose secrets).
+
+    Admin-only (X-Admin-Token): previously any authenticated user could read the
+    auth configuration surface. Deny-by-default when ADMIN_TOKEN is unset.
     """
     jwks_status = "not_configured"
     jwks_keys_count = 0
@@ -418,9 +464,12 @@ def jwt_config_check(user_id: str = Depends(verify_token)):
 
 
 @app.get("/db-schema")
-def db_schema_check(user_id: str = Depends(verify_token)):
+def db_schema_check(_admin: bool = Depends(require_admin_token)):
     """
     Debug endpoint to check database schema.
+
+    Admin-only (X-Admin-Token): schema disclosure to any authenticated user was
+    an information-leak. Deny-by-default when ADMIN_TOKEN is unset.
     """
     conn = get_db_connection()
     if not conn:
@@ -1183,7 +1232,8 @@ async def _prefetch_field_history(lat: float, lon: float,
 
 
 @app.post("/fields")
-def create_field(payload: dict, background_tasks: BackgroundTasks, user_id: str = Depends(verify_token)):
+@limiter.limit("30/minute")
+def create_field(request: Request, payload: dict, background_tasks: BackgroundTasks, user_id: str = Depends(verify_token)):
     conn = get_db_connection()
     
     name = payload.get("name")
@@ -1518,7 +1568,8 @@ def get_user_profile(user_id: str = Depends(verify_token)):
     }
 
 @app.post("/inputs")
-def log_input(payload: dict, user_id: str = Depends(verify_token)):
+@limiter.limit("60/minute")
+def log_input(request: Request, payload: dict, user_id: str = Depends(verify_token)):
     conn = get_db_connection()
     
     field_id = payload.get("field_id")
@@ -1679,7 +1730,8 @@ def get_dashboard_stats(user_id: str = Depends(verify_token)):
     }
 
 @app.post("/fields/{field_id}/yield")
-def post_generate_yield(field_id: str, user_id: str = Depends(verify_token)):
+@limiter.limit("15/minute")
+def post_generate_yield(request: Request, field_id: str, user_id: str = Depends(verify_token)):
     """
     Generates yield projection using AI based on field parameters.
     """
@@ -2077,7 +2129,8 @@ def proactive_endpoint(payload: dict, user_id: str = Depends(verify_token)):
 # ========== AI BRAIN ENHANCED ENDPOINTS ==========
 
 @app.post("/chat/v2/send")
-async def chat_v2_send(payload: dict, user_id: str = Depends(verify_token)):
+@limiter.limit("20/minute")
+async def chat_v2_send(request: Request, payload: dict, user_id: str = Depends(verify_token)):
     """
     Enhanced AI Chat using the AI Brain layer.
     Features:
@@ -2229,7 +2282,8 @@ async def chat_v2_send(payload: dict, user_id: str = Depends(verify_token)):
 
 
 @app.post("/chat/v2/stream")
-async def chat_v2_stream(payload: dict, user_id: str = Depends(verify_token)):
+@limiter.limit("20/minute")
+async def chat_v2_stream(request: Request, payload: dict, user_id: str = Depends(verify_token)):
     """
     SSE streaming version of the AI chat endpoint.
     Sends partial tokens as they arrive from the LLM so the frontend
@@ -2372,7 +2426,8 @@ async def chat_v2_stream(payload: dict, user_id: str = Depends(verify_token)):
 
 
 @app.post("/vision/analyze")
-async def vision_analyze_endpoint(payload: dict, user_id: str = Depends(verify_token)):
+@limiter.limit("10/minute")
+async def vision_analyze_endpoint(request: Request, payload: dict, user_id: str = Depends(verify_token)):
     """
     Analyze a crop image for diseases, pests, and nutrient deficiencies.
     Uses GPT-4 Vision for state-of-the-art analysis.
