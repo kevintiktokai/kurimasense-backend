@@ -175,6 +175,10 @@ app.include_router(verification_router)
 from chat_session_routes import router as chat_session_router  # noqa: E402
 app.include_router(chat_session_router)
 
+# Soil Intelligence (multi-provider soil/terrain profile per field): read/refresh.
+from soil_routes import router as soil_router  # noqa: E402
+app.include_router(soil_router)
+
 # CORS Configuration
 # Allow specific origins from environment or default to known frontends
 allowed_origins_env = os.environ.get("CORS_ORIGINS", "").strip()
@@ -1257,6 +1261,28 @@ async def _prefetch_field_history(lat: float, lon: float,
         print(f"Field history prefetch skipped (non-fatal): {e}")
 
 
+async def _build_soil_profile(field_id: str, lat: float, lon: float,
+                              user_id: str, tenant_ids: list):
+    """Fetch & persist the baseline Soil Intelligence Profile for a new field.
+
+    Runs once, off the request path, right after field creation — the "retrieve
+    baseline soil profile → store permanently → reuse locally" step of the soil
+    lifecycle. Soil properties are effectively static, so this single fetch backs
+    every later read until the (multi-year) refresh horizon. Best-effort: any
+    provider/DB failure just leaves the profile to be built lazily on first
+    ``GET /fields/{id}/soil``.
+    """
+    try:
+        from services.soil_intelligence import get_or_build_profile
+        profile = await get_or_build_profile(
+            field_id, lat, lon, user_id=user_id, tenant_ids=tenant_ids,
+        )
+        n = len(profile.attributes) if profile else 0
+        print(f"🌱 Soil profile built for field {field_id} ({n} attributes)")
+    except Exception as e:
+        print(f"Soil profile build skipped (non-fatal): {e}")
+
+
 @app.post("/fields")
 @limiter.limit("30/minute")
 def create_field(request: Request, payload: dict, background_tasks: BackgroundTasks, user_id: str = Depends(verify_token)):
@@ -1366,6 +1392,11 @@ def create_field(request: Request, payload: dict, background_tasks: BackgroundTa
                     str(planting_date) if planting_date else None)
                 background_tasks.add_task(
                     _prefetch_field_history, p_lat, p_lon, anchor, crop, variety)
+                # Soil Intelligence lifecycle: fetch & persist the baseline soil
+                # profile once, off the request path (see _build_soil_profile).
+                # It is stored permanently and reused locally thereafter.
+                background_tasks.add_task(
+                    _build_soil_profile, str(new_id), p_lat, p_lon, user_id, [tenant_id])
         except Exception as prefetch_err:
             print(f"Field history prefetch scheduling warning: {prefetch_err}")
 
