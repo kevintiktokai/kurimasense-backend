@@ -9,3 +9,4 @@ tiktoken
 PyJWT
 httpx
 cryptography
+slowapi
