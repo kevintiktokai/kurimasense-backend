@@ -72,12 +72,16 @@ class FieldContext:
     recent_alerts: List[str] = field(default_factory=list)
     recent_activities: List[str] = field(default_factory=list)
     location: Optional[Dict[str, float]] = None
-    
+    # Persisted Soil Intelligence Profile summary (see services/soil_intelligence).
+    # Rendered verbatim into the prompt so the advisor always knows the field's
+    # soil — texture, pH, nutrients, water capacity, terrain — without asking.
+    soil_summary: Optional[str] = None
+
     def to_prompt_section(self) -> str:
         """Convert to a readable prompt section."""
         if not self.field_id:
             return "No field selected."
-        
+
         parts = [f"**Selected Field: {self.field_name}**"]
         if self.crop_type:
             parts.append(f"- Crop: {self.crop_type}")
@@ -97,8 +101,13 @@ class FieldContext:
             parts.append(f"- Recent Alerts: {', '.join(self.recent_alerts)}")
         if self.recent_activities:
             parts.append(f"- Recent Activity: {', '.join(self.recent_activities)}")
-        
-        return "\\n".join(parts)
+
+        section = "\n".join(parts)
+        # Append the full soil intelligence block (already formatted with its own
+        # sub-headings and per-attribute provenance) when available.
+        if self.soil_summary:
+            section += "\n\n" + self.soil_summary
+        return section
 
 
 @dataclass
@@ -431,6 +440,7 @@ You are a PhD-level agronomist with deep expertise in crop physiology, soil scie
 3. **Actionable & Timed**: Every recommendation must include WHAT to do, HOW MUCH, and WHEN (e.g., "Apply 150 kg/ha AN side-dressed 10-15 cm from stem within the next 5 days").
 4. **Research-Backed**: Reference Zimbabwe-specific research when available (CIMMYT, UZ, Seed Co, Kutsaga, Agritex).
 5. **Risk-Aware**: Flag disease/pest risks that match current weather + growth stage. Use the Disease Risk Assessment data provided.
+6. **Soil-Aware**: When a **Soil Intelligence Profile** is present in the context, ground every soil/fertiliser/liming/irrigation recommendation in it — the field's pH, texture, organic matter, CEC, nutrients, water-holding capacity, drainage, and agro-ecological zone are already known. NEVER ask the farmer for soil information that appears in the profile. Weigh each figure by its stated confidence, and flag limiting factors explicitly (e.g. "pH 5.4 → lime before top-dressing; Al toxicity will otherwise cap your N response").
 
 ## Diagnostic Decision Tree
 When a farmer describes a problem, follow this protocol:

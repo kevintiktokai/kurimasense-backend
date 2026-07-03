@@ -245,6 +245,28 @@ def init_db():
                 )
             """)
             
+            # Soil Intelligence profiles (migration 012) — one persistent, merged
+            # multi-provider soil/terrain profile per field, stored as JSONB with
+            # per-attribute source/confidence/refresh metadata. Self-heals on boot
+            # so the soil subsystem works on every environment without a manual
+            # migration step (same pattern as the SAR columns above).
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS soil_profiles (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    field_id UUID NOT NULL REFERENCES fields(id) ON DELETE CASCADE,
+                    lat DOUBLE PRECISION,
+                    lon DOUBLE PRECISION,
+                    profile JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    provider_status JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    schema_version INTEGER NOT NULL DEFAULT 1,
+                    built_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    refresh_after TIMESTAMP WITH TIME ZONE,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    UNIQUE (field_id)
+                )
+            """)
+
             # Performance indexes — created once, idempotent via IF NOT EXISTS
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_fields_user_id        ON fields(user_id);
@@ -259,6 +281,9 @@ def init_db():
                 CREATE INDEX IF NOT EXISTS idx_farm_tasks_user_status ON farm_tasks(user_id, completed, priority);
                 CREATE INDEX IF NOT EXISTS idx_user_events_user      ON user_events(user_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_daily_logs_user       ON daily_logs(user_id, log_date DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_soil_profiles_field   ON soil_profiles(field_id);
+                CREATE INDEX IF NOT EXISTS idx_soil_profiles_refresh ON soil_profiles(refresh_after);
             """)
 
             conn.commit()

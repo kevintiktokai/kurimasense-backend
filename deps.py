@@ -382,6 +382,19 @@ async def get_field_context(field_id: str, user_id: str) -> FieldContext:
             if activities:
                 context.recent_activities = activities[:6]
 
+            # Soil Intelligence: inject the persisted soil/terrain profile so the
+            # advisor reasons about pH, texture, nutrients, water capacity and
+            # agro-ecological zone for THIS field — and never asks the farmer for
+            # soil facts KurimaSense already holds. DB-only read (no network on
+            # the chat path); the profile is built at field creation / on demand.
+            try:
+                from services.soil_intelligence import get_stored_profile
+                soil = get_stored_profile(field_id, user_id=user_id)
+                if soil and not soil.is_empty():
+                    context.soil_summary = soil.to_ai_summary()
+            except Exception as e:
+                logger.warning(f"Soil profile fetch failed: {e}")
+
     except Exception as e:
         # RuntimeError (DB unavailable) and query errors both degrade to the
         # bare context; tenant_scoped_connection handles rollback + release.
