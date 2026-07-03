@@ -181,12 +181,41 @@ deny the owner and break. Decide + add policies:
 
 ## Step C — Drop the `user_id` fallback (irreversible)
 
-Only after Steps A–B are in prod and verified:
+**Code prep is DONE and shipped** behind the `RLS_TENANT_ONLY` env flag (default
+off). Every `fields.user_id` reference is now flag-gated:
 
-1. Remove the `OR user_id = %s::uuid` fallback from `field_scope_sql` and every
-   migrated query (they now rely on `tenant_id` + the GUC).
-2. `ALTER TABLE fields DROP COLUMN user_id;` (migration). Irreversible — take a
-   backup / snapshot first.
+- `tenancy.field_scope_sql()` — flag-off emits the byte-identical legacy fragment;
+  flag-on emits `tenant_id = ANY(%s::uuid[]) OR %s::uuid IS NULL` (tenant-only, the
+  second `%s` still consumes the bound `user_id` so **param bindings never change**,
+  but references no `fields.user_id` column). All ~18 former inline literals in
+  `app.py` were consolidated onto this helper.
+- `deps.get_field_context`, `deps.resolve_coordinates`, and
+  `services/field_state/aggregator.resolve_access` — each branches on
+  `rls_tenant_only()`: flag-off keeps the exact legacy `user_id` filter/column,
+  flag-on scopes by tenant and omits the column. Both branches keep an app-level
+  tenant filter, so this is safe **even with FORCE still off** (no owner-bypass
+  leak in the window between flag flip and FORCE).
+
+Guard: `tests/test_rls_cutover_flag.py` asserts flag-off == legacy, flag-on is
+tenant-only + column-less, and param count is invariant.
+
+Cut-over sequence (each step verified before the next):
+
+1. **Flip the flag**: set `RLS_TENANT_ONLY=true` on Render + restart. Now no query
+   references `fields.user_id`. Smoke-test consumer + institutional field reads
+   with a real token; watch error rates. (Reversible — unset to roll back.)
+2. **Soak** (hours–a day). Confirm nothing reads the column: temporarily
+   `ALTER TABLE fields ALTER COLUMN user_id DROP NOT NULL;` is not needed, but you
+   can `COMMENT` it as deprecated and watch logs.
+3. **Snapshot then drop** (irreversible):
+   `CREATE TABLE _backup_fields_user_id AS SELECT id, user_id FROM fields;`
+   then `ALTER TABLE fields DROP COLUMN user_id;`.
+4. Only now proceed to Step D (per-table FORCE) — or interleave: FORCE is
+   independent of the column drop since the flag already removed app reliance on
+   `user_id`.
+
+If anything misbehaves at step 1, unset the flag and restart — instant rollback,
+no data change.
 
 ## Step D — FORCE (the cut-over)
 
@@ -224,11 +253,11 @@ Policies + the GUC helper can stay (they're inert without FORCE).
       and documented. **Migrations not yet applied** (blocked on Supabase MCP
       approval in the July 2 session — apply 010 + 011 first thing next
       session; both are inert until FORCE).
-- [ ] Step C — drop `fields.user_id` (irreversible). ORDER MATTERS: the
-      `field_scope_sql` fallback-removal code change must be merged to main
-      AND deployed on Render BEFORE the column drop, or every fields query
-      500s on the missing column. Snapshot first:
-      `CREATE TABLE _backup_fields_user_id AS SELECT id, user_id FROM fields;`
+- [~] Step C — **code prep DONE** (shipped behind `RLS_TENANT_ONLY`, default off;
+      all `fields.user_id` references gated, guard-tested). Remaining is the
+      operational cut-over: flip the flag on Render → soak → snapshot
+      (`CREATE TABLE _backup_fields_user_id AS SELECT id, user_id FROM fields;`) →
+      `ALTER TABLE fields DROP COLUMN user_id;`. Full sequence in Step C above.
 - [ ] Step D — per-table FORCE cut-over. Checklist per table:
       `ALTER TABLE public.<t> FORCE ROW LEVEL SECURITY;` → hit the live
       endpoints that read/write it with a real token (expect identical

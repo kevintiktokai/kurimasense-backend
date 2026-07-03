@@ -795,7 +795,7 @@ def analyze_field(field_id: str, background_tasks: BackgroundTasks, user_id: str
             # RLS scope under FORCE)
             cursor.execute("""
                 SELECT polygon_coordinates, tenant_id::text AS tenant_id FROM fields
-                WHERE id = %s::uuid AND (tenant_id = ANY(%s::uuid[]) OR user_id = %s::uuid)
+                WHERE id = %s::uuid AND """ + field_scope_sql() + """
             """, (field_id, tenant_ids, user_id))
             row = cursor.fetchone()
             if not row:
@@ -863,7 +863,7 @@ async def get_field_insight(field_id: str, user_id: str = Depends(verify_token))
                     FROM daily_logs WHERE field_id = f.id
                     ORDER BY log_date DESC LIMIT 1
                 ) dl ON true
-                WHERE f.id = %s::uuid AND (f.tenant_id = ANY(%s::uuid[]) OR f.user_id = %s::uuid)
+                WHERE f.id = %s::uuid AND """ + field_scope_sql("f") + """
             """, (field_id, tenant_ids, user_id))
             row = cursor.fetchone()
             cursor.close()
@@ -1068,7 +1068,7 @@ async def get_field_history(field_id: str, user_id: str = Depends(verify_token))
             # Get field coordinates
             cursor.execute("""
                 SELECT polygon_coordinates FROM fields
-                WHERE id = %s::uuid AND (tenant_id = ANY(%s::uuid[]) OR user_id = %s::uuid)
+                WHERE id = %s::uuid AND """ + field_scope_sql() + """
             """, (field_id, tenant_ids, user_id))
             field_row = cursor.fetchone()
             if field_row and field_row.get('polygon_coordinates'):
@@ -1084,7 +1084,7 @@ async def get_field_history(field_id: str, user_id: str = Depends(verify_token))
                 SELECT dl.log_date::text as date, dl.ndvi, dl.soil_moisture
                 FROM daily_logs dl
                 JOIN fields f ON dl.field_id = f.id
-                WHERE dl.field_id = %s::uuid AND (f.tenant_id = ANY(%s::uuid[]) OR f.user_id = %s::uuid)
+                WHERE dl.field_id = %s::uuid AND """ + field_scope_sql("f") + """
                 ORDER BY dl.log_date ASC
                 LIMIT 30
             """, (field_id, tenant_ids, user_id))
@@ -1396,7 +1396,7 @@ def delete_field(field_id: str, user_id: str = Depends(verify_token)):
             # First verify the field belongs to this user
             cursor.execute("""
                 SELECT id, name FROM fields
-                WHERE id = %s::uuid AND (tenant_id = ANY(%s::uuid[]) OR user_id = %s::uuid)
+                WHERE id = %s::uuid AND """ + field_scope_sql() + """
             """, (field_id, tenant_ids, user_id))
 
             field = cursor.fetchone()
@@ -1417,7 +1417,7 @@ def delete_field(field_id: str, user_id: str = Depends(verify_token)):
                 inputs_deleted = 0
 
             # Delete the field itself
-            cursor.execute("DELETE FROM fields WHERE id = %s::uuid AND (tenant_id = ANY(%s::uuid[]) OR user_id = %s::uuid)", (field_id, tenant_ids, user_id))
+            cursor.execute("DELETE FROM fields WHERE id = %s::uuid AND " + field_scope_sql(), (field_id, tenant_ids, user_id))
 
             conn.commit()
             cursor.close()
@@ -1512,7 +1512,7 @@ def update_field(field_id: str, payload: dict, user_id: str = Depends(verify_tok
             cursor.execute(
                 f"""
                 UPDATE fields SET {', '.join(sets)}
-                WHERE id = %s::uuid AND (tenant_id = ANY(%s::uuid[]) OR user_id = %s::uuid)
+                WHERE id = %s::uuid AND """ + field_scope_sql() + """
                 RETURNING id, name, crop_type, variety, planting_date, transplant_date,
                           is_transplanted, fertilizer_history
                 """,
@@ -1784,7 +1784,7 @@ def post_generate_yield(request: Request, field_id: str, user_id: str = Depends(
             cursor.execute("""
                 SELECT id, name, crop_type, planting_date, variety, fertilizer_history, size_hectares
                 FROM fields
-                WHERE id = %s::uuid AND (tenant_id = ANY(%s::uuid[]) OR user_id = %s::uuid)
+                WHERE id = %s::uuid AND """ + field_scope_sql() + """
             """, (field_id, tenant_ids, user_id))
             row = cursor.fetchone()
             cursor.close()
@@ -3512,7 +3512,7 @@ async def get_field_proactive_alerts(field_id: str, user_id: str = Depends(verif
                     f.polygon_coordinates, f.health_score,
                     f.transplant_date, f.is_transplanted
                 FROM fields f
-                WHERE f.id = %s::uuid AND (f.tenant_id = ANY(%s::uuid[]) OR f.user_id = %s::uuid)
+                WHERE f.id = %s::uuid AND """ + field_scope_sql("f") + """
             """, (field_id, tenant_ids, user_id))
             field = cursor.fetchone()
             cursor.close()
@@ -3697,7 +3697,7 @@ async def get_growth_stage(field_id: str, user_id: str = Depends(verify_token)):
             cursor.execute("""
                 SELECT crop_type, planting_date, variety, name
                 FROM fields
-                WHERE id = %s::uuid AND (tenant_id = ANY(%s::uuid[]) OR user_id = %s::uuid)
+                WHERE id = %s::uuid AND """ + field_scope_sql() + """
             """, (field_id, tenant_ids, user_id))
             field = cursor.fetchone()
             cursor.close()
@@ -3772,7 +3772,7 @@ async def get_disease_risk(field_id: str, user_id: str = Depends(verify_token)):
             cursor.execute("""
                 SELECT crop_type, planting_date, variety, name, polygon_coordinates
                 FROM fields
-                WHERE id = %s::uuid AND (tenant_id = ANY(%s::uuid[]) OR user_id = %s::uuid)
+                WHERE id = %s::uuid AND """ + field_scope_sql() + """
             """, (field_id, tenant_ids, user_id))
             field = cursor.fetchone()
             cursor.close()
@@ -3875,7 +3875,7 @@ async def get_yield_history(field_id: str, user_id: str = Depends(verify_token))
             # Verify field ownership
             cursor.execute("""
                 SELECT id, name, crop_type FROM fields
-                WHERE id = %s::uuid AND (tenant_id = ANY(%s::uuid[]) OR user_id = %s::uuid)
+                WHERE id = %s::uuid AND """ + field_scope_sql() + """
             """, (field_id, tenant_ids, user_id))
 
             field = cursor.fetchone()
@@ -3988,7 +3988,7 @@ async def record_yield(field_id: str, payload: dict, user_id: str = Depends(veri
             # Verify field ownership
             cursor.execute("""
                 SELECT id, crop_type FROM fields
-                WHERE id = %s::uuid AND (tenant_id = ANY(%s::uuid[]) OR user_id = %s::uuid)
+                WHERE id = %s::uuid AND """ + field_scope_sql() + """
             """, (field_id, tenant_ids, user_id))
 
             field = cursor.fetchone()
@@ -4220,7 +4220,7 @@ async def fertilizer_recommendation(
         with tenant_scoped_connection(user_id) as (conn, tenant_ids):
             cursor = conn.cursor(cursor_factory=RealDictCursor)
             cursor.execute(
-                "SELECT crop_type, planting_date FROM fields WHERE id = %s AND (tenant_id = ANY(%s::uuid[]) OR user_id = %s::uuid)",
+                "SELECT crop_type, planting_date FROM fields WHERE id = %s AND " + field_scope_sql(),
                 (field_id, tenant_ids, user_id),
             )
             field = cursor.fetchone()
@@ -4259,7 +4259,7 @@ async def ipm_recommendations(
         with tenant_scoped_connection(user_id) as (conn, tenant_ids):
             cursor = conn.cursor(cursor_factory=RealDictCursor)
             cursor.execute(
-                "SELECT crop_type, planting_date, polygon_coordinates FROM fields WHERE id = %s AND (tenant_id = ANY(%s::uuid[]) OR user_id = %s::uuid)",
+                "SELECT crop_type, planting_date, polygon_coordinates FROM fields WHERE id = %s AND " + field_scope_sql(),
                 (field_id, tenant_ids, user_id),
             )
             field = cursor.fetchone()
@@ -4313,7 +4313,7 @@ async def irrigation_advice(
         with tenant_scoped_connection(user_id) as (conn, tenant_ids):
             cursor = conn.cursor(cursor_factory=RealDictCursor)
             cursor.execute(
-                "SELECT crop_type, planting_date FROM fields WHERE id = %s AND (tenant_id = ANY(%s::uuid[]) OR user_id = %s::uuid)",
+                "SELECT crop_type, planting_date FROM fields WHERE id = %s AND " + field_scope_sql(),
                 (field_id, tenant_ids, user_id),
             )
             field = cursor.fetchone()
@@ -4348,7 +4348,7 @@ async def harvest_readiness(
         with tenant_scoped_connection(user_id) as (conn, tenant_ids):
             cursor = conn.cursor(cursor_factory=RealDictCursor)
             cursor.execute(
-                "SELECT crop_type, planting_date, variety FROM fields WHERE id = %s AND (tenant_id = ANY(%s::uuid[]) OR user_id = %s::uuid)",
+                "SELECT crop_type, planting_date, variety FROM fields WHERE id = %s AND " + field_scope_sql(),
                 (field_id, tenant_ids, user_id),
             )
             field = cursor.fetchone()
@@ -4406,7 +4406,7 @@ async def crop_intelligence(
         with tenant_scoped_connection(user_id) as (conn, tenant_ids):
             cursor = conn.cursor(cursor_factory=RealDictCursor)
             cursor.execute(
-                "SELECT crop_type, planting_date, variety, polygon_coordinates, name FROM fields WHERE id = %s AND (tenant_id = ANY(%s::uuid[]) OR user_id = %s::uuid)",
+                "SELECT crop_type, planting_date, variety, polygon_coordinates, name FROM fields WHERE id = %s AND " + field_scope_sql(),
                 (field_id, tenant_ids, user_id),
             )
             field = cursor.fetchone()

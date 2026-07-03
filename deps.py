@@ -304,11 +304,21 @@ async def get_field_context(field_id: str, user_id: str) -> FieldContext:
     try:
         # tenant_scoped_connection arms the RLS GUCs (FORCE-ready) — fields /
         # daily_logs policies scope by the caller's tenants.
-        from tenancy import tenant_scoped_connection
-        with tenant_scoped_connection(user_id) as (conn, _tenant_ids):
+        from tenancy import tenant_scoped_connection, rls_tenant_only
+        with tenant_scoped_connection(user_id) as (conn, tenant_ids):
             cursor = conn.cursor(cursor_factory=RealDictCursor)
+            # Scope the field to the caller. Flag-off (default) keeps the exact
+            # legacy user_id filter — a byte-identical no-op on deploy. Flag-on
+            # (RLS_TENANT_ONLY) scopes by tenant membership instead and never
+            # references fields.user_id, so the column can be dropped. Both keep
+            # an app-level filter, so this is safe with FORCE off. See
+            # docs/rls_force_runbook.md Step C.
+            if rls_tenant_only():
+                scope_sql, scope_param = "f.tenant_id = ANY(%s::uuid[])", tenant_ids
+            else:
+                scope_sql, scope_param = "f.user_id = %s", user_id
             # Use LEFT JOIN LATERAL instead of 2 correlated subqueries — single index scan
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT
                     f.name, f.crop_type, f.planting_date, f.variety, f.health_score,
                     f.transplant_date, f.is_transplanted, f.fertilizer_history,
@@ -322,8 +332,8 @@ async def get_field_context(field_id: str, user_id: str) -> FieldContext:
                     ORDER BY log_date DESC
                     LIMIT 1
                 ) latest ON true
-                WHERE f.id = %s::uuid AND f.user_id = %s
-            """, (field_id, user_id))
+                WHERE f.id = %s::uuid AND {scope_sql}
+            """, (field_id, scope_param))
 
             row = cursor.fetchone()
             cursor.close()
@@ -388,13 +398,20 @@ async def resolve_coordinates(field_id: str = None, lat: float = None, lon: floa
 
     if field_id:
         try:
-            # FORCE-ready: fields policy scopes by the caller's tenants.
-            from tenancy import tenant_scoped_connection
-            with tenant_scoped_connection(user_id) as (conn, _tenant_ids):
+            # FORCE-ready: fields policy scopes by the caller's tenants. Flag-off
+            # keeps the legacy user_id filter byte-identical; flag-on scopes by
+            # tenant and drops the fields.user_id reference (see rls_force_runbook).
+            from tenancy import tenant_scoped_connection, rls_tenant_only
+            with tenant_scoped_connection(user_id) as (conn, tenant_ids):
                 cursor = conn.cursor(cursor_factory=RealDictCursor)
-                cursor.execute("""
-                    SELECT polygon_coordinates FROM fields WHERE id = %s::uuid AND user_id = %s::uuid
-                """, (field_id, user_id))
+                if rls_tenant_only():
+                    scope_sql, scope_param = "tenant_id = ANY(%s::uuid[])", tenant_ids
+                else:
+                    scope_sql, scope_param = "user_id = %s::uuid", user_id
+                cursor.execute(
+                    f"SELECT polygon_coordinates FROM fields WHERE id = %s::uuid AND {scope_sql}",
+                    (field_id, scope_param),
+                )
                 row = cursor.fetchone()
                 cursor.close()
 

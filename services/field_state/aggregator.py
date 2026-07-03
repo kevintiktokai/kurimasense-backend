@@ -680,12 +680,16 @@ def resolve_access(
         # admins with no membership in the field's tenant also get 404 under
         # FORCE (needs a SECURITY DEFINER resolver if admin field access is
         # required; tracked in docs/rls_force_runbook.md).
-        from tenancy import arm_rls_gucs
+        from tenancy import arm_rls_gucs, rls_tenant_only
         arm_rls_gucs(conn, requester_id, [str(t) for t in (tenant_ids or [])])
         cur = conn.cursor(cursor_factory=RealDictCursor)
+        # Flag-off selects the legacy user_id column for the fallback owner check
+        # below; flag-on drops it so the query never references fields.user_id
+        # (column-drop ready). Tenant/admin checks remain the primary gate.
+        _uid_col = "" if rls_tenant_only() else "user_id, "
         cur.execute(
-            """
-            SELECT id, user_id, tenant_id::text AS tenant_id, grower_id::text AS grower_id,
+            f"""
+            SELECT id, {_uid_col}tenant_id::text AS tenant_id, grower_id::text AS grower_id,
                    name, crop_type, variety, planting_date, transplant_date,
                    is_transplanted, size_hectares, polygon_coordinates,
                    fertilizer_history, health_score
