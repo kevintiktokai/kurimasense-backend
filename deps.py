@@ -19,7 +19,7 @@ import urllib.request
 import urllib.error
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 
 import jwt
 from fastapi import HTTPException, Header
@@ -311,7 +311,7 @@ async def get_field_context(field_id: str, user_id: str) -> FieldContext:
             cursor.execute("""
                 SELECT
                     f.name, f.crop_type, f.planting_date, f.variety, f.health_score,
-                    f.transplant_date, f.is_transplanted,
+                    f.transplant_date, f.is_transplanted, f.fertilizer_history,
                     latest.ndvi as current_ndvi,
                     latest.soil_moisture as soil_moisture
                 FROM fields f
@@ -353,6 +353,24 @@ async def get_field_context(field_id: str, user_id: str) -> FieldContext:
                         context.recent_alerts = growth_stage.risks[:3]
                 except Exception as e:
                     logger.warning(f"Growth stage calculation failed: {e}")
+
+            # Enrich the AI's field awareness with the farmer's own stored records
+            # (Phase 5): the fertilizer plan + recently logged activities. These
+            # feed FieldContext.recent_activities, which to_prompt_section already
+            # renders, so the advisor never asks the farmer to repeat what
+            # KurimaSense already knows. Extensible: append further analytics
+            # (scouting, previous recommendations, …) to recent_activities here.
+            activities: List[str] = []
+            fert = (row.get("fertilizer_history") or "").strip()
+            if fert:
+                activities.append(f"Fertilizer plan on record: {fert}")
+            try:
+                from database import get_recent_field_activity
+                activities.extend(get_recent_field_activity(field_id, user_id=user_id) or [])
+            except Exception as e:
+                logger.warning(f"Recent-activity fetch failed: {e}")
+            if activities:
+                context.recent_activities = activities[:6]
 
     except Exception as e:
         # RuntimeError (DB unavailable) and query errors both degrade to the
