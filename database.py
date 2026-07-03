@@ -267,6 +267,66 @@ def init_db():
                 )
             """)
 
+            # Institutional operations tables (migration 013) — team invites,
+            # agronomist field activities, and field assignments. Self-heal on
+            # boot like the tables above; the member-role/status ALTERs are also
+            # idempotent so environments migrate on deploy without a manual step.
+            cursor.execute("""
+                ALTER TABLE tenant_members DROP CONSTRAINT IF EXISTS tenant_members_member_role_check;
+                ALTER TABLE tenant_members ADD CONSTRAINT tenant_members_member_role_check
+                    CHECK (member_role IN ('owner', 'admin', 'manager', 'agronomist',
+                                           'field_officer', 'analyst', 'officer', 'viewer'));
+                ALTER TABLE tenant_members ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';
+                ALTER TABLE tenant_members ADD COLUMN IF NOT EXISTS display_name TEXT;
+                ALTER TABLE tenant_members ADD COLUMN IF NOT EXISTS email TEXT;
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS team_invites (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                    email TEXT,
+                    member_role TEXT NOT NULL DEFAULT 'field_officer',
+                    code TEXT NOT NULL UNIQUE,
+                    invited_by_user_id UUID,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    accepted_at TIMESTAMP WITH TIME ZONE,
+                    accepted_by_user_id UUID,
+                    revoked_at TIMESTAMP WITH TIME ZONE
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS field_activities (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
+                    field_id UUID NOT NULL REFERENCES fields(id) ON DELETE CASCADE,
+                    user_id UUID NOT NULL,
+                    activity_type TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    notes TEXT,
+                    recommendation TEXT,
+                    visit_date DATE DEFAULT CURRENT_DATE,
+                    lat DOUBLE PRECISION,
+                    lon DOUBLE PRECISION,
+                    photo_url TEXT,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS field_assignments (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
+                    field_id UUID NOT NULL REFERENCES fields(id) ON DELETE CASCADE,
+                    assignee_user_id UUID NOT NULL,
+                    assigned_by_user_id UUID,
+                    note TEXT,
+                    assigned_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    unassigned_at TIMESTAMP WITH TIME ZONE
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_field_assignments_active
+                    ON field_assignments(field_id) WHERE unassigned_at IS NULL;
+            """)
+
             # Performance indexes — created once, idempotent via IF NOT EXISTS
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_fields_user_id        ON fields(user_id);
@@ -284,6 +344,13 @@ def init_db():
 
                 CREATE INDEX IF NOT EXISTS idx_soil_profiles_field   ON soil_profiles(field_id);
                 CREATE INDEX IF NOT EXISTS idx_soil_profiles_refresh ON soil_profiles(refresh_after);
+
+                CREATE INDEX IF NOT EXISTS idx_team_invites_tenant      ON team_invites(tenant_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_field_activities_field   ON field_activities(field_id, visit_date DESC);
+                CREATE INDEX IF NOT EXISTS idx_field_activities_tenant  ON field_activities(tenant_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_field_activities_user    ON field_activities(user_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_field_assignments_assignee ON field_assignments(assignee_user_id) WHERE unassigned_at IS NULL;
+                CREATE INDEX IF NOT EXISTS idx_field_assignments_field    ON field_assignments(field_id, assigned_at DESC);
             """)
 
             conn.commit()
