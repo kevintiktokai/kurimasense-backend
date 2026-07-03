@@ -72,6 +72,15 @@ from deps import (
 # Workstream 3.5: tenant-aware scoping for consumer `fields` endpoints.
 from tenancy import arm_rls_gucs, caller_tenant_ids, field_scope_sql, tenant_scoped_connection  # noqa: E402
 
+# Observability: structured JSON logging + per-request correlation ids + optional
+# Sentry. Configure logging BEFORE anything else logs so all output is structured.
+from observability import (  # noqa: E402
+    configure_logging, init_sentry, capture_exception,
+    request_id_ctx, new_request_id,
+)
+configure_logging()
+init_sentry()  # dormant unless SENTRY_DSN is set
+
 logger = logging.getLogger("kurimasense")
 
 # Cache functions and verify_token are imported from deps.py
@@ -246,19 +255,31 @@ class RobustCORSMiddleware(BaseHTTPMiddleware):
 app.add_middleware(RobustCORSMiddleware)
 
 class TimingMiddleware(BaseHTTPMiddleware):
+    """Assigns/propagates a per-request correlation id, times the request, and
+    emits one structured ``request_completed`` log line. The id is bound to a
+    contextvar for the request's duration so every log line the handler produces
+    carries it, and is echoed back as ``X-Request-ID``."""
+
     async def dispatch(self, request: Request, call_next):
+        rid = request.headers.get("X-Request-ID") or new_request_id()
+        token = request_id_ctx.set(rid)
         start_time = time.time()
-        response = await call_next(request)
-        process_time = time.time() - start_time
-        process_time_ms = round(process_time * 1000, 2)
+        try:
+            response = await call_next(request)
+        finally:
+            process_time_ms = round((time.time() - start_time) * 1000, 2)
+            logger.info(
+                "request_completed",
+                extra={
+                    "event": "request_completed",
+                    "path": request.url.path,
+                    "method": request.method,
+                    "duration_ms": process_time_ms,
+                },
+            )
+            request_id_ctx.reset(token)
         response.headers["X-Process-Time"] = str(process_time_ms)
-        print(json.dumps({
-            "event": "request_completed",
-            "path": request.url.path,
-            "method": request.method,
-            "status_code": response.status_code,
-            "duration_ms": process_time_ms
-        }))
+        response.headers["X-Request-ID"] = rid
         return response
 
 app.add_middleware(TimingMiddleware)
@@ -298,7 +319,12 @@ async def cors_general_exception_handler(request: Request, exc: Exception):
             "Access-Control-Allow-Origin": origin,
             "Access-Control-Allow-Credentials": "true",
         }
-    print(f"Unhandled exception: {exc}")
+    # Structured log (carries the request id via the logging filter) + Sentry.
+    logger.exception(
+        "unhandled_exception",
+        extra={"event": "unhandled_exception", "path": request.url.path, "method": request.method},
+    )
+    capture_exception(exc)
     return JSONResponse(
         status_code=500,
         content={"detail": "Internal server error"},
