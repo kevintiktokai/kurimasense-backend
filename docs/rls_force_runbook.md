@@ -219,7 +219,42 @@ no data change.
 
 ## Step D — FORCE (the cut-over)
 
-Per table, once its policy + wiring are proven:
+> ### ⚠️ CRITICAL FINDING (July 3 2026): FORCE is INERT against the current backend
+>
+> Verified live: the backend connects (via the Supavisor pooler) as the
+> **`postgres`** role, and `postgres` has **`rolbypassrls = true`**
+> (`SELECT rolbypassrls FROM pg_roles WHERE rolname='postgres'` → `t`). In
+> PostgreSQL, the `BYPASSRLS` attribute bypasses row security *unconditionally* —
+> `FORCE ROW LEVEL SECURITY` does **not** override it. `FORCE` only removes the
+> owner's *implicit* bypass; it cannot remove an explicit `BYPASSRLS`.
+>
+> **Therefore applying FORCE right now changes nothing for the backend** — it
+> would keep seeing every row. Doing so would be a no-op that *looks* like
+> isolation without providing it, so per decision on 2026-07-03 **FORCE was NOT
+> applied** (migrations 010/011 WERE applied — they're correct and inert).
+>
+> The external surface is already safe without FORCE: PostgREST's `anon` /
+> `authenticated` roles are not `BYPASSRLS` and never set the GUC, so the
+> deny-by-default `ts_*`/`us_*` policies already return zero rows to them.
+>
+> **Real backend-level isolation requires a separate project** (only needed if a
+> lender/bank audit demands provable isolation against our own backend):
+> 1. A dedicated **`NOBYPASSRLS`** app role (not `postgres`) with full DML grants.
+> 2. Move `database.init_db()`'s **runtime DDL** (`CREATE TABLE IF NOT EXISTS`,
+>    `ALTER TABLE … ADD COLUMN`, `CREATE INDEX`) out of the request path into a
+>    migration step — a locked-down non-owner role cannot run DDL, so the current
+>    self-healing-schema-on-boot pattern is incompatible with a constrained role.
+> 3. Rotate Render's `DATABASE_URL` to the new role.
+> 4. *Then* the per-table `FORCE` below becomes meaningful and the negative tests
+>    actually prove something.
+>
+> Until that project happens, Steps A–C (wiring, policies, the `RLS_TENANT_ONLY`
+> flag) stand on their own merits (defence-in-depth, correct tenant scoping,
+> droppable `user_id`), but Step D's "provable isolation against the backend" is
+> **blocked on the role change, not on running the SQL below.**
+
+Per table, once its policy + wiring are proven (AND the backend runs as a
+non-`BYPASSRLS` role — see the finding above):
 
 ```sql
 ALTER TABLE public.fields FORCE ROW LEVEL SECURITY;
@@ -248,26 +283,22 @@ Policies + the GUC helper can stay (they're inert without FORCE).
 - [x] Step A — app.py wiring (16 sites) + repo-wide straggler audit and full
       wiring (~30 more sites across 13 files, July 2 2026). Needs a prod soak
       after deploy.
-- [x] Step B (code/migrations staged) — 010 extended (`chat_sessions`), 011
-      drafted (`model_calibration` USING(true)); bootstrap exemption decided
-      and documented. **Migrations not yet applied** (blocked on Supabase MCP
-      approval in the July 2 session — apply 010 + 011 first thing next
-      session; both are inert until FORCE).
+- [x] Step B — 010 (`us_*` personal policies incl. `chat_sessions`) + 011
+      (`mc_global` on `model_calibration`) **APPLIED to prod July 3 2026**;
+      verified present, live backend unaffected. `ts_*` (008) + `us_*` + `mc_global`
+      all in place. Bootstrap exemption (`tenants`/`tenant_members`/`profiles`
+      never FORCEd) decided and documented.
 - [~] Step C — **code prep DONE** (shipped behind `RLS_TENANT_ONLY`, default off;
       all `fields.user_id` references gated, guard-tested). Remaining is the
       operational cut-over: flip the flag on Render → soak → snapshot
       (`CREATE TABLE _backup_fields_user_id AS SELECT id, user_id FROM fields;`) →
       `ALTER TABLE fields DROP COLUMN user_id;`. Full sequence in Step C above.
-- [ ] Step D — per-table FORCE cut-over. Checklist per table:
-      `ALTER TABLE public.<t> FORCE ROW LEVEL SECURITY;` → hit the live
-      endpoints that read/write it with a real token (expect identical
-      results) → negative test (tenant A token must NOT see tenant B rows) →
-      next table. NEVER force `tenants` / `tenant_members` / `profiles`
-      (bootstrap exemption above). Rollback is one command:
-      `ALTER TABLE <t> NO FORCE ROW LEVEL SECURITY;`
-      Suggested order: `scouting_observations` (lowest traffic) →
-      `grower_contracts` / `input_disbursements` / `deliveries` /
-      `harvest_records` / `yield_projections` → `growers` → `field_inputs` /
-      `daily_logs` → `fields` (highest blast radius) → personal tables
-      (`farm_tasks`, `chat_logs`, `chat_sessions`, `yield_history`) →
-      `model_calibration`.
+- [!] Step D — **BLOCKED, not on effort but on architecture** (finding
+      2026-07-03, see the ⚠️ block in Step D). The backend connects as `postgres`,
+      which has `BYPASSRLS`, so `FORCE` is a no-op against it — running the SQL
+      would provide *no* isolation while looking like it does. Decision: FORCE
+      **not applied**. Unblocking requires a dedicated `NOBYPASSRLS` app role +
+      relocating `init_db()`'s runtime DDL + rotating `DATABASE_URL` — a scoped
+      project, only warranted if a lender audit requires provable
+      isolation-against-our-own-backend. The per-table order/checklist below is
+      retained for when (if) that role change lands.

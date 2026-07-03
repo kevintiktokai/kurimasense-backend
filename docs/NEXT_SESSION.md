@@ -50,20 +50,20 @@ Full evidence-driven audit + fixes this session. Headlines:
    understand. Review every AI feature end-to-end (chat, vision diagnosis,
    insights, crop plan, yield) — ideally with a live token once `openai` deps are
    installed, since the sandbox can't import `ai_brain`.
-2. **RLS FORCE cut-over** — Steps A + B now code-complete (see
-   `docs/rls_force_runbook.md` Status). This session did the repo-wide straggler
-   audit and wired ALL ~30 remaining bare DB sites (not just the original 16
-   app.py ones) via `tenancy.arm_rls_gucs`, extended migration 010
-   (`chat_sessions`), added migration 011 (`model_calibration` USING(true)), and
-   documented the bootstrap exemption + Step C/D checklists.
-   **Still to do next session:**
-   (a) APPLY migrations 010 + 011 (blocked this session on a Supabase MCP
-   approval prompt — they're inert until FORCE, safe to apply anytime);
-   (b) prod soak of the wiring (watch error rates / p95 — each wrapped query
-   adds one `set_config` round trip);
-   (c) Step C drop `fields.user_id` — CODE FIRST: remove the `field_scope_sql`
-   fallback and deploy to Render BEFORE the column drop, snapshot first;
-   (d) Step D per-table FORCE with negative tests. Needs Kevin's go at FORCE.
+2. **RLS FORCE cut-over** — Steps A–C DONE; Step D BLOCKED by architecture (see
+   `docs/rls_force_runbook.md`). This session: wired all ~30 DB sites
+   (`tenancy.arm_rls_gucs`); **applied migrations 010 + 011 to prod** (July 3 —
+   `us_*` personal policies + `mc_global`); shipped Step C code prep behind the
+   `RLS_TENANT_ONLY` flag (all `fields.user_id` refs gated, guard-tested).
+   **⚠️ KEY FINDING:** the backend connects as `postgres`, which has `BYPASSRLS`,
+   so **`FORCE` is a no-op against it** — running it gives no isolation while
+   looking like it does. FORCE was deliberately NOT applied. Real
+   backend-isolation needs a dedicated `NOBYPASSRLS` role + moving `init_db()`
+   runtime DDL to a migration + rotating `DATABASE_URL` (scoped project; only
+   for a lender-audit requirement). External access is already safe (PostgREST
+   anon/authenticated hit deny-by-default policies). **Remaining, optional:**
+   Step C operational drop of `fields.user_id` (flip `RLS_TENANT_ONLY=true` on
+   Render → soak → snapshot → `DROP COLUMN`).
 3. ~~**Field-history background prefetch**~~ — DONE. `POST /fields` now schedules
    `app._prefetch_field_history` as a background task: warms both
    `climate_service.get_daily_history` and the derived `calculate_gdd` for the
