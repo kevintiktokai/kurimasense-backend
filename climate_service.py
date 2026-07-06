@@ -433,6 +433,68 @@ async def get_daily_history(lat: float, lon: float, start_date: str, end_date: s
     return await _cached(key, _TTL_HISTORY, _produce)
 
 
+async def get_water_balance_series(
+    lat: float = DEFAULT_LAT,
+    lon: float = DEFAULT_LON,
+    past_days: int = 14,
+    forecast_days: int = 7,
+) -> Dict[str, Any]:
+    """Daily ET₀ + rainfall series spanning recent past and forecast — the
+    weather input of the irrigation recommendation engine.
+
+    One Open-Meteo forecast call with ``past_days`` (the forecast API serves up
+    to 92 past days with the same variables, avoiding a second archive request).
+    Returns ``{"past": [...], "forecast": [...]}`` of
+    ``{"date", "et0", "precip", "precip_probability", "tmax", "tmin"}``,
+    split on today. Cached at forecast TTL through the shared resilient layer.
+    """
+    past_days = max(0, min(past_days, 60))
+    forecast_days = max(1, min(forecast_days, 16))
+    key = f"waterbal:{_cache_key(lat, lon)}:{past_days}:{forecast_days}"
+
+    async def _produce():
+        params = {
+            "latitude": lat,
+            "longitude": lon,
+            "past_days": past_days,
+            "forecast_days": forecast_days,
+            "daily": [
+                "et0_fao_evapotranspiration",
+                "precipitation_sum",
+                "precipitation_probability_max",
+                "temperature_2m_max",
+                "temperature_2m_min",
+            ],
+            "timezone": "auto",
+        }
+        data = await _get_json(FORECAST_URL, params)
+        daily = data.get("daily", {}) or {}
+        dates = daily.get("time", []) or []
+
+        def col(name, i):
+            values = daily.get(name, []) or []
+            return values[i] if i < len(values) else None
+
+        series = [{
+            "date": d,
+            "et0": col("et0_fao_evapotranspiration", i),
+            "precip": col("precipitation_sum", i),
+            "precip_probability": col("precipitation_probability_max", i),
+            "tmax": col("temperature_2m_max", i),
+            "tmin": col("temperature_2m_min", i),
+        } for i, d in enumerate(dates)]
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        return {
+            "location": {"lat": lat, "lon": lon},
+            "timezone": data.get("timezone"),
+            "past": [row for row in series if row["date"] < today],
+            "forecast": [row for row in series if row["date"] >= today],
+        }
+
+    return await _cached(key, _TTL_FORECAST, _produce)
+
+
 async def calculate_gdd(
     lat: float = DEFAULT_LAT, 
     lon: float = DEFAULT_LON, 
