@@ -187,6 +187,14 @@ app.include_router(team_router)
 from activity_routes import router as activity_router  # noqa: E402
 app.include_router(activity_router)
 
+# Centralized notification service (inbox, preferences, devices, admin cycle).
+from notification_routes import router as notification_router  # noqa: E402
+app.include_router(notification_router)
+
+# AI irrigation recommendation engine (explainable water-balance advice).
+from irrigation_routes import router as irrigation_router  # noqa: E402
+app.include_router(irrigation_router)
+
 # CORS Configuration
 # Allow specific origins from environment or default to known frontends
 allowed_origins_env = os.environ.get("CORS_ORIGINS", "").strip()
@@ -554,6 +562,17 @@ def startup_checks():
     validate_environment()
     # Initialize database tables
     init_db()
+    # Notification subsystem: self-heal its tables, then start the in-process
+    # scheduler (advisory-locked, so multi-instance deploys stay single-flight;
+    # disable with NOTIFICATIONS_SCHEDULER_ENABLED=false to drive it from cron
+    # via POST /notifications/admin/run-cycle instead).
+    try:
+        from services.notifications.repository import ensure_schema as ensure_notifications_schema
+        from services.notifications.scheduler import start_scheduler
+        ensure_notifications_schema()
+        start_scheduler()
+    except Exception as e:
+        print(f"WARNING: notification subsystem init failed: {e}")
 
 @app.get("/fields")
 def get_fields(user_id: str = Depends(verify_token)):
