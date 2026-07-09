@@ -207,8 +207,11 @@ else:
         "http://127.0.0.1:3000",
     ]
 
-# Always allow Vercel preview URLs
-allow_origin_regex = r"https://.*\.vercel\.app"
+# Always allow Vercel preview URLs. Anchored with \Z — without it, re.match()
+# accepted any origin merely *starting* with a vercel.app-like prefix
+# (e.g. https://x.vercel.app.evil.com), silently extending credentialed CORS
+# to attacker-controlled domains.
+allow_origin_regex = r"https://[a-z0-9-]+(\.[a-z0-9-]+)*\.vercel\.app\Z"
 
 print(f"🌐 CORS_ORIGINS env: '{allowed_origins_env}'")
 print(f"🌐 Parsed origins_list: {origins_list}")
@@ -427,11 +430,34 @@ def _invalidate_field_caches(field_id: str, user_id: Optional[str] = None):
 
 @app.get("/health")
 def health_check():
+    """Public liveness/readiness probe (uptime monitors, keep-warm ping).
+
+    Deliberately minimal: the previous version dumped the CORS configuration
+    and raw database error strings (connection host, driver details) to any
+    unauthenticated caller — an information leak. Config/debug detail lives in
+    the admin-gated ``/health/detail`` below.
     """
-    Health check endpoint that also returns CORS debug info.
-    Use this to verify the backend is running the latest code.
-    """
-    # Test database connection
+    db_status = "unknown"
+    try:
+        conn = get_db_connection()
+        if conn:
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            cursor.execute("SELECT 1")
+            cursor.close()
+            conn.close()
+            db_status = "connected"
+        else:
+            db_status = "no_connection"
+    except Exception:
+        db_status = "error"
+
+    status = "ok" if db_status == "connected" else "degraded"
+    return {"status": status, "database": db_status}
+
+
+@app.get("/health/detail")
+def health_detail(_admin: bool = Depends(require_admin_token)):
+    """Operator diagnostics (X-Admin-Token): CORS config, DB error, version."""
     db_status = "unknown"
     db_error = None
     try:
@@ -447,19 +473,16 @@ def health_check():
     except Exception as e:
         db_status = "error"
         db_error = str(e)
-    
+
     return {
         "status": "ok",
         "cors": {
             "env_value": allowed_origins_env,
             "parsed_origins": origins_list,
-            "origin_regex": allow_origin_regex
+            "origin_regex": allow_origin_regex,
         },
-        "database": {
-            "status": db_status,
-            "error": db_error
-        },
-        "version": "2026-02-03-v8-planting-dates"
+        "database": {"status": db_status, "error": db_error},
+        "version": "2026-02-03-v8-planting-dates",
     }
 
 
