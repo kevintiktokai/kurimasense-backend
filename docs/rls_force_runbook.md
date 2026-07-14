@@ -276,6 +276,49 @@ Policies + the GUC helper can stay (they're inert without FORCE).
 
 ---
 
+## Step D unblocking artifacts (July 2026 production-readiness pass)
+
+The three blockers named in the ⚠️ finding now have concrete artifacts:
+
+1. **Runtime DDL relocated** — `migrations/015_bootstrap_schema.sql` captures the
+   full `init_db()` + notifications schema as an idempotent migration.
+   `DB_SELF_HEAL_SCHEMA=false` turns off all boot-time DDL
+   (`database.schema_self_heal_enabled`; notifications `ensure_schema` honors
+   the same flag). Catalogue seeding (DML) still runs. Note: 015 still carries
+   the `fields.user_id` compatibility block — remove it after Step C's drop.
+2. **NOBYPASSRLS app role** — `migrations/016_app_role_nobypassrls.sql`:
+   `kurimasense_app` (LOGIN, NOBYPASSRLS, no DDL, owns nothing), DML grants +
+   default privileges, `app_bootstrap_*` USING(true) policies on
+   tenants/tenant_members/profiles (the documented exemption) and
+   `app_global_*` on the by-design cross-tenant tables (knowledge/RAG,
+   notifications service, user_events, crop_varieties). The isolation set gets
+   NO app policy — ts_*/us_* + armed GUCs are the only path in. **Key
+   consequence: because the role is a non-owner, plain ENABLE RLS already
+   binds it — isolation goes live at DATABASE_URL rotation, before any FORCE.**
+3. **FORCE migration** — `migrations/017_force_rls.sql`: per-table FORCE for the
+   18-table isolation set only (bootstrap + global tables excluded), applied
+   LAST as belt-and-braces against owner-role connections.
+
+Guard-tested in `tests/test_schema_self_heal.py` (gate behavior, no-DDL under
+the flag, 015 covers every runtime table, 017 never touches bootstrap tables,
+016 grants no DDL).
+
+### Revised cut-over sequence (operational — needs prod access)
+
+1. Apply `015` as postgres (no-op against the live schema), then set
+   `DB_SELF_HEAL_SCHEMA=false` on Render + restart. Soak: boot logs show
+   "Schema self-heal disabled", error rates flat. Rollback: unset the flag.
+2. Flip `RLS_TENANT_ONLY=true` (Step C op) + soak; snapshot then drop
+   `fields.user_id` per Step C.
+3. Apply `016` as postgres; immediately `ALTER ROLE kurimasense_app PASSWORD
+   '<from secret manager>'`. Run the §5 verification query — every uncovered
+   table must be isolation-set or backend-untouched.
+4. Rotate Render `DATABASE_URL` to `kurimasense_app` (same pooler host, new
+   credentials) + restart. **Isolation is now live.** Soak with the negative
+   test (tenant A JWT cannot read tenant B rows). Rollback: swap the URL back.
+5. Apply `017` (FORCE, belt-and-braces). Rollback per table:
+   `ALTER TABLE <t> NO FORCE ROW LEVEL SECURITY`.
+
 ## Status
 
 - [x] Migration 008 (policies, no FORCE) — applied to prod, app unaffected.

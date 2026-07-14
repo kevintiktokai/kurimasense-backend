@@ -1,13 +1,17 @@
-requests
-python-dotenv
-openai
-fastapi
-uvicorn
-psycopg2-binary
-pypdf
-tiktoken
-PyJWT
-httpx
-cryptography
-slowapi
-sentry-sdk
+# Pinned to the exact versions the test suite passes against (395 tests,
+# July 2026 production-readiness audit). Unpinned ranges made every deploy a
+# dependency lottery — a breaking upstream release would take production down
+# on the next build. Bump deliberately: change the pin, run pytest, deploy.
+requests==2.34.2
+python-dotenv==1.2.2
+openai==2.44.0
+fastapi==0.139.0
+uvicorn==0.51.0
+psycopg2-binary==2.9.12
+pypdf==6.14.2
+tiktoken==0.13.0
+PyJWT==2.13.0
+httpx==0.28.1
+cryptography==49.0.0
+slowapi==0.1.10
+sentry-sdk==2.64.0

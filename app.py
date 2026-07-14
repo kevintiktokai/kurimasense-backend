@@ -66,6 +66,7 @@ from deps import (
     resolve_coordinates,
     validate_environment,
     MOCK_FIELDS, MOCK_CHATS, MOCK_INPUTS,
+    mock_fallback_allowed, db_unavailable_error,
     SUPABASE_JWT_SECRET, SUPABASE_JWT_PUBLIC_KEY,
     SUPABASE_URL, SUPABASE_ANON_KEY,
 )
@@ -207,8 +208,11 @@ else:
         "http://127.0.0.1:3000",
     ]
 
-# Always allow Vercel preview URLs
-allow_origin_regex = r"https://.*\.vercel\.app"
+# Always allow Vercel preview URLs. Anchored with \Z — without it, re.match()
+# accepted any origin merely *starting* with a vercel.app-like prefix
+# (e.g. https://x.vercel.app.evil.com), silently extending credentialed CORS
+# to attacker-controlled domains.
+allow_origin_regex = r"https://[a-z0-9-]+(\.[a-z0-9-]+)*\.vercel\.app\Z"
 
 print(f"🌐 CORS_ORIGINS env: '{allowed_origins_env}'")
 print(f"🌐 Parsed origins_list: {origins_list}")
@@ -427,11 +431,34 @@ def _invalidate_field_caches(field_id: str, user_id: Optional[str] = None):
 
 @app.get("/health")
 def health_check():
+    """Public liveness/readiness probe (uptime monitors, keep-warm ping).
+
+    Deliberately minimal: the previous version dumped the CORS configuration
+    and raw database error strings (connection host, driver details) to any
+    unauthenticated caller — an information leak. Config/debug detail lives in
+    the admin-gated ``/health/detail`` below.
     """
-    Health check endpoint that also returns CORS debug info.
-    Use this to verify the backend is running the latest code.
-    """
-    # Test database connection
+    db_status = "unknown"
+    try:
+        conn = get_db_connection()
+        if conn:
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            cursor.execute("SELECT 1")
+            cursor.close()
+            conn.close()
+            db_status = "connected"
+        else:
+            db_status = "no_connection"
+    except Exception:
+        db_status = "error"
+
+    status = "ok" if db_status == "connected" else "degraded"
+    return {"status": status, "database": db_status}
+
+
+@app.get("/health/detail")
+def health_detail(_admin: bool = Depends(require_admin_token)):
+    """Operator diagnostics (X-Admin-Token): CORS config, DB error, version."""
     db_status = "unknown"
     db_error = None
     try:
@@ -447,19 +474,16 @@ def health_check():
     except Exception as e:
         db_status = "error"
         db_error = str(e)
-    
+
     return {
         "status": "ok",
         "cors": {
             "env_value": allowed_origins_env,
             "parsed_origins": origins_list,
-            "origin_regex": allow_origin_regex
+            "origin_regex": allow_origin_regex,
         },
-        "database": {
-            "status": db_status,
-            "error": db_error
-        },
-        "version": "2026-02-03-v8-planting-dates"
+        "database": {"status": db_status, "error": db_error},
+        "version": "2026-02-03-v8-planting-dates",
     }
 
 
@@ -677,10 +701,14 @@ def get_fields(user_id: str = Depends(verify_token)):
 
     except RuntimeError:
         # tenant_scoped_connection raises this when the DB is unavailable.
+        if not mock_fallback_allowed():
+            raise db_unavailable_error()
         print("Using Mock Data (Offline Mode)")
         return MOCK_FIELDS
     except Exception as e:
         print(f"Fields Query Error: {e}")
+        if not mock_fallback_allowed():
+            raise db_unavailable_error()
         return MOCK_FIELDS
 
 # BackgroundTasks imported at top level
@@ -697,6 +725,11 @@ async def trigger_sentinel_analysis(field_id: str, lat: float, lon: float,
     """
     conn = get_db_connection()
     if not conn:
+        if not mock_fallback_allowed():
+            # Background task in a deployed environment — nothing to respond to;
+            # log loudly instead of fabricating a simulated satellite pass.
+            print(f"Sentinel analysis skipped for {field_id}: database unavailable")
+            return
         # Offline/Mock Mode Logic
         print(f"Offline Mode: Simulating Analysis for {field_id}...")
         import random
@@ -852,7 +885,10 @@ def analyze_field(field_id: str, background_tasks: BackgroundTasks, user_id: str
     except HTTPException:
         raise
     except RuntimeError:
-        # DB unavailable — fall back to mock coords.
+        # DB unavailable — fall back to mock coords (dev only; analyzing default
+        # coordinates for a real user would fabricate data for the wrong place).
+        if not mock_fallback_allowed():
+            raise db_unavailable_error()
         for f in MOCK_FIELDS:
             if f["id"] == field_id:
                 loc = f.get("location")
@@ -1330,6 +1366,8 @@ def create_field(request: Request, payload: dict, background_tasks: BackgroundTa
 
 
     if not conn:
+        if not mock_fallback_allowed():
+            raise db_unavailable_error()
         print("Saving to Mock DB (Offline Mode)")
         import uuid
         new_id = str(uuid.uuid4())
@@ -1501,7 +1539,10 @@ def delete_field(field_id: str, user_id: str = Depends(verify_token)):
     except HTTPException:
         raise
     except RuntimeError:
-        # DB unavailable — mock-mode delete.
+        # DB unavailable — mock-mode delete (dev only; in production claiming a
+        # delete "succeeded" while the row survives is a lie the user acts on).
+        if not mock_fallback_allowed():
+            raise db_unavailable_error()
         global MOCK_FIELDS
         MOCK_FIELDS = [f for f in MOCK_FIELDS if f.get("id") != field_id]
         return {"status": "success", "message": "Field deleted (mock mode)"}
@@ -1614,6 +1655,8 @@ def update_field(field_id: str, payload: dict, user_id: str = Depends(verify_tok
 def get_user_profile(user_id: str = Depends(verify_token)):
     conn = get_db_connection()
     if not conn:
+        if not mock_fallback_allowed():
+            raise db_unavailable_error()
         return {
             "name": "Alex Jackson",
             "email": "alex@simba.ag",
@@ -1663,6 +1706,8 @@ def log_input(request: Request, payload: dict, user_id: str = Depends(verify_tok
     date = payload.get("date", "now")
     
     if not conn:
+        if not mock_fallback_allowed():
+            raise db_unavailable_error()
         import uuid
         new_id = str(uuid.uuid4())
         MOCK_INPUTS.append({
@@ -1774,7 +1819,9 @@ def get_dashboard_stats(user_id: str = Depends(verify_token)):
             
             cursor.close()
     except RuntimeError:
-        # DB unavailable — degrade to mock, as the original `if not conn` did.
+        # DB unavailable — degrade to mock in dev; honest 503 in production.
+        if not mock_fallback_allowed():
+            raise db_unavailable_error()
         fields_to_scan = MOCK_FIELDS
     except Exception as e:
         print(f"Dashboard DB Error: {e}")
@@ -1880,8 +1927,8 @@ def post_generate_yield(request: Request, field_id: str, user_id: str = Depends(
     except Exception as e:
         print(f"DB fetch for yield projection failed: {e}")
 
-    # Fallback to MOCK_FIELDS
-    if not field and MOCK_FIELDS:
+    # Fallback to MOCK_FIELDS (dev only)
+    if not field and MOCK_FIELDS and mock_fallback_allowed():
         for f in MOCK_FIELDS:
             if f["id"] == field_id:
                 field = f
@@ -2152,6 +2199,8 @@ async def chat_adapter(payload: dict, user_id: str = Depends(verify_token)):
 def get_chat_history(limit: int = 50, user_id: str = Depends(verify_token)):
     conn = get_db_connection()
     if not conn:
+        if not mock_fallback_allowed():
+            raise db_unavailable_error()
         return MOCK_CHATS[-limit:]
         
     try:

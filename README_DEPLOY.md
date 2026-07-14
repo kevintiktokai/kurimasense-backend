@@ -76,6 +76,9 @@ Add these in the "Environment" tab:
   > Render does not support IPv6. In Supabase Settings > Database, look for the **Connection Pooling** section and use the **Pooler** URL (usually port 6543 or with a hostname like `pooler.supabase.com`). 
   > DO NOT use the "Direct Connection" URL (`db.xxxx.supabase.co`) as it will result in a "Network is unreachable" error.
 - `CORS_ORIGINS`: Your Vercel frontend URL (e.g., `https://kurima-sense.vercel.app`)
+- `ALLOW_MOCK_FALLBACK`: leave **unset** in production. With `DATABASE_URL` set, a
+  database outage returns an honest 503 instead of mock demo data. Mock mode only
+  activates automatically in local dev (no `DATABASE_URL`), or with an explicit `true`.
 
 ---
 

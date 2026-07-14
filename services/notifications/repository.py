@@ -91,6 +91,12 @@ def ensure_schema() -> bool:
     global _SCHEMA_READY
     if _SCHEMA_READY:
         return True
+    # Migration-managed mode (DB_SELF_HEAL_SCHEMA=false): the schema comes from
+    # migrations/015_bootstrap_schema.sql and the app role may not run DDL.
+    from database import schema_self_heal_enabled
+    if not schema_self_heal_enabled():
+        _SCHEMA_READY = True
+        return True
     conn = get_db_connection()
     if not conn:
         return False

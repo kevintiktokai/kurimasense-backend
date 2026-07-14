@@ -43,6 +43,35 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY") or os.environ.get("SUPABASE_KEY")
 
 # ---------------------------------------------------------------------------
+# Mock-fallback policy
+# ---------------------------------------------------------------------------
+def mock_fallback_allowed() -> bool:
+    """True when mock/demo data may stand in for the database.
+
+    Local development without a DATABASE_URL keeps the historical offline mock
+    mode. In a deployed environment (DATABASE_URL configured) a DB failure must
+    surface as an error: returning MOCK_FIELDS-style demo data to a signed-in
+    user during an outage fabricates fields and satellite readings they don't
+    own — worse than an honest 503 for a product whose value is trustworthy
+    data. Override either way with ALLOW_MOCK_FALLBACK=true/false.
+    """
+    override = os.environ.get("ALLOW_MOCK_FALLBACK", "").strip().lower()
+    if override in ("true", "1", "yes"):
+        return True
+    if override in ("false", "0", "no"):
+        return False
+    return not os.environ.get("DATABASE_URL")
+
+
+def db_unavailable_error() -> HTTPException:
+    """Uniform 503 for 'the database is down and mock fallback is disabled'."""
+    return HTTPException(
+        status_code=503,
+        detail="Service temporarily unavailable — please try again in a moment.",
+    )
+
+
+# ---------------------------------------------------------------------------
 # In-memory response cache (stdlib only, no Redis required)
 # ---------------------------------------------------------------------------
 _response_cache: dict = {}
