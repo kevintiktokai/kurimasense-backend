@@ -78,6 +78,20 @@ def get_db_connection():
             print(f"CRITICAL: DB Connection Error: {e}")
         return None
 
+def schema_self_heal_enabled() -> bool:
+    """Whether boot-time DDL ("self-healing schema") is allowed.
+
+    Default on — unchanged behavior. Set ``DB_SELF_HEAL_SCHEMA=false`` once the
+    schema is managed by ``migrations/015_bootstrap_schema.sql``: a locked-down
+    NOBYPASSRLS app role (migration 016) cannot run DDL, so with the flag off
+    the backend never issues CREATE/ALTER at runtime and boots cleanly under
+    that role. Seeding (plain DML) is unaffected by this flag.
+    """
+    return os.environ.get("DB_SELF_HEAL_SCHEMA", "true").strip().lower() not in (
+        "false", "0", "no",
+    )
+
+
 def init_db():
     """
     Initialize the database with required tables.
@@ -85,7 +99,18 @@ def init_db():
     conn = get_db_connection()
     if conn:
         print("✅ Database connection established successfully.")
-        
+
+        if not schema_self_heal_enabled():
+            # Schema is migration-managed (015+); skip all runtime DDL but keep
+            # the idempotent catalogue seed (DML, allowed for the app role).
+            print("⏭️ Schema self-heal disabled (DB_SELF_HEAL_SCHEMA=false) — schema managed by migrations/.")
+            conn.close()
+            try:
+                seed_crop_varieties()
+            except Exception as e:
+                print(f"⚠️ Crop-variety seed skipped: {e}")
+            return
+
         # Ensure All Required Tables Exist
         try:
             cursor = conn.cursor()
