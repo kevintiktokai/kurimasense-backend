@@ -54,15 +54,48 @@ def test_startup_handler_returns_fast(monkeypatch):
     assert slow_called["n"] == 1
 
 
-def test_start_commands_bind_dual_stack():
-    """Railway probes over IPv6; an 0.0.0.0 bind is unreachable to it (the
-    'app running but every probe refused' incident). Every committed start
-    command must bind `::` (dual-stack)."""
+def test_start_commands_use_portable_launcher():
+    """Railway probes over IPv6 (0.0.0.0 is unreachable to it) while IPv4-only
+    environments crash on a hard-coded `::` bind — so every committed start
+    command must go through main.py's runtime host detection, never a
+    hard-coded uvicorn --host."""
     import json
     import pathlib
 
     root = pathlib.Path(app_module.__file__).parent
-    assert "--host ::" in (root / "Procfile").read_text()
-    assert "--host ::" in (root / "Dockerfile").read_text()
+    assert "python main.py" in (root / "Procfile").read_text()
+    assert '"main.py"' in (root / "Dockerfile").read_text()
     rj = json.loads((root / "railway.json").read_text())
-    assert "--host ::" in rj["deploy"]["startCommand"]
+    assert rj["deploy"]["startCommand"] == "python main.py"
+
+
+def test_pick_bind_host_prefers_ipv6_and_falls_back(monkeypatch):
+    import socket as socket_module
+
+    import main as main_module
+
+    # Explicit override always wins.
+    monkeypatch.setenv("UVICORN_HOST", "127.0.0.1")
+    assert main_module.pick_bind_host() == "127.0.0.1"
+    monkeypatch.delenv("UVICORN_HOST")
+
+    # No IPv6 support compiled in → IPv4.
+    monkeypatch.setattr(socket_module, "has_ipv6", False)
+    assert main_module.pick_bind_host() == "0.0.0.0"
+
+    # IPv6 "supported" but the stack refuses to bind (disabled at OS level,
+    # as in this sandbox / some containers) → IPv4 fallback, not a crash.
+    monkeypatch.setattr(socket_module, "has_ipv6", True)
+
+    class _RefusingSocket:
+        def __init__(self, *a, **kw):
+            pass
+
+        def bind(self, addr):
+            raise OSError("cannot assign requested address")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(socket_module, "socket", _RefusingSocket)
+    assert main_module.pick_bind_host() == "0.0.0.0"
