@@ -10,6 +10,7 @@ Two invariants keep deploys promotable on platforms with boot health checks:
    quickly, delegating the heavy init to a background thread.
 """
 
+import asyncio
 import time
 
 from fastapi.testclient import TestClient
@@ -26,23 +27,75 @@ def test_root_route_answers_200():
 
 def test_startup_handler_returns_fast(monkeypatch):
     """The handler must return in well under a second even if the underlying
-    init work is slow — i.e. the slow work runs on a background thread."""
+    init work is slow — i.e. the slow work is dispatched off the handler
+    (executor + background task), not awaited inline."""
     slow_called = {"n": 0}
 
     def _slow_init_db():
         slow_called["n"] += 1
-        time.sleep(5)
+        time.sleep(2)
 
     monkeypatch.setattr(app_module, "init_db", _slow_init_db)
 
-    start = time.monotonic()
-    app_module.startup_checks()
-    elapsed = time.monotonic() - start
+    async def _run() -> float:
+        start = time.monotonic()
+        await app_module.startup_checks()
+        elapsed = time.monotonic() - start
+        # Give the background task a beat to dispatch into the executor.
+        await asyncio.sleep(0.3)
+        return elapsed
+
+    elapsed = asyncio.run(_run())
 
     assert elapsed < 1.0, (
         f"startup_checks blocked for {elapsed:.1f}s — uvicorn cannot bind until "
         "it returns, and platform health checks will kill the deploy"
     )
-    # Give the daemon thread a beat to prove the work was actually dispatched.
-    time.sleep(0.2)
     assert slow_called["n"] == 1
+
+
+def test_start_commands_use_portable_launcher():
+    """Railway probes over IPv6 (0.0.0.0 is unreachable to it) while IPv4-only
+    environments crash on a hard-coded `::` bind — so every committed start
+    command must go through main.py's runtime host detection, never a
+    hard-coded uvicorn --host."""
+    import json
+    import pathlib
+
+    root = pathlib.Path(app_module.__file__).parent
+    assert "python main.py" in (root / "Procfile").read_text()
+    assert '"main.py"' in (root / "Dockerfile").read_text()
+    rj = json.loads((root / "railway.json").read_text())
+    assert rj["deploy"]["startCommand"] == "python main.py"
+
+
+def test_pick_bind_host_prefers_ipv6_and_falls_back(monkeypatch):
+    import socket as socket_module
+
+    import main as main_module
+
+    # Explicit override always wins.
+    monkeypatch.setenv("UVICORN_HOST", "127.0.0.1")
+    assert main_module.pick_bind_host() == "127.0.0.1"
+    monkeypatch.delenv("UVICORN_HOST")
+
+    # No IPv6 support compiled in → IPv4.
+    monkeypatch.setattr(socket_module, "has_ipv6", False)
+    assert main_module.pick_bind_host() == "0.0.0.0"
+
+    # IPv6 "supported" but the stack refuses to bind (disabled at OS level,
+    # as in this sandbox / some containers) → IPv4 fallback, not a crash.
+    monkeypatch.setattr(socket_module, "has_ipv6", True)
+
+    class _RefusingSocket:
+        def __init__(self, *a, **kw):
+            pass
+
+        def bind(self, addr):
+            raise OSError("cannot assign requested address")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(socket_module, "socket", _RefusingSocket)
+    assert main_module.pick_bind_host() == "0.0.0.0"
