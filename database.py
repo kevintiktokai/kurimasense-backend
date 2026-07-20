@@ -6,7 +6,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+import threading as _threading
+
 _POOL: ThreadedConnectionPool | None = None
+_POOL_INIT_LOCK = _threading.Lock()
 
 class _PooledConn:
     """
@@ -52,14 +55,20 @@ def _get_pool() -> ThreadedConnectionPool | None:
         print("WARNING: DATABASE_URL not set.")
         return None
 
-    try:
-        # Increased from 10 → 20 to handle concurrent AI insight requests
-        # (each /ai/insights call uses up to 5 connections with current patterns)
-        _POOL = ThreadedConnectionPool(minconn=2, maxconn=20, dsn=db_url)
-        return _POOL
-    except Exception as e:
-        print(f"CRITICAL: DB Pool init failed: {e}")
-        return None
+    # Startup init now runs in a background thread while requests arrive, so
+    # pool creation can genuinely race. The lock makes it single-flight; the
+    # re-check inside handles the loser of the race.
+    with _POOL_INIT_LOCK:
+        if _POOL is not None:
+            return _POOL
+        try:
+            # Increased from 10 → 20 to handle concurrent AI insight requests
+            # (each /ai/insights call uses up to 5 connections with current patterns)
+            _POOL = ThreadedConnectionPool(minconn=2, maxconn=20, dsn=db_url)
+            return _POOL
+        except Exception as e:
+            print(f"CRITICAL: DB Pool init failed: {e}")
+            return None
 
 def get_db_connection():
     try:

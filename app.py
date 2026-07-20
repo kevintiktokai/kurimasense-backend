@@ -429,6 +429,14 @@ def _invalidate_field_caches(field_id: str, user_id: Optional[str] = None):
             _response_cache.pop(k, None)
 
 
+@app.get("/")
+def root():
+    """Minimal root response. Railway Express health-probes GET / (not a
+    configurable path), so the root must answer 200 for deploys to promote;
+    it also gives humans hitting the bare API URL something sensible."""
+    return {"service": "kurimasense-api", "status": "ok"}
+
+
 @app.get("/health")
 def health_check():
     """Public liveness/readiness probe (uptime monitors, keep-warm ping).
@@ -581,22 +589,36 @@ def db_schema_check(_admin: bool = Depends(require_admin_token)):
 
 @app.on_event("startup")
 def startup_checks():
-    """Run startup validations and initialize database."""
-    # Validate environment variables
-    validate_environment()
-    # Initialize database tables
-    init_db()
-    # Notification subsystem: self-heal its tables, then start the in-process
-    # scheduler (advisory-locked, so multi-instance deploys stay single-flight;
-    # disable with NOTIFICATIONS_SCHEDULER_ENABLED=false to drive it from cron
-    # via POST /notifications/admin/run-cycle instead).
-    try:
-        from services.notifications.repository import ensure_schema as ensure_notifications_schema
-        from services.notifications.scheduler import start_scheduler
-        ensure_notifications_schema()
-        start_scheduler()
-    except Exception as e:
-        print(f"WARNING: notification subsystem init failed: {e}")
+    """Kick off startup validations and DB initialization WITHOUT blocking.
+
+    Uvicorn only binds the listen socket after FastAPI's startup handlers
+    return, and platform health checks race that bind: Railway killed a deploy
+    as "unhealthy — connection refused" because init_db()'s schema self-heal
+    (dozens of DDL round trips to Supabase) plus the notification init exceeded
+    the ~40s probe window. None of this work needs to gate serving — in a
+    deployed environment the schema already exists — so it runs in a daemon
+    thread and the server starts accepting connections immediately.
+    """
+    def _init():
+        try:
+            # Validate environment variables
+            validate_environment()
+            # Initialize database tables
+            init_db()
+            # Notification subsystem: self-heal its tables, then start the
+            # in-process scheduler (advisory-locked, so multi-instance deploys
+            # stay single-flight; disable with
+            # NOTIFICATIONS_SCHEDULER_ENABLED=false to drive it from cron via
+            # POST /notifications/admin/run-cycle instead).
+            from services.notifications.repository import ensure_schema as ensure_notifications_schema
+            from services.notifications.scheduler import start_scheduler
+            ensure_notifications_schema()
+            start_scheduler()
+            print("✅ Background startup init complete.")
+        except Exception as e:
+            print(f"WARNING: background startup init failed: {e}")
+
+    threading.Thread(target=_init, name="startup-init", daemon=True).start()
 
 @app.get("/fields")
 def get_fields(user_id: str = Depends(verify_token)):
