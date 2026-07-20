@@ -10,6 +10,7 @@ Two invariants keep deploys promotable on platforms with boot health checks:
    quickly, delegating the heavy init to a background thread.
 """
 
+import asyncio
 import time
 
 from fastapi.testclient import TestClient
@@ -26,23 +27,42 @@ def test_root_route_answers_200():
 
 def test_startup_handler_returns_fast(monkeypatch):
     """The handler must return in well under a second even if the underlying
-    init work is slow — i.e. the slow work runs on a background thread."""
+    init work is slow — i.e. the slow work is dispatched off the handler
+    (executor + background task), not awaited inline."""
     slow_called = {"n": 0}
 
     def _slow_init_db():
         slow_called["n"] += 1
-        time.sleep(5)
+        time.sleep(2)
 
     monkeypatch.setattr(app_module, "init_db", _slow_init_db)
 
-    start = time.monotonic()
-    app_module.startup_checks()
-    elapsed = time.monotonic() - start
+    async def _run() -> float:
+        start = time.monotonic()
+        await app_module.startup_checks()
+        elapsed = time.monotonic() - start
+        # Give the background task a beat to dispatch into the executor.
+        await asyncio.sleep(0.3)
+        return elapsed
+
+    elapsed = asyncio.run(_run())
 
     assert elapsed < 1.0, (
         f"startup_checks blocked for {elapsed:.1f}s — uvicorn cannot bind until "
         "it returns, and platform health checks will kill the deploy"
     )
-    # Give the daemon thread a beat to prove the work was actually dispatched.
-    time.sleep(0.2)
     assert slow_called["n"] == 1
+
+
+def test_start_commands_bind_dual_stack():
+    """Railway probes over IPv6; an 0.0.0.0 bind is unreachable to it (the
+    'app running but every probe refused' incident). Every committed start
+    command must bind `::` (dual-stack)."""
+    import json
+    import pathlib
+
+    root = pathlib.Path(app_module.__file__).parent
+    assert "--host ::" in (root / "Procfile").read_text()
+    assert "--host ::" in (root / "Dockerfile").read_text()
+    rj = json.loads((root / "railway.json").read_text())
+    assert "--host ::" in rj["deploy"]["startCommand"]

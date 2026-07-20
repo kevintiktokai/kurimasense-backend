@@ -13,6 +13,9 @@ COPY . .
 
 # EXPOSE is documentation only. The platform (Railway/Render) injects $PORT and
 # the app must bind to it; ${PORT:-8000} keeps local `docker run` working too.
+# Host `::` binds dual-stack (IPv6 + IPv4-mapped): Railway's health prober and
+# private network connect over IPv6, so an 0.0.0.0 (IPv4-only) bind is
+# unreachable to them — the app runs but every probe gets connection refused.
 EXPOSE 8000
 
-CMD ["sh", "-c", "uvicorn app:app --host 0.0.0.0 --port ${PORT:-8000}"]
+CMD ["sh", "-c", "uvicorn app:app --host :: --port ${PORT:-8000}"]

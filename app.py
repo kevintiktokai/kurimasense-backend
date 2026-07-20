@@ -588,37 +588,46 @@ def db_schema_check(_admin: bool = Depends(require_admin_token)):
         return {"status": "error", "message": str(e)}
 
 @app.on_event("startup")
-def startup_checks():
+async def startup_checks():
     """Kick off startup validations and DB initialization WITHOUT blocking.
 
     Uvicorn only binds the listen socket after FastAPI's startup handlers
     return, and platform health checks race that bind: Railway killed a deploy
-    as "unhealthy — connection refused" because init_db()'s schema self-heal
-    (dozens of DDL round trips to Supabase) plus the notification init exceeded
-    the ~40s probe window. None of this work needs to gate serving — in a
-    deployed environment the schema already exists — so it runs in a daemon
-    thread and the server starts accepting connections immediately.
+    as "unhealthy" because init_db()'s schema self-heal (dozens of DDL round
+    trips to Supabase) plus the notification init could exceed the probe
+    window. None of this work needs to gate serving — in a deployed
+    environment the schema already exists — so the handler returns
+    immediately and the init runs as a background task: the blocking DB work
+    in the default thread executor, then start_scheduler() back on the event
+    loop (it creates an asyncio task, so it MUST run on the loop — running it
+    inside the worker thread raised "There is no current event loop").
     """
-    def _init():
+    loop = asyncio.get_running_loop()
+
+    def _blocking_init():
+        # Validate environment variables
+        validate_environment()
+        # Initialize database tables
+        init_db()
+        # Notification tables self-heal (honors DB_SELF_HEAL_SCHEMA).
+        from services.notifications.repository import ensure_schema as ensure_notifications_schema
+        ensure_notifications_schema()
+
+    async def _init():
         try:
-            # Validate environment variables
-            validate_environment()
-            # Initialize database tables
-            init_db()
-            # Notification subsystem: self-heal its tables, then start the
-            # in-process scheduler (advisory-locked, so multi-instance deploys
-            # stay single-flight; disable with
+            await loop.run_in_executor(None, _blocking_init)
+            # In-process notification scheduler (advisory-locked, so
+            # multi-instance deploys stay single-flight; disable with
             # NOTIFICATIONS_SCHEDULER_ENABLED=false to drive it from cron via
-            # POST /notifications/admin/run-cycle instead).
-            from services.notifications.repository import ensure_schema as ensure_notifications_schema
+            # POST /notifications/admin/run-cycle instead). Must be called on
+            # the event loop.
             from services.notifications.scheduler import start_scheduler
-            ensure_notifications_schema()
             start_scheduler()
             print("✅ Background startup init complete.")
         except Exception as e:
             print(f"WARNING: background startup init failed: {e}")
 
-    threading.Thread(target=_init, name="startup-init", daemon=True).start()
+    asyncio.create_task(_init())
 
 @app.get("/fields")
 def get_fields(user_id: str = Depends(verify_token)):
