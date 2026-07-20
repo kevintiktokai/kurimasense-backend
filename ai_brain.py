@@ -316,12 +316,13 @@ class LLMRouter:
         self.anthropic_key = os.getenv("ANTHROPIC_API_KEY")
         self.google_key = os.getenv("GOOGLE_AI_KEY")
         
-        # Initialize available clients
-        self.openai_client = None
-        self.openai_async_client = None
-        if self.openai_key and "your_" not in self.openai_key:
-            self.openai_client = OpenAI(api_key=self.openai_key)
-            self.openai_async_client = AsyncOpenAI(api_key=self.openai_key)
+        # Chat/vision clients route through the active text provider (OpenRouter
+        # when OPENROUTER_API_KEY is set, else direct OpenAI). Attribute names
+        # kept for call-site compatibility — they are the *text* clients now,
+        # not necessarily OpenAI.
+        from llm_models import make_text_client
+        self.openai_client = make_text_client(async_=False)
+        self.openai_async_client = make_text_client(async_=True)
     
     def select_model(self,
                      has_image: bool = False,
@@ -365,8 +366,20 @@ class LLMRouter:
         if response_format:
             kwargs["response_format"] = response_format
 
-        kwargs = prepare_chat_params(kwargs)
-        response = await self.openai_async_client.chat.completions.create(**kwargs)
+        try:
+            response = await self.openai_async_client.chat.completions.create(
+                **prepare_chat_params(kwargs))
+        except Exception:
+            # Degrade to direct OpenAI (equivalent tier model) if the active
+            # provider (e.g. OpenRouter) errors — an outage shouldn't fail the
+            # request when an OPENAI_API_KEY is available as backstop.
+            from llm_models import use_openrouter, make_openai_client, openai_fallback_model
+            fb = make_openai_client(async_=True) if use_openrouter() else None
+            if fb is None:
+                raise
+            fb_kwargs = dict(kwargs)
+            fb_kwargs["model"] = openai_fallback_model(model)
+            response = await fb.chat.completions.create(**prepare_chat_params(fb_kwargs))
         return response.choices[0].message.content or ""
 
     async def generate_stream(self,

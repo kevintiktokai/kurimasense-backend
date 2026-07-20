@@ -1155,15 +1155,12 @@ async def generate_ai_recommendations(
     """
     import os
     try:
-        from openai import OpenAI
-        
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key or "your_" in api_key or "placeholder" in api_key:
-            # Fallback to static recommendations if no API key
+        from llm_models import have_text_provider, text_chat_completion
+
+        if not have_text_provider():
+            # Fallback to static recommendations if no LLM provider is configured
             return get_static_recommendations(alert_type, alert_data)
-        
-        client = OpenAI(api_key=api_key)
-        
+
         # Build context for the AI
         context = f"""You are a professional agronomist for the KurimaSense platform.
 Generate 3-4 specific, actionable recommendations for a farmer facing {alert_type} weather conditions.
@@ -1198,7 +1195,7 @@ Requirements:
 
 Return ONLY a JSON array of 3-4 recommendation strings, nothing else."""
 
-        response = client.chat.completions.create(
+        response = text_chat_completion(
             model=CHAT_MODEL,
             messages=[{"role": "user", "content": context}],
             response_format={"type": "json_object"},

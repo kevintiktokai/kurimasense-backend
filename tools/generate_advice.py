@@ -4,8 +4,7 @@ import sys
 from datetime import datetime
 
 from dotenv import load_dotenv
-from openai import OpenAI
-from llm_models import CHAT_MODEL
+from llm_models import CHAT_MODEL, VISION_MODEL, have_text_provider, text_chat_completion
 
 
 REQUEST_TIMEOUT_SECONDS = 30
@@ -62,9 +61,8 @@ def _build_prompt(seed, soil, tool_status, knowledge, language, region=None):
 
 def main():
     load_dotenv()
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key or "your_" in api_key:
-        sys.stdout.write(json.dumps(_error("OPENAI_API_KEY missing or placeholder")))
+    if not have_text_provider():
+        sys.stdout.write(json.dumps(_error("No LLM provider configured (OPENROUTER_API_KEY or OPENAI_API_KEY)")))
         return
 
     try:
@@ -77,7 +75,6 @@ def main():
         retrieved_context = payload.get("retrieved_context")
         region_used = payload.get("region_used")
 
-        client = OpenAI(api_key=api_key)
         language = payload.get("language") or seed.get("language")
         
         # Fallback to local file if no RAG context
@@ -209,12 +206,16 @@ def main():
         else:
              messages.append({"role": "user", "content": prompt})
 
+        # An image turn needs a multimodal model — under OpenRouter CHAT_MODEL is
+        # DeepSeek (text-only), so route image requests to the vision tier.
+        advice_model = VISION_MODEL if image_data else CHAT_MODEL
+
         response = None
         last_error = None
         for _ in range(RETRY_ATTEMPTS):
             try:
-                response = client.chat.completions.create(
-                    model=CHAT_MODEL,
+                response = text_chat_completion(
+                    model=advice_model,
                     messages=messages,
                     response_format={"type": "json_object"},
                     temperature=0.2,
