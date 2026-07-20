@@ -1,5 +1,9 @@
 FROM python:3.11-slim
 
+# Flush prints/logs immediately — buffered stdout made the Railway deploy
+# failures look like silent hangs (no output for the whole boot window).
+ENV PYTHONUNBUFFERED=1
+
 WORKDIR /app
 
 COPY requirements.txt ./requirements.txt
