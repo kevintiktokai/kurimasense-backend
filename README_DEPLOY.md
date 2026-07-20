@@ -59,26 +59,43 @@ Click on "Settings" > "Environment Variables" and add:
 
 ---
 
-## 2. Backend: Render Setup
+## 2. Backend: Render / Railway Setup
 **Repository**: [kevintiktokai/kurimasense-backend](https://github.com/kevintiktokai/kurimasense-backend)
 
 ### Configuration
-1. Create a "Web Service" on Render.
-2. **Runtime**: Python 3
-3. **Build Command**: `pip install -r requirements.txt`
-4. **Start Command**: `uvicorn app:app --host 0.0.0.0 --port $PORT`
+- **Render**: create a Web Service · Runtime Python 3 · Build `pip install -r requirements.txt`
+  · Start `uvicorn app:app --host 0.0.0.0 --port $PORT`.
+- **Railway**: New Project → Deploy from GitHub repo. Railway auto-detects the
+  `Dockerfile` (`railway.json` pins the healthcheck to `/health`). The Dockerfile
+  binds to the injected `$PORT`, so no start command is needed. Pick the region
+  **closest to your Supabase project** — every request makes several DB round
+  trips, so backend↔DB latency dominates.
 
 ### Environment Variables
-Add these in the "Environment" tab:
-- `OPENAI_API_KEY`: Your OpenAI API Key for the Agronomist engine.
-- `DATABASE_URL`: **IMPORTANT: Use the IPv4 Pooler URL**
-  > [!WARNING]
-  > Render does not support IPv6. In Supabase Settings > Database, look for the **Connection Pooling** section and use the **Pooler** URL (usually port 6543 or with a hostname like `pooler.supabase.com`). 
-  > DO NOT use the "Direct Connection" URL (`db.xxxx.supabase.co`) as it will result in a "Network is unreachable" error.
-- `CORS_ORIGINS`: Your Vercel frontend URL (e.g., `https://kurima-sense.vercel.app`)
+Add these in the platform's Environment/Variables tab:
+
+**LLM provider** (choose one primary; keep an OpenAI key regardless — see note):
+- `OPENROUTER_API_KEY`: routes the chat + vision tiers through OpenRouter
+  (default text tier: DeepSeek, materially cheaper). When set, it is the primary
+  provider and OpenAI is used only as an automatic fallback.
+- `OPENAI_API_KEY`: **still required even with OpenRouter set** — RAG embeddings
+  (`text-embedding-3-small`) and voice (`audio.speech`) have no OpenRouter
+  equivalent, and it is the chat fallback if OpenRouter errors.
+- Optional overrides: `OPENROUTER_CHAT_MODEL` (default `deepseek/deepseek-chat`),
+  `OPENROUTER_DEEP_MODEL`, `OPENROUTER_VISION_MODEL` (default `openai/gpt-4o` —
+  must be multimodal), `OPENROUTER_SITE_URL`/`OPENROUTER_APP_NAME` (attribution).
+
+**Core:**
+- `DATABASE_URL`: **Use the IPv4 Pooler URL** (Supabase → Connection Pooling,
+  port 6543). The direct `db.xxxx.supabase.co` URL fails with "Network is
+  unreachable" on Render (IPv6). Railway supports IPv6 but the pooler is still
+  recommended for connection limits.
+- `CORS_ORIGINS`: Your Vercel frontend URL (e.g., `https://kurima-sense.vercel.app`).
+- `ADMIN_TOKEN`: enables the admin + `/health/detail` endpoints.
 - `ALLOW_MOCK_FALLBACK`: leave **unset** in production. With `DATABASE_URL` set, a
-  database outage returns an honest 503 instead of mock demo data. Mock mode only
-  activates automatically in local dev (no `DATABASE_URL`), or with an explicit `true`.
+  database outage returns an honest 503 instead of mock demo data.
+- `DB_SELF_HEAL_SCHEMA`: leave unset (boot-time schema self-heal on) unless
+  running the migration-managed NOBYPASSRLS role — see `docs/rls_force_runbook.md`.
 
 ---
 

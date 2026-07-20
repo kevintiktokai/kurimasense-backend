@@ -3,8 +3,7 @@ import os
 import sys
 
 from dotenv import load_dotenv
-from openai import OpenAI
-from llm_models import CHAT_MODEL
+from llm_models import CHAT_MODEL, have_text_provider, text_chat_completion
 
 
 def _error(message):
@@ -20,9 +19,8 @@ def _load_payload():
 
 def main():
     load_dotenv()
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key or "your_" in api_key:
-        sys.stdout.write(json.dumps(_error("OPENAI_API_KEY missing or placeholder")))
+    if not have_text_provider():
+        sys.stdout.write(json.dumps(_error("No LLM provider configured (OPENROUTER_API_KEY or OPENAI_API_KEY)")))
         return
 
     try:
@@ -32,13 +30,12 @@ def main():
             sys.stdout.write(json.dumps({"status": "ok", "data": {"code": "en"}}))
             return
 
-        client = OpenAI(api_key=api_key)
         prompt = (
             "Detect the language of the text and respond with JSON containing "
             "code (BCP-47 or ISO 639-1) and name. Example: {\"code\":\"sw\",\"name\":\"Swahili\"}. "
             "Text:\n" + text
         )
-        response = client.chat.completions.create(
+        response = text_chat_completion(
             model=CHAT_MODEL,
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
