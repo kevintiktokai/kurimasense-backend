@@ -152,6 +152,10 @@ app.include_router(portfolio_router)
 from season_routes import router as season_router  # noqa: E402
 app.include_router(season_router)
 
+# Zone-level field analysis (sections): GET/POST /fields/{id}/sections[...].
+from section_routes import router as section_router  # noqa: E402
+app.include_router(section_router)
+
 # Outcome loop (Sprint 1): harvest CRUD, calibration read, admin recompute.
 from outcome_routes import router as outcome_router  # noqa: E402
 app.include_router(outcome_router)
