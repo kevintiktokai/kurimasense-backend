@@ -1,0 +1,23 @@
+# Render Blueprint — canonical, version-controlled service config so the
+# start command can't drift by hand-editing the dashboard (the July 2026
+# "changed the start command and it stopped binding" incident).
+#
+# Render is IPv4 and injects $PORT, so uvicorn binds 0.0.0.0:$PORT directly —
+# this is the config that ran healthy on Render for months. (The portable
+# `python main.py` launcher also works, but the explicit uvicorn line removes
+# all doubt on Render specifically.)
+#
+# To adopt on an EXISTING service: Dashboard → the service → Settings → set the
+# Start Command to exactly the `startCommand` below. To create a fresh service:
+# New → Blueprint → point at this repo.
+services:
+  - type: web
+    name: kurimasense-backend
+    runtime: python
+    plan: starter            # free tier spins down; starter stays warm
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeploy: true
+    # Secrets (DATABASE_URL, OPENAI_API_KEY, OPENROUTER_API_KEY, SUPABASE_*,
+    # CORS_ORIGINS, ADMIN_TOKEN, etc.) are set in the dashboard, not here.
