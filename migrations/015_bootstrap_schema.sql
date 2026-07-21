@@ -226,6 +226,27 @@ CREATE INDEX IF NOT EXISTS idx_field_activities_user    ON field_activities(user
 CREATE INDEX IF NOT EXISTS idx_field_assignments_assignee ON field_assignments(assignee_user_id) WHERE unassigned_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_field_assignments_field    ON field_assignments(field_id, assigned_at DESC);
 
+-- Zone-level satellite analysis (field sections; matches migration 018)
+CREATE TABLE IF NOT EXISTS field_section_analysis (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    field_id UUID NOT NULL REFERENCES fields(id) ON DELETE CASCADE,
+    tenant_id UUID,
+    batch_id UUID NOT NULL,
+    grid_size INTEGER NOT NULL DEFAULT 2,
+    section_index INTEGER NOT NULL,
+    section_label TEXT,
+    polygon JSONB,
+    centroid JSONB,
+    area_share REAL,
+    ndvi DOUBLE PRECISION,
+    evi DOUBLE PRECISION,
+    cloud_cover DOUBLE PRECISION,
+    status TEXT DEFAULT 'ok',
+    error TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_section_analysis_field ON field_section_analysis(field_id, grid_size, created_at DESC);
+
 -- ── Notification subsystem (from services/notifications/repository.py) ──
 
 CREATE TABLE IF NOT EXISTS notifications (

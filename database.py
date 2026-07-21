@@ -301,6 +301,29 @@ def init_db():
                 )
             """)
 
+            # Zone-level satellite analysis (field sections, migration 018) —
+            # one row per zone per batch. Self-heals like the tables above.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS field_section_analysis (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    field_id UUID NOT NULL REFERENCES fields(id) ON DELETE CASCADE,
+                    tenant_id UUID,
+                    batch_id UUID NOT NULL,
+                    grid_size INTEGER NOT NULL DEFAULT 2,
+                    section_index INTEGER NOT NULL,
+                    section_label TEXT,
+                    polygon JSONB,
+                    centroid JSONB,
+                    area_share REAL,
+                    ndvi DOUBLE PRECISION,
+                    evi DOUBLE PRECISION,
+                    cloud_cover DOUBLE PRECISION,
+                    status TEXT DEFAULT 'ok',
+                    error TEXT,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                )
+            """)
+
             # Institutional operations tables (migration 013) — team invites,
             # agronomist field activities, and field assignments. Self-heal on
             # boot like the tables above; the member-role/status ALTERs are also
@@ -378,6 +401,7 @@ def init_db():
 
                 CREATE INDEX IF NOT EXISTS idx_soil_profiles_field   ON soil_profiles(field_id);
                 CREATE INDEX IF NOT EXISTS idx_soil_profiles_refresh ON soil_profiles(refresh_after);
+                CREATE INDEX IF NOT EXISTS idx_section_analysis_field ON field_section_analysis(field_id, grid_size, created_at DESC);
 
                 CREATE INDEX IF NOT EXISTS idx_team_invites_tenant      ON team_invites(tenant_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_field_activities_field   ON field_activities(field_id, visit_date DESC);
