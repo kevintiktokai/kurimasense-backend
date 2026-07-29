@@ -59,8 +59,33 @@ def _get_http() -> httpx.AsyncClient:
         _http = httpx.AsyncClient(timeout=httpx.Timeout(connect=5.0, read=15.0, write=10.0, pool=10.0))
     return _http
 
+# Grid size for weather cache keys, in degrees. 0.05 deg is ~5.5 km — far finer
+# than any weather model's own resolution (Open-Meteo's best is ~1-11 km), so
+# snapping to it costs no meaningful accuracy.
+#
+# It used to round to 3 decimals (~110 m), which meant every field had its own
+# key and NO two fields ever shared a fetch. With ~40 fields that multiplied
+# upstream load ~40x against a shared Render egress IP, which is what earned
+# the sustained 429s — and every 429 then cost seconds of retry/backoff inside
+# the request. Neighbouring fields on the same farm now share one fetch.
+_WEATHER_GRID_DEG = float(os.getenv("WEATHER_CACHE_GRID_DEG", "0.05"))
+
+
+def _snap_coords(lat: float, lon: float) -> Tuple[float, float]:
+    """Snap coordinates to the weather grid.
+
+    Applied at the public entry points so the value actually FETCHED and the key
+    it is cached under describe the same point — otherwise a cache entry would
+    hold data for whichever field happened to ask first.
+    """
+    def snap(v: float) -> float:
+        return round(round(v / _WEATHER_GRID_DEG) * _WEATHER_GRID_DEG, 4)
+    return snap(lat), snap(lon)
+
+
 def _cache_key(lat: float, lon: float) -> str:
-    return f"{round(lat,3)}:{round(lon,3)}"
+    slat, slon = _snap_coords(lat, lon)
+    return f"{slat}:{slon}"
 
 
 def _join_params(params: Dict[str, Any]) -> Dict[str, str]:
@@ -162,6 +187,7 @@ async def get_current_weather(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON
     Get current weather conditions for a location.
     Returns: temperature, humidity, wind speed/direction, precipitation, UV index, weather code
     """
+    lat, lon = _snap_coords(lat, lon)  # share one fetch per ~5km grid cell
     async def _produce():
         params = {
             "latitude": lat,
@@ -208,6 +234,7 @@ async def get_hourly_forecast(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON
     """
     Get hourly forecast for next N hours (max 168 = 7 days).
     """
+    lat, lon = _snap_coords(lat, lon)  # share one fetch per ~5km grid cell
     hours = min(hours, 168)
 
     async def _produce():
@@ -254,6 +281,7 @@ async def get_daily_forecast(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON,
     """
     Get daily forecast for next N days (max 16).
     """
+    lat, lon = _snap_coords(lat, lon)  # share one fetch per ~5km grid cell
     days = min(days, 16)
 
     async def _produce():
@@ -313,6 +341,7 @@ async def get_agricultural_metrics(lat: float = DEFAULT_LAT, lon: float = DEFAUL
     """
     Get agricultural-specific metrics: soil moisture, soil temperature, evapotranspiration.
     """
+    lat, lon = _snap_coords(lat, lon)  # share one fetch per ~5km grid cell
     return await _cached(f"agri:{_cache_key(lat, lon)}", _TTL_AGRI,
                          lambda: _produce_agricultural_metrics(lat, lon))
 
@@ -405,6 +434,7 @@ async def get_daily_history(lat: float, lon: float, start_date: str, end_date: s
     archive data for past days never changes, so a cache hit is authoritative and
     a transient upstream failure degrades to stale rather than raising.
     """
+    lat, lon = _snap_coords(lat, lon)  # share one fetch per ~5km grid cell
     key = f"history:{round(lat, 3)}:{round(lon, 3)}:{start_date}:{end_date}"
 
     async def _produce():
@@ -449,6 +479,7 @@ async def get_water_balance_series(
     ``{"date", "et0", "precip", "precip_probability", "tmax", "tmin"}``,
     split on today. Cached at forecast TTL through the shared resilient layer.
     """
+    lat, lon = _snap_coords(lat, lon)  # share one fetch per ~5km grid cell
     past_days = max(0, min(past_days, 60))
     forecast_days = max(1, min(forecast_days, 16))
     key = f"waterbal:{_cache_key(lat, lon)}:{past_days}:{forecast_days}"
@@ -526,6 +557,7 @@ async def calculate_gdd(
     from transplant_date, not planting_date. The nursery period (4-6 weeks) is not
     counted towards field GDD accumulation.
     """
+    lat, lon = _snap_coords(lat, lon)  # share one fetch per ~5km grid cell
     # Transplanted crops - use transplant_date instead of planting_date
     use_transplant_date = is_transplanted or (crop_type and crop_type in _CANONICAL_TRANSPLANTED)
     
@@ -635,6 +667,7 @@ async def get_weather_alerts(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON)
     Checks for: frost risk, heat stress, high winds, heavy rain, drought conditions.
     Uses AI-backed professional agronomist recommendations.
     """
+    lat, lon = _snap_coords(lat, lon)  # share one fetch per ~5km grid cell
     forecast = await get_daily_forecast(lat, lon, days=7)
     hourly = await get_hourly_forecast(lat, lon, hours=72)
     
@@ -761,6 +794,7 @@ async def get_spray_window(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON, h
     - Temperature: 15-28°C
     - Humidity: 40-80%
     """
+    lat, lon = _snap_coords(lat, lon)  # share one fetch per ~5km grid cell
     hourly_data = await get_hourly_forecast(lat, lon, hours=hours)
     hourly = hourly_data.get("hourly", [])
     
@@ -852,6 +886,7 @@ async def get_historical_comparison(lat: float = DEFAULT_LAT, lon: float = DEFAU
     Compare current conditions with historical averages for the same period.
     Uses data from 1 year ago for comparison (more relevant for year-over-year performance).
     """
+    lat, lon = _snap_coords(lat, lon)  # share one fetch per ~5km grid cell
     current = await get_current_weather(lat, lon)
     daily = await get_daily_forecast(lat, lon, days=7)
     

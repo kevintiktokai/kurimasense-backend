@@ -11,6 +11,7 @@ The intelligent core of KurimaSense that manages:
 This module replaces the simple router with a context-aware, agentic brain.
 """
 
+import time
 import os
 import json
 import hashlib
@@ -33,6 +34,53 @@ from crop_profiles import (
 )
 
 load_dotenv()
+
+
+# ---------------------------------------------------------------------------
+# Daily-briefing cache
+# ---------------------------------------------------------------------------
+# `generate_ai_priorities_and_risks` was called, UNCACHED, on every single
+# GET /field/{id}/state. The dashboard fans out to every field at once, so one
+# dashboard load fired one ~1000-token LLM completion PER FIELD — the burst of
+# parallel OpenRouter calls visible in the production logs. It was both the
+# largest slice of the 131-212s request times and a direct, repeated bill for
+# an answer that had not changed.
+#
+# The output is explicitly a "Daily Briefing": it is a function of crop,
+# variety, growth stage and rough weather, none of which move minute to minute.
+# So it is cached per semantic context, with single-flight so a fan-out of N
+# fields collapses onto ONE upstream call instead of N.
+_BRIEFING_TTL = float(os.getenv("AI_BRIEFING_TTL_SECONDS", 6 * 60 * 60))  # 6h
+_briefing_cache: Dict[str, Tuple[float, Any]] = {}
+_briefing_inflight: Dict[str, "asyncio.Future"] = {}
+_BRIEFING_CACHE_MAX = 2000
+
+
+def _briefing_cache_key(ctx: Dict[str, Any]) -> str:
+    """Stable key over the inputs that actually change the answer.
+
+    Weather is bucketed (temperature to the degree, humidity to 5%, rain to
+    1 mm) so ordinary sensor jitter does not invalidate an otherwise identical
+    briefing — without that, the cache would miss almost every time.
+    """
+    w = ctx.get("weather") or {}
+    vi = ctx.get("variety_info") or {}
+
+    def _bucket(v, step):
+        try:
+            return int(round(float(v) / step) * step)
+        except (TypeError, ValueError):
+            return None
+
+    parts = [
+        str(ctx.get("crop_type")), str(ctx.get("variety_name")),
+        str(ctx.get("stage_name")), str(ctx.get("days_since_planting")),
+        str(ctx.get("region")), str(vi.get("days_to_maturity")),
+        str(_bucket(w.get("temperature"), 1)),
+        str(_bucket(w.get("humidity"), 5)),
+        str(_bucket(w.get("precipitation"), 1)),
+    ]
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()[:32]
 
 
 class IntentType(Enum):
@@ -926,7 +974,47 @@ Respond with a JSON object:
         """
         Generate daily priorities (actions) and risk assessment using AI.
         Replaces hardcoded alert logic with dynamic, variety-aware intelligence.
+
+        Cached per semantic context with single-flight — see _briefing_cache_key.
+        A dashboard fan-out over N fields must cost ONE completion, not N.
         """
+        key = _briefing_cache_key(context_data)
+        now = time.time()
+
+        hit = _briefing_cache.get(key)
+        if hit and (now - hit[0]) < _BRIEFING_TTL:
+            return hit[1]
+
+        # Another request is already producing this exact briefing — wait for it
+        # rather than firing a duplicate completion.
+        inflight = _briefing_inflight.get(key)
+        if inflight is not None:
+            return await inflight
+
+        loop = asyncio.get_event_loop()
+        fut: "asyncio.Future" = loop.create_future()
+        fut.add_done_callback(lambda f: f.cancelled() or f.exception())
+        _briefing_inflight[key] = fut
+        try:
+            result = await self._generate_priorities_uncached(context_data)
+            # Never cache the degraded fallback — otherwise one upstream blip
+            # pins "Monitor Field" in front of the farmer for the whole TTL.
+            if result.get("risks") or len(result.get("actions") or []) > 1:
+                if len(_briefing_cache) >= _BRIEFING_CACHE_MAX:
+                    _briefing_cache.clear()
+                _briefing_cache[key] = (now, result)
+            if not fut.done():
+                fut.set_result(result)
+            return result
+        except Exception as e:
+            if not fut.done():
+                fut.set_exception(e)
+            raise
+        finally:
+            _briefing_inflight.pop(key, None)
+
+    async def _generate_priorities_uncached(self,
+                                            context_data: Dict[str, Any]) -> Dict[str, Any]:
         prompt = f"""
         You are the KurimaSense AI Agronomist for Zimbabwe.
         Generate a "Daily Briefing" for a farmer based on this specific field context.

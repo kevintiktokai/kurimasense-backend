@@ -99,7 +99,12 @@ def _patch_db(monkeypatch, conn):
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    # asyncio.run(), not get_event_loop().run_until_complete(): the latter
+    # relies on the deprecated implicit-loop-on-the-main-thread behaviour, so
+    # it raises "There is no current event loop" as soon as ANY earlier test in
+    # the session has used asyncio.run() (which clears the thread's loop on
+    # exit). That made this file's outcome depend on test ordering.
+    return asyncio.run(coro)
 
 
 # ---------------------------------------------------------------------------

@@ -730,26 +730,50 @@ async def build_field_state(
     Full pipeline: resolve access, gather data from every subsystem (best-effort),
     and assemble the canonical FieldState. Target < 300ms for a single field.
     """
-    field_row = resolve_access(field_id, requester_id, tenant_ids=tenant_ids, is_admin=is_admin)
+    import asyncio
+
+    # --- DB reads (BLOCKING — must not run on the event loop) -------------
+    # psycopg2 is a blocking driver. These six reads used to be issued directly
+    # from this `async def`, so each one stalled the WHOLE event loop for the
+    # duration of a network round trip to Supabase. That is fine for one
+    # request and catastrophic for the dashboard, which fans out to every
+    # field at once: the requests could not overlap, and — worse — a blocked
+    # loop also froze the in-flight Open-Meteo calls of every OTHER request,
+    # so their retry/backoff timers ran while nothing could progress. Measured
+    # in production at 131-212 SECONDS per /field/{id}/state (July 2026).
+    #
+    # Running them in a worker thread lets FastAPI's threadpool overlap them
+    # and, critically, keeps the loop free to drive the concurrent HTTP work.
+    def _sync_reads():
+        field_row = resolve_access(field_id, requester_id, tenant_ids=tenant_ids, is_admin=is_admin)
+
+        # RLS scope for the per-fetch connections below (FORCE-ready): the
+        # caller's tenants plus the resolved field's tenant (covers admins /
+        # officers whose membership list may not include it — access was
+        # already enforced above).
+        scope = {str(t) for t in (tenant_ids or [])}
+        if field_row.get("tenant_id"):
+            scope.add(str(field_row["tenant_id"]))
+        scope = sorted(scope)
+
+        return (
+            field_row,
+            scope,
+            _fetch_daily_logs(field_id, user_id=requester_id, tenant_ids=scope),
+            _fetch_input_count(field_id, user_id=requester_id, tenant_ids=scope),
+            _fetch_plan_items(field_id, requester_id, tenant_ids=scope),
+            _fetch_scouting(field_id),
+            # variety in tobacco DB?
+            _resolve_variety(field_row.get("crop_type"), field_row.get("variety")),
+        )
+
+    (
+        field_row, _scope_tenants, daily_logs, input_count,
+        plan_rows, scouting_rows, (variety_in_db, variety_days),
+    ) = await asyncio.to_thread(_sync_reads)
+
     crop_type = field_row.get("crop_type")
     variety_code = field_row.get("variety")
-
-    # RLS scope for the per-fetch connections below (FORCE-ready): the caller's
-    # tenants plus the resolved field's tenant (covers admins / officers whose
-    # membership list may not include it — access was already enforced above).
-    _scope_tenants = {str(t) for t in (tenant_ids or [])}
-    if field_row.get("tenant_id"):
-        _scope_tenants.add(str(field_row["tenant_id"]))
-    _scope_tenants = sorted(_scope_tenants)
-
-    # --- DB reads (sync, fast) -------------------------------------------
-    daily_logs = _fetch_daily_logs(field_id, user_id=requester_id, tenant_ids=_scope_tenants)
-    input_count = _fetch_input_count(field_id, user_id=requester_id, tenant_ids=_scope_tenants)
-    plan_rows = _fetch_plan_items(field_id, requester_id, tenant_ids=_scope_tenants)
-    scouting_rows = _fetch_scouting(field_id)
-
-    # variety in tobacco DB?
-    variety_in_db, variety_days = _resolve_variety(crop_type, variety_code)
 
     # --- coordinates ------------------------------------------------------
     lat, lon = _centroid(field_row.get("polygon_coordinates"))
@@ -760,7 +784,6 @@ async def build_field_state(
     # request cost the SUM of four external round trips — measured at 26s on
     # first load (July 2026 perf audit). Concurrent, it costs the slowest one.
     # Each remains individually best-effort (arg-building included).
-    import asyncio
     import climate_service
 
     async def _safe_weather():
@@ -798,15 +821,19 @@ async def build_field_state(
         if (cur is not None or fc is not None) else None
     )
 
-    # --- yield (sync, best-effort) ---------------------------------------
-    yield_raw = _fetch_yield(field_row, daily_logs)
+    # --- yield + snapshot (BLOCKING — same reasoning as the reads above) --
+    # _fetch_yield queries daily_logs and the snapshot does a DB WRITE; both
+    # are blocking psycopg2 calls and both were stalling the event loop.
+    def _sync_yield():
+        y = _fetch_yield(field_row, daily_logs)
+        try:
+            from services.calibration.snapshot import snapshot_projection
+            snapshot_projection(field_row, y, daily_logs)
+        except Exception:
+            pass
+        return y
 
-    # --- snapshot projection (fire-and-forget, own connection) -----------
-    try:
-        from services.calibration.snapshot import snapshot_projection
-        snapshot_projection(field_row, yield_raw, daily_logs)
-    except Exception:
-        pass
+    yield_raw = await asyncio.to_thread(_sync_yield)
 
     # --- alerts (async, best-effort) -------------------------------------
     alerts_raw = await _fetch_alerts(field_row, weather_raw)

@@ -821,18 +821,27 @@ async def generate_proactive_alerts(
     Returns:
         Dict with growth_stage info and list of alerts
     """
-    # Get variety info
-    variety_info = get_variety_info(variety_name)
-    
-    # Calculate growth stage (uses transplant_date for transplanted crops)
-    growth_stage = calculate_growth_stage(
-        planting_date, 
-        variety_name, 
-        crop_type,
-        transplant_date=transplant_date,
-        is_transplanted=is_transplanted
-    )
-    
+    # Get variety info + growth stage.
+    # Both hit the DB through blocking psycopg2. Called straight from this
+    # `async def` they stalled the event loop of an async endpoint, which is
+    # what let a dashboard fan-out serialise into minutes. Run them together in
+    # a worker thread so the loop stays free.
+    import asyncio as _asyncio
+
+    def _variety_and_stage():
+        return (
+            get_variety_info(variety_name),
+            calculate_growth_stage(
+                planting_date,
+                variety_name,
+                crop_type,
+                transplant_date=transplant_date,
+                is_transplanted=is_transplanted,
+            ),
+        )
+
+    variety_info, growth_stage = await _asyncio.to_thread(_variety_and_stage)
+
     alerts = []
     
     # Growth stage alert (always)
