@@ -17,6 +17,7 @@ from enum import Enum
 import json
 
 from database import get_db_connection
+from psycopg2.extras import RealDictCursor
 from ai_brain import get_brain
 from crop_profiles import (
     get_crop_profile, get_diseases_for_conditions, get_pests_for_stage,
@@ -100,9 +101,13 @@ def get_variety_info(variety_name: str) -> Optional[Dict[str, Any]]:
         return None
     
     try:
-        cursor = conn.cursor()
+        # RealDictCursor: the rows below are read by column NAME. A plain
+        # cursor yields tuples, so row['crop_name'] raised "tuple indices must
+        # be integers" on EVERY call — swallowed by the except, so variety
+        # intelligence silently vanished from alerts instead of erroring.
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute("""
-            SELECT crop_name, variety_name, breeder, days_to_maturity, 
+            SELECT crop_name, variety_name, breeder, days_to_maturity,
                    yield_potential_low, yield_potential_high, characteristics
             FROM crop_varieties 
             WHERE variety_name ILIKE %s
@@ -816,18 +821,27 @@ async def generate_proactive_alerts(
     Returns:
         Dict with growth_stage info and list of alerts
     """
-    # Get variety info
-    variety_info = get_variety_info(variety_name)
-    
-    # Calculate growth stage (uses transplant_date for transplanted crops)
-    growth_stage = calculate_growth_stage(
-        planting_date, 
-        variety_name, 
-        crop_type,
-        transplant_date=transplant_date,
-        is_transplanted=is_transplanted
-    )
-    
+    # Get variety info + growth stage.
+    # Both hit the DB through blocking psycopg2. Called straight from this
+    # `async def` they stalled the event loop of an async endpoint, which is
+    # what let a dashboard fan-out serialise into minutes. Run them together in
+    # a worker thread so the loop stays free.
+    import asyncio as _asyncio
+
+    def _variety_and_stage():
+        return (
+            get_variety_info(variety_name),
+            calculate_growth_stage(
+                planting_date,
+                variety_name,
+                crop_type,
+                transplant_date=transplant_date,
+                is_transplanted=is_transplanted,
+            ),
+        )
+
+    variety_info, growth_stage = await _asyncio.to_thread(_variety_and_stage)
+
     alerts = []
     
     # Growth stage alert (always)

@@ -131,6 +131,17 @@ class NotificationEvent:
     dedupe_key: Optional[str] = None
     source: str = "system"                  # producing subsystem, for observability
 
+    def __post_init__(self) -> None:
+        # `field_id` is stored as a real uuid column, and Postgres rejects an
+        # EMPTY STRING with `invalid input syntax for type uuid: ""` — it is
+        # not the same as NULL. Generators build events from row dicts where a
+        # missing field id arrives as "" rather than None, so every scheduler
+        # cycle logged that error (observed every 15 minutes in production).
+        # Normalising here fixes it for every producer at once, rather than
+        # each call site having to remember.
+        if isinstance(self.field_id, str) and not self.field_id.strip():
+            self.field_id = None
+
     def resolved_severity(self) -> str:
         if self.severity in Severity.ALL:
             return self.severity  # type: ignore[return-value]

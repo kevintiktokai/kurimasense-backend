@@ -154,7 +154,11 @@ def create_notification(
             INSERT INTO notifications
                 (user_id, category, severity, title, body, field_id, action_url,
                  data, dedupe_key, source)
-            VALUES (%s, %s, %s, %s, %s, %s::uuid, %s, %s::jsonb, %s, %s)
+            -- NULLIF: an empty string is not a NULL uuid to Postgres, it is a
+            -- hard `invalid input syntax for type uuid: ""`. NotificationEvent
+            -- already normalises it; this makes the column safe even for a
+            -- producer that bypasses the dataclass.
+            VALUES (%s, %s, %s, %s, %s, NULLIF(%s, '')::uuid, %s, %s::jsonb, %s, %s)
             ON CONFLICT (user_id, dedupe_key) WHERE dedupe_key IS NOT NULL
             DO NOTHING
             RETURNING *
