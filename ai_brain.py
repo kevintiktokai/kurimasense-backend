@@ -23,6 +23,7 @@ import asyncio
 from openai import OpenAI, AsyncOpenAI
 from dotenv import load_dotenv
 from database import get_db_connection
+from psycopg2.extras import RealDictCursor
 from llm_models import CHAT_MODEL, DEEP_MODEL, VISION_MODEL, prepare_chat_params
 from tools.retrieve_context import search_knowledge_base
 from crop_profiles import (
@@ -239,7 +240,11 @@ class ConversationMemory:
             
         try:
             self._arm_user_guc(conn, user_id)
-            cursor = conn.cursor()
+            # RealDictCursor: rows are read as row['role'] below. With a plain
+            # cursor that raised "tuple indices must be integers" on every
+            # call, the except swallowed it and returned [] — so the assistant
+            # silently had NO conversation memory, on every message.
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
 
             # Simple query filtering by user_id
             # If session_id is provided, we could filter by field_context_id if that's how we map it
@@ -504,7 +509,10 @@ Respond with a JSON object:
             return None
 
         try:
-            cursor = conn.cursor()
+            # RealDictCursor: the row is read via row.get(...)/row['...'] below,
+            # which on a tuple raised AttributeError and dropped variety
+            # intelligence out of every AI answer without a visible error.
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
             # Try exact match first, then fuzzy
             cursor.execute("""
                 SELECT variety_name, breeder, days_to_maturity,

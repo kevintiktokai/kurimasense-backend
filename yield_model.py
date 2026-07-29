@@ -18,6 +18,7 @@ from dataclasses import dataclass
 import json
 
 from database import get_db_connection
+from psycopg2.extras import RealDictCursor
 from proactive_intelligence import get_variety_info, calculate_growth_stage
 from crop_constants import CROP_BASE_TEMPS as _CANONICAL_BASE_TEMPS, CROP_WATER_REQUIREMENTS as _CANONICAL_WATER
 
@@ -524,9 +525,12 @@ def get_field_ndvi_history(field_id: str, days: int = 30,
         if user_id is not None or tenant_ids:
             from tenancy import arm_rls_gucs  # lazy: avoid import cycle
             arm_rls_gucs(conn, user_id or "", [str(t) for t in (tenant_ids or [])])
-        cursor = conn.cursor()
+        # RealDictCursor: rows are read as r['ndvi'] below. A plain cursor made
+        # that raise on every call, and the except returned [] — so the yield
+        # model ran with NO NDVI history and produced projections blind.
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute("""
-            SELECT ndvi FROM daily_logs 
+            SELECT ndvi FROM daily_logs
             WHERE field_id = %s AND ndvi IS NOT NULL
             ORDER BY log_date DESC
             LIMIT %s

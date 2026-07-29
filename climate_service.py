@@ -20,6 +20,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List, Tuple, Callable, Awaitable
 import asyncio
 from database import get_db_connection
+from psycopg2.extras import RealDictCursor
 from crop_constants import CROP_BASE_TEMPS as _CANONICAL_BASE_TEMPS, TRANSPLANTED_CROPS as _CANONICAL_TRANSPLANTED
 from llm_models import CHAT_MODEL
 
@@ -550,7 +551,11 @@ async def calculate_gdd(
         conn = get_db_connection()
         if conn:
             try:
-                cursor = conn.cursor()
+                # RealDictCursor: the row is read by column name below. With a
+                # plain cursor this raised on every call and the except
+                # swallowed it, so GDD silently used the generic default
+                # instead of the variety's real days_to_maturity.
+                cursor = conn.cursor(cursor_factory=RealDictCursor)
                 cursor.execute("SELECT days_to_maturity, crop_name FROM crop_varieties WHERE variety_name ILIKE %s", (variety,))
                 row = cursor.fetchone()
                 if row and row['days_to_maturity']:

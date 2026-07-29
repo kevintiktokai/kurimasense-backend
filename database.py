@@ -11,6 +11,10 @@ import threading as _threading
 _POOL: ThreadedConnectionPool | None = None
 _POOL_INIT_LOCK = _threading.Lock()
 
+# How many dead connections get_db_connection() will discard before giving up.
+# Bounded so a fully-poisoned pool fails fast rather than spinning.
+_MAX_DEAD_CONN_RETRIES = 3
+
 class _PooledConn:
     """
     Wraps a psycopg2 connection so existing code calling conn.close()
@@ -24,6 +28,7 @@ class _PooledConn:
     def __init__(self, pool: ThreadedConnectionPool, conn):
         self._pool = pool
         self._conn = conn
+        self._returned = False
 
     def __getattr__(self, name):
         return getattr(self._conn, name)
@@ -36,6 +41,32 @@ class _PooledConn:
         return False  # Do not suppress exceptions
 
     def close(self):
+        """Return the connection to the pool. IDEMPOTENT — see below.
+
+        A very common shape in this codebase is::
+
+            row = cursor.fetchone()
+            cursor.close(); conn.close()      # returned to the pool
+            return {"x": row["x"]}            # raises -> except: conn.close()
+
+        i.e. the happy path returns the connection and then the error handler
+        returns it a *second* time. psycopg2's ``putconn`` raises PoolError
+        ("trying to put unkeyed connection") on that second call, and the old
+        fallback below reacted by calling ``self._conn.close()`` — physically
+        closing a connection that was, by then, sitting in the pool marked
+        AVAILABLE. The next caller to ``getconn()`` got a dead socket and
+        failed with "connection already closed".
+
+        That is exactly the pair of errors production was emitting on repeat
+        (see the Variety lookup failures), and it is self-amplifying: every
+        double-close permanently burns one of the 20 pooled connections.
+
+        So a second close is now a no-op, and the physical-close fallback only
+        runs when the connection was genuinely never returned.
+        """
+        if self._returned:
+            return
+        self._returned = True
         try:
             # Return to pool instead of closing
             self._pool.putconn(self._conn)
@@ -75,9 +106,25 @@ def get_db_connection():
         pool = _get_pool()
         if not pool:
             return None
-        conn = pool.getconn()
-        # Keep RealDictCursor usage at cursor() call sites as you already do.
-        return _PooledConn(pool, conn)
+        # A pooled connection can be dead on arrival: the server or Supabase's
+        # pooler can drop an idle one, and (before the idempotent close above)
+        # a double-close could close it in place. Handing that out surfaces as
+        # "connection already closed" in whatever unrelated request drew it, so
+        # discard dead sockets here instead — that request should not pay for
+        # another request's mistake.
+        for _ in range(_MAX_DEAD_CONN_RETRIES):
+            conn = pool.getconn()
+            if not getattr(conn, "closed", 0):
+                # Keep RealDictCursor usage at cursor() call sites as you already do.
+                return _PooledConn(pool, conn)
+            # Drop it from the pool for good (close=True discards rather than
+            # returning it to the idle list) and draw another.
+            try:
+                pool.putconn(conn, close=True)
+            except Exception:
+                pass
+        print("WARNING: DB pool returned only closed connections; giving up.")
+        return None
     except Exception as e:
         # Check for IPv6 specific error to provide better advice
         if "Network is unreachable" in str(e):
@@ -547,7 +594,10 @@ def get_recent_field_activity(field_id: str, limit: int = 5, user_id: str = None
             # would be circular.
             from tenancy import caller_tenant_ids, arm_rls_gucs
             arm_rls_gucs(conn, user_id, caller_tenant_ids(user_id))
-        cursor = conn.cursor()
+        # RealDictCursor: the row is formatted by column name below. A plain
+        # cursor raised on every call and the except returned [], so the AI
+        # never saw a field's recent inputs when answering about it.
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
 
         # Get Field Inputs
         cursor.execute("""

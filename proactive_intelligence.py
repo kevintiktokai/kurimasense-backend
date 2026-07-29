@@ -17,6 +17,7 @@ from enum import Enum
 import json
 
 from database import get_db_connection
+from psycopg2.extras import RealDictCursor
 from ai_brain import get_brain
 from crop_profiles import (
     get_crop_profile, get_diseases_for_conditions, get_pests_for_stage,
@@ -100,9 +101,13 @@ def get_variety_info(variety_name: str) -> Optional[Dict[str, Any]]:
         return None
     
     try:
-        cursor = conn.cursor()
+        # RealDictCursor: the rows below are read by column NAME. A plain
+        # cursor yields tuples, so row['crop_name'] raised "tuple indices must
+        # be integers" on EVERY call — swallowed by the except, so variety
+        # intelligence silently vanished from alerts instead of erroring.
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute("""
-            SELECT crop_name, variety_name, breeder, days_to_maturity, 
+            SELECT crop_name, variety_name, breeder, days_to_maturity,
                    yield_potential_low, yield_potential_high, characteristics
             FROM crop_varieties 
             WHERE variety_name ILIKE %s
