@@ -218,6 +218,21 @@ def abandon_season(
 # ---------------------------------------------------------------------------
 # Rotation context
 # ---------------------------------------------------------------------------
+@router.get("/fields/{field_id}/season-history")
+def get_field_season_history(
+    field_id: str,
+    user: AuthenticatedUser = Depends(get_authenticated_user),
+):
+    """Season-over-season history, aligned on days after planting.
+
+    The alignment is the point: calendar dates compare a six-leaf crop with a
+    tasselling one and call the difference performance. Crop age is the only
+    axis on which two seasons are the same thing.
+    """
+    _resolve(field_id, user)
+    return seasons.field_history(field_id, user.user_id, user.tenant_ids)
+
+
 @router.get("/fields/{field_id}/rotation")
 def get_rotation_context(
     field_id: str,

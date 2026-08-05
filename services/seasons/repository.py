@@ -363,3 +363,46 @@ def attribute_observations(
             conn.close()
         except Exception:
             pass
+
+
+def load_observations(
+    field_id: str,
+    user_id: Optional[str] = None,
+    tenant_ids: Optional[List[str]] = None,
+    limit: int = 2000,
+) -> List[Dict[str, Any]]:
+    """All satellite observations for a field, oldest first.
+
+    Deliberately unfiltered by season: attribution happens in
+    ``services.seasons.history.group_observations_by_season``, which derives it
+    from dates. That keeps history correct for rows written before the season
+    backfill and for seasons entered retrospectively, where a stored
+    ``season_id`` is absent rather than wrong.
+    """
+    conn = get_db_connection()
+    if not conn:
+        return []
+    try:
+        _arm(conn, user_id, tenant_ids)
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(
+            """
+            SELECT log_date, ndvi, evi, soil_moisture, cloud_cover, season_id::text AS season_id
+            FROM daily_logs
+            WHERE field_id = %s::uuid AND log_date IS NOT NULL
+            ORDER BY log_date ASC
+            LIMIT %s
+            """,
+            (field_id, limit),
+        )
+        rows = cur.fetchall()
+        cur.close()
+        return [_serialise(dict(r)) for r in rows]
+    except Exception as e:
+        print(f"[seasons.repository] load_observations failed: {e}")
+        return []
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass

@@ -223,6 +223,26 @@ def transition(
     return updated
 
 
+def field_history(
+    field_id: str,
+    user_id: str,
+    tenant_ids: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Season-over-season history for a field, aligned on days after planting.
+
+    Calendar dates make seasons incomparable — a crop planted 15 November and
+    one planted 2 December are at different growth stages on any given day.
+    Re-indexing to crop age is what makes "this season is ahead of last" a
+    statement about the crop rather than about the calendar.
+    """
+    from .history import build_field_history, group_observations_by_season
+
+    seasons = repo.list_seasons(field_id, user_id, tenant_ids)
+    observations = repo.load_observations(field_id, user_id, tenant_ids)
+    grouped = group_observations_by_season(seasons, observations)
+    return build_field_history(field_id, seasons, grouped).to_dict()
+
+
 def rotation_context(
     field_id: str,
     user_id: str,
