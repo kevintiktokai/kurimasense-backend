@@ -156,6 +156,11 @@ app.include_router(season_router)
 from section_routes import router as section_router  # noqa: E402
 app.include_router(section_router)
 
+# Season lifecycle + pre-plant planning (migration 019): season CRUD and
+# transitions, rotation context, establishment/fertiliser plans, Stand Check.
+from season_lifecycle_routes import router as season_lifecycle_router  # noqa: E402
+app.include_router(season_lifecycle_router)
+
 # Outcome loop (Sprint 1): harvest CRUD, calibration read, admin recompute.
 from outcome_routes import router as outcome_router  # noqa: E402
 app.include_router(outcome_router)

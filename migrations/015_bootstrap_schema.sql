@@ -301,3 +301,46 @@ CREATE TABLE IF NOT EXISTS notification_devices (
     last_seen_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_notification_devices_user ON notification_devices(user_id);
+
+-- Seasons (migration 019) — the temporal crop record, split out of `fields`.
+-- Mirrored here so schema convergence still holds with DB_SELF_HEAL_SCHEMA=false.
+-- 019 remains canonical for the RLS posture and the historical backfill.
+CREATE TABLE IF NOT EXISTS seasons (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    field_id UUID NOT NULL REFERENCES fields(id) ON DELETE CASCADE,
+    tenant_id UUID,
+    user_id TEXT,
+    status TEXT NOT NULL DEFAULT 'planned',   -- planned | active | harvested | closed | abandoned
+    season_label TEXT,
+    crop_type TEXT NOT NULL,
+    variety TEXT,
+    planned_planting_date DATE,
+    planting_date DATE,
+    transplant_date DATE,
+    expected_harvest_date DATE,
+    harvest_date DATE,
+    row_spacing_cm NUMERIC(5,1),
+    in_row_spacing_cm NUMERIC(5,1),
+    target_population_per_ha INTEGER,
+    seed_rate_kg_ha NUMERIC(6,2),
+    planting_depth_cm NUMERIC(4,1),
+    emergence_date DATE,
+    established_population_per_ha INTEGER,
+    emergence_uniformity TEXT,
+    previous_crop TEXT,
+    tillage_practice TEXT,
+    residue_management TEXT,
+    yield_tonnes_per_ha NUMERIC(8,3),
+    notes TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_seasons_field_status ON seasons(field_id, status);
+CREATE INDEX IF NOT EXISTS idx_seasons_field_planting ON seasons(field_id, planting_date DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_seasons_one_active ON seasons(field_id) WHERE status = 'active';
+
+ALTER TABLE daily_logs             ADD COLUMN IF NOT EXISTS season_id UUID REFERENCES seasons(id) ON DELETE SET NULL;
+ALTER TABLE field_inputs           ADD COLUMN IF NOT EXISTS season_id UUID REFERENCES seasons(id) ON DELETE SET NULL;
+ALTER TABLE field_activities       ADD COLUMN IF NOT EXISTS season_id UUID REFERENCES seasons(id) ON DELETE SET NULL;
+ALTER TABLE field_section_analysis ADD COLUMN IF NOT EXISTS season_id UUID REFERENCES seasons(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_daily_logs_season ON daily_logs(season_id, log_date);
