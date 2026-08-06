@@ -38,6 +38,7 @@ from services.planning.establishment import (
 )
 from services.planning.fertiliser import build_fertiliser_programme
 from services.planning.postharvest import build_post_harvest_plan
+from services.seasons.retrospective import build_retrospective
 from services.planning.windows import build_action_windows
 from services.seasons import lifecycle
 from services.seasons import service as seasons
@@ -93,6 +94,47 @@ def _guard(fn, *args, **kwargs):
         raise HTTPException(status_code=409, detail=str(e))
     except seasons.SeasonConflict as e:
         raise HTTPException(status_code=409, detail=str(e))
+
+
+def _variety_potential(crop: Optional[str], variety: Optional[str]) -> Optional[float]:
+    """A realistic ceiling for this variety, from the crop_varieties catalogue.
+
+    Uses the LOW end of the variety's published potential band, not the high
+    end. Breeder maxima come from trial plots under ideal management; measuring
+    a smallholder against one manufactures a gap that no management could have
+    closed, and a benchmark a farmer cannot recognise is a benchmark they stop
+    reading.
+    """
+    if not crop or not variety:
+        return None
+    try:
+        from database import get_db_connection
+        from psycopg2.extras import RealDictCursor
+
+        conn = get_db_connection()
+        if not conn:
+            return None
+        try:
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute(
+                "SELECT yield_potential_low, yield_potential_high FROM crop_varieties "
+                "WHERE LOWER(crop_name) = LOWER(%s) AND LOWER(variety_name) = LOWER(%s) LIMIT 1",
+                (crop, variety),
+            )
+            row = cur.fetchone()
+            cur.close()
+            if not row:
+                return None
+            low = row.get("yield_potential_low")
+            return float(low) if low is not None else None
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"[season_lifecycle_routes] variety potential lookup failed: {e}")
+        return None
 
 
 def _field_context(field: dict) -> Dict[str, Any]:
@@ -267,6 +309,35 @@ def get_action_windows(
         "planting_date": season.get("planting_date"),
         "windows": windows,
     }
+
+
+@router.get("/seasons/{season_id}/retrospective")
+def get_season_retrospective(
+    season_id: str,
+    potential_yield_t_ha: Optional[float] = Query(
+        None, gt=0, description="Realistic ceiling; derived from the variety if omitted"
+    ),
+    late_topdress_days: Optional[int] = Query(None, ge=0),
+    user: AuthenticatedUser = Depends(get_authenticated_user),
+):
+    """Where this season's yield gap went.
+
+    Attributes the shortfall only to factors there is a measurement for, and
+    reports the remainder as unexplained. A decomposition that always sums to
+    exactly 100% is one that has been fudged, and a farmer who spots one fudged
+    line discounts the whole thing.
+    """
+    season = _resolve_season(season_id, user)
+
+    potential = potential_yield_t_ha
+    if potential is None:
+        potential = _variety_potential(season.get("crop_type"), season.get("variety"))
+
+    return build_retrospective(
+        season,
+        potential_yield_t_ha=potential,
+        late_topdress_days=late_topdress_days,
+    ).to_dict()
 
 
 @router.get("/fields/{field_id}/post-harvest")
