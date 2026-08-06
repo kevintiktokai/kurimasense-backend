@@ -434,6 +434,17 @@ def init_db():
                 CREATE INDEX IF NOT EXISTS idx_daily_logs_season ON daily_logs(season_id, log_date);
             """)
 
+            # TIMB grower number (migration 021) — the join key that lets a leaf
+            # buyer reconcile a Season Evidence Pack against the sector's own
+            # register. Without it a pack is a report rather than evidence.
+            # Nullable and non-unique on purpose; see the migration.
+            cursor.execute("""
+                ALTER TABLE growers ADD COLUMN IF NOT EXISTS timb_grower_number TEXT;
+                CREATE INDEX IF NOT EXISTS idx_growers_timb_number
+                    ON growers (tenant_id, timb_grower_number)
+                    WHERE timb_grower_number IS NOT NULL;
+            """)
+
             # Institutional operations tables (migration 013) — team invites,
             # agronomist field activities, and field assignments. Self-heal on
             # boot like the tables above; the member-role/status ALTERs are also

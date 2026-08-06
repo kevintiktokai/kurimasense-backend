@@ -270,6 +270,10 @@ class Grower(BaseModel):
     claimed_by_user_id: Optional[str] = None
     created_by_user_id: Optional[str] = None
     notes: Optional[str] = None
+    # The join key to TIMB's register — what makes an evidence pack checkable by
+    # a leaf buyer rather than merely readable. Optional: plenty of growers here
+    # are not registered tobacco growers.
+    timb_grower_number: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -280,6 +284,9 @@ class CreateGrowerRequest(BaseModel):
     email: Optional[str] = None
     coordinates: Optional[dict] = None
     notes: Optional[str] = None
+    # Not format-validated here; the route normalises it. See
+    # services/documents/grower_number.py for why a regex would be wrong.
+    timb_grower_number: Optional[str] = Field(None, max_length=64)
 
 
 class UpdateGrowerRequest(BaseModel):
@@ -288,6 +295,7 @@ class UpdateGrowerRequest(BaseModel):
     email: Optional[str] = None
     coordinates: Optional[dict] = None
     notes: Optional[str] = None
+    timb_grower_number: Optional[str] = Field(None, max_length=64)
 
 
 # ========== Portfolio Aggregate (MVP PR 2) ==========
