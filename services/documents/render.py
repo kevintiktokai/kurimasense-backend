@@ -22,7 +22,8 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined, select_autoes
 from markupsafe import Markup
 
 from . import tokens as t
-from .identity import CoverageError, DocumentIdentity, MARK
+from .evidence_pack import EvidencePack
+from .identity import CoverageError, DocumentIdentity, MARK, format_hectares
 from .stylesheet import page_furniture_css, stylesheet
 
 _HERE = Path(__file__).resolve().parent
@@ -145,6 +146,55 @@ def render_pdf(template_name: str, context: dict[str, Any]) -> bytes:
 
     html = render_html(template_name, context)
     return HTML(string=html, base_url=str(TEMPLATES_DIR)).write_pdf()
+
+
+THEME_STATUS_LABELS: dict[str, str] = {
+    "covered": "Evidenced",
+    "partial": "Partially evidenced",
+    "absent": "No evidence recorded",
+    "not_applicable": "No fields in scope",
+}
+
+
+def render_evidence_pack(pack: EvidencePack, *, issue_number: str) -> bytes:
+    """
+    A :class:`~services.documents.evidence_pack.EvidencePack` as PDF bytes.
+
+    The identity is derived from the pack rather than passed in, so the
+    verification line can only ever state the coverage the pack actually
+    assembled. In particular ``hectares`` is the **observed** figure — passing
+    the contracted one would produce a document claiming ground nobody looked
+    at, which is the one failure this package exists to prevent.
+
+    A pack with no observed hectares raises through
+    :func:`~services.documents.identity.verification_line`'s refusal path and
+    renders without a verification line, saying so. That is correct: there is
+    nothing to verify.
+    """
+    identity = DocumentIdentity(
+        kind="evidence_pack",
+        issue_number=issue_number,
+        issued_at=utcnow(),
+        subject=pack.client_name,
+        coverage_start=pack.coverage_start,
+        coverage_end=pack.coverage_end,
+        hectares=pack.covered_hectares or None,
+    )
+    context = build_context(
+        identity,
+        # The client's name is the title; the cover band's eyebrow already says
+        # what kind of document this is. Repeating "Season Evidence Pack" twice
+        # on the same band reads as a template nobody finished filling in.
+        title=pack.client_name,
+        subtitle=f"Season evidence, {pack.coverage_start:%B %Y} – {pack.coverage_end:%B %Y}",
+        pack=pack,
+        hectares=format_hectares,
+        hectares_label=(
+            format_hectares(pack.covered_hectares) if pack.covered_hectares else "—"
+        ),
+        theme_status_labels=THEME_STATUS_LABELS,
+    )
+    return render_pdf("evidence_pack.html", context)
 
 
 def utcnow() -> datetime:
