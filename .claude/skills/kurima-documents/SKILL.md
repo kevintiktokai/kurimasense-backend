@@ -57,6 +57,11 @@ Not all of them, and this is a judgement about what the document *is*:
   hectares, so its identity carries no hectares, `verification_line` refuses,
   and the footer reads "Issued without a verification line". That is correct,
   not a gap: a mark reading as certification would overstate what it is.
+- **Season plan** — no, and more emphatically. A plan describes what has not
+  happened yet; verifying a forecast is a category error, and this is the one
+  document a farmer takes into the field.
+
+All four are in `templates/`. The plan in `kurima-sense/docs/` is complete.
 
 ## Adding a document
 
