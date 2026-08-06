@@ -168,6 +168,23 @@ def _run_section_analysis(field_id: str, tenant_id: Optional[str],
 
         batch_id = str(uuid.uuid4())
         cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Stamp the batch with the season running now. Without this the rows
+        # carry no season and zone history has nothing to compare across years —
+        # the column existed but nothing ever wrote it.
+        season_id = None
+        try:
+            cur.execute(
+                "SELECT id::text AS id FROM seasons "
+                "WHERE field_id = %s::uuid AND status = 'active' LIMIT 1",
+                (field_id,),
+            )
+            row = cur.fetchone()
+            season_id = row["id"] if row else None
+        except Exception as e:
+            # An unseasoned field still gets its zone analysis; it just will not
+            # appear in cross-season history.
+            print(f"[sections] active-season lookup failed: {e}")
         for s in sections:
             c = s.get("centroid") or {}
             ndvi = evi = cloud = None
@@ -189,13 +206,14 @@ def _run_section_analysis(field_id: str, tenant_id: Optional[str],
                 INSERT INTO field_section_analysis
                     (field_id, tenant_id, batch_id, grid_size, section_index,
                      section_label, polygon, centroid, area_share,
-                     ndvi, evi, cloud_cover, status, error)
+                     ndvi, evi, cloud_cover, status, error, season_id)
                 VALUES (%s::uuid, %s, %s::uuid, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s)
+                        %s, %s, %s, %s, %s, NULLIF(%s, '')::uuid)
                 """,
                 (field_id, tenant_id, batch_id, grid, s["index"], s["label"],
                  json.dumps(s["polygon"]), json.dumps(s.get("centroid")),
-                 s.get("area_share"), ndvi, evi, cloud, status, error),
+                 s.get("area_share"), ndvi, evi, cloud, status, error,
+                 season_id or ""),
             )
         conn.commit()
         cur.close()
@@ -313,3 +331,78 @@ def get_zone_diagnosis(
         "field_mean_ndvi": field_mean_ndvi(zones),
         "zones": diagnose_zones(zones, observations=observations, soil=soil),
     }
+
+
+@router.get("/fields/{field_id}/zones/history")
+def get_zone_history(
+    field_id: str,
+    principal: dict = Depends(get_principal),
+):
+    """Which parts of this field are weak every season, and which just had a bad year.
+
+    "The North-East is stressed" and "the North-East has been the weakest part
+    of this field for three seasons" are different statements with different
+    price tags. The first is weather; the second is the ground, and it justifies
+    a soil test or drainage work.
+
+    Only seasons analysed on the same zone grid are compared — zone 3 of a 2×2
+    is not the same ground as zone 3 of a 4×4, and comparing them would invent a
+    trend a farmer might act on.
+    """
+    from services.zones.history import build_zone_history
+
+    field = _resolve_field(field_id, principal)
+
+    batches: list = []
+    from database import get_db_connection
+    conn = get_db_connection()
+    if conn:
+        try:
+            from tenancy import arm_rls_gucs
+            arm_rls_gucs(conn, principal["requester_id"],
+                         [str(field["tenant_id"])] if field.get("tenant_id") else [])
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            # One row per zone; the latest batch per season is the one to use,
+            # since a season may have been re-scanned several times.
+            cur.execute(
+                """
+                SELECT DISTINCT ON (fsa.season_id, fsa.section_index)
+                       fsa.season_id::text AS season_id,
+                       s.season_label,
+                       fsa.grid_size, fsa.section_index, fsa.section_label, fsa.ndvi
+                FROM field_section_analysis fsa
+                JOIN seasons s ON s.id = fsa.season_id
+                WHERE fsa.field_id = %s::uuid AND fsa.season_id IS NOT NULL
+                ORDER BY fsa.season_id, fsa.section_index, fsa.created_at DESC
+                """,
+                (field_id,),
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+            cur.close()
+
+            grouped: dict = {}
+            for r in rows:
+                key = r["season_id"]
+                entry = grouped.setdefault(key, {
+                    "season_id": key,
+                    "season_label": r.get("season_label"),
+                    "grid_size": r.get("grid_size"),
+                    "zones": [],
+                })
+                entry["zones"].append({
+                    "index": r.get("section_index"),
+                    "label": r.get("section_label"),
+                    "ndvi": float(r["ndvi"]) if r.get("ndvi") is not None else None,
+                })
+            batches = list(grouped.values())
+        except Exception as e:
+            # A missing column or an un-backfilled season_id must not take the
+            # view down; an empty history is an honest answer.
+            print(f"[section_routes] zone history lookup failed: {e}")
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    return {"field_id": field_id, **build_zone_history(batches)}
