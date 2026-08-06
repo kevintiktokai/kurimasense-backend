@@ -6,6 +6,18 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
+# WeasyPrint renders text through Pango, which is a system library rather than a
+# wheel. Without these, `import weasyprint` raises at runtime — and because the
+# import is lazy (services/documents/render.py), it would raise on the first
+# request for a document rather than at boot, i.e. in front of whoever was
+# generating an evidence pack. The brand faces ship in the repo, so no font
+# packages are needed here.
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y \
+        libpango-1.0-0 \
+        libpangoft2-1.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
