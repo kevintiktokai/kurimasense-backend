@@ -23,6 +23,7 @@ from markupsafe import Markup
 
 from . import tokens as t
 from .evidence_pack import EvidencePack
+from .field_report import FieldReport
 from .portfolio_report import PortfolioReport
 from .identity import CoverageError, DocumentIdentity, MARK, format_hectares
 from .stylesheet import page_furniture_css, stylesheet
@@ -269,6 +270,57 @@ def render_portfolio_report(
         managed_label=format_hectares(managed) if managed else "—",
     )
     return render_pdf("portfolio_report.html", context)
+
+
+def render_field_report(report: FieldReport, *, issue_number: str) -> bytes:
+    """
+    A :class:`~services.documents.field_report.FieldReport` as PDF bytes.
+
+    Unlike the other two documents this one has **no hectare claim to verify** —
+    it reports on one field's season, not on coverage across a book. Passing the
+    field's area would produce a verification line asserting that this document
+    verifies those hectares, which it does not; it explains them. So the
+    identity carries no hectares, ``verification_line`` refuses, and the
+    document renders saying why.
+
+    That is the correct outcome rather than a gap to paper over. A field report
+    is analysis, and the mark on it should not read as certification.
+    """
+    identity = DocumentIdentity(
+        kind="field_report",
+        issue_number=issue_number,
+        issued_at=utcnow(),
+        subject=report.field_name,
+        coverage_start=report.coverage_start,
+        coverage_end=report.coverage_end,
+        hectares=None,
+    )
+
+    def population(value: float | None) -> str:
+        """Plants per hectare at the precision a hand count supports.
+
+        Nobody counts 41,237 plants — they count a row and multiply. Printing
+        the arithmetic's full precision claims an accuracy the method does not
+        have, so it is rounded to the nearest thousand and shown as ``41k``."""
+        if value is None:
+            return "—"
+        return f"{round(value / 1000):,}k"
+
+    context = build_context(
+        identity,
+        title=report.field_name,
+        title_accent=report.season_label or (
+            f"{report.coverage_start:%Y}/{report.coverage_end:%y} season"
+        ),
+        subtitle=(
+            "What the season did on this field, and which of it the record can "
+            "explain."
+        ),
+        report=report,
+        hectares=format_hectares,
+        population=population,
+    )
+    return render_pdf("field_report.html", context)
 
 
 def utcnow() -> datetime:

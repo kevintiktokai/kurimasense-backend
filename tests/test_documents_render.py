@@ -275,3 +275,102 @@ def _pack_context():
         hectares_label=format_hectares(pack.covered_hectares),
         theme_status_labels=THEME_STATUS_LABELS,
     )
+
+
+# ── Field report ──────────────────────────────────────────────────────────────
+
+
+def _field_report(**overrides):
+    from services.documents.field_report import StandCheck, build_field_report
+
+    kwargs = dict(
+        field_name="River Block",
+        coverage_start=date(2025, 11, 1),
+        coverage_end=date(2026, 5, 31),
+        hectares=31.0,
+        stand_check=StandCheck(date(2025, 12, 8), 44000.0, 33000.0),
+        zones=[
+            {"label": "Northeast one", "severity": "problem", "summary": "18% behind",
+             "causes": ["Shallow soil"], "action": "Walk it"},
+            {"label": "Southeast one", "severity": "ok", "summary": "At average",
+             "causes": [], "action": ""},
+        ],
+    )
+    kwargs.update(overrides)
+    return build_field_report(**kwargs)
+
+
+def test_field_report_renders_to_a_pdf():
+    from services.documents.render import render_field_report
+
+    pdf = render_field_report(_field_report(), issue_number="FR-2026-000012")
+    assert pdf.startswith(b"%PDF-")
+
+
+def test_a_field_report_carries_no_verification_line():
+    # It reports on one field's season, not on coverage across a book. A mark
+    # reading as certification would overstate what the document is: this is
+    # analysis, and it explains hectares rather than verifying them.
+    import io
+
+    pypdf = pytest.importorskip("pypdf")
+    from services.documents.render import render_field_report
+
+    pdf = render_field_report(_field_report(), issue_number="FR-2026-000012")
+    text = "\n".join(
+        p.extract_text() or "" for p in pypdf.PdfReader(io.BytesIO(pdf)).pages
+    )
+    assert "Verified by KurimaSense ·" not in text
+    assert "Issued without a verification line" in text
+    # ...but it is still identifiable, which is the registry's whole job.
+    assert "FR-2026-000012" in text
+
+
+def test_the_stand_check_gap_reaches_the_page():
+    from services.documents.render import render_html
+    from services.documents.identity import DocumentIdentity
+    from services.documents.render import build_context, utcnow
+
+    report = _field_report(stand_check=None)
+    identity = DocumentIdentity(
+        kind="field_report", issue_number="FR-2026-000012", issued_at=utcnow(),
+        subject=report.field_name, coverage_start=report.coverage_start,
+        coverage_end=report.coverage_end, hectares=None,
+    )
+    html = render_html(
+        "field_report.html",
+        build_context(
+            identity, title=report.field_name, embed_fonts=False, report=report,
+            hectares=lambda v: f"{v} ha", population=lambda v: "—",
+        ),
+    )
+    assert "thin healthy stand" in html
+
+
+def test_populations_are_not_printed_to_a_precision_a_hand_count_lacks():
+    # Nobody counts 41,237 plants — they count a row and multiply.
+    import io
+
+    pypdf = pytest.importorskip("pypdf")
+    from services.documents.render import render_field_report
+
+    pdf = render_field_report(_field_report(), issue_number="FR-2026-000012")
+    text = "\n".join(
+        p.extract_text() or "" for p in pypdf.PdfReader(io.BytesIO(pdf)).pages
+    )
+    assert "44k" in text and "33k" in text
+    assert "44,000" not in text
+
+
+def test_healthy_zones_do_not_reach_the_page():
+    import io
+
+    pypdf = pytest.importorskip("pypdf")
+    from services.documents.render import render_field_report
+
+    pdf = render_field_report(_field_report(), issue_number="FR-2026-000012")
+    text = "\n".join(
+        p.extract_text() or "" for p in pypdf.PdfReader(io.BytesIO(pdf)).pages
+    )
+    assert "Northeast one" in text
+    assert "Southeast one" not in text

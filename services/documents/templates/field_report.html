@@ -1,0 +1,181 @@
+{#
+  Field report — one field, one season.
+
+  Read by someone who was there. They already know the west edge looked
+  patchy; what they want is which of the things they did explains it. So the
+  order is by what can still be acted on:
+
+    1. What limits this report — chiefly, whether a stand check exists.
+    2. Establishment, because it is upstream of everything else.
+    3. Zones, worst first, with causes only where something corroborates one.
+    4. How inputs went on, where that changed the outcome.
+    5. The season retrospective, if the season is closed.
+
+  Sections render only when they have content. The exception is the stand-check
+  gap, which is stated because its absence changes how everything below it
+  should be read.
+#}
+{% extends "base.html" %}
+
+{% block content %}
+
+  <div class="section">
+    <h3 class="section-title">This field</h3>
+    <table class="doc-table">
+      <tbody>
+        <tr>
+          <td><span class="label">Grower</span>{{ report.grower_name or '—' }}</td>
+          <td><span class="label">District</span>{{ report.district or '—' }}</td>
+          <td>
+            <span class="label">Area</span>
+            {% if report.hectares %}{{ hectares(report.hectares) }}{% else %}—{% endif %}
+          </td>
+          <td>
+            <span class="label">Crop</span>
+            {{ report.crop_type or '—' }}{% if report.variety %} · {{ report.variety }}{% endif %}
+          </td>
+        </tr>
+      </tbody>
+    </table>
+
+    {% if report.qualifications %}
+      <div class="callout warn">
+        <span class="label">What limits this report</span>
+        <ul style="margin: 0; padding-left: 14pt;">
+          {% for note in report.qualifications %}
+            <li>{{ note }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+    {% endif %}
+  </div>
+
+  {% if report.stand_check %}
+    <div class="section keep">
+      <h3 class="section-title">Establishment</h3>
+      <p>
+        Counted on {{ report.stand_check.checked_on.strftime('%-d %B %Y') }}.
+        Establishment is upstream of everything else on this page: a stand that
+        came up thin cannot be recovered later in the season by anything else
+        you do.
+      </p>
+      <div class="metrics">
+        <div class="metric">
+          <span class="label">Target population</span>
+          <span class="value">{{ population(report.stand_check.target_population_per_ha) }}</span>
+        </div>
+        <div class="metric">
+          <span class="label">Counted</span>
+          <span class="value">{{ population(report.stand_check.established_population_per_ha) }}</span>
+        </div>
+        <div class="metric">
+          <span class="label">Achieved</span>
+          {% if report.stand_check.achieved_share is none %}
+            <span class="value absent">—</span>
+          {% else %}
+            <span class="value">{{ (report.stand_check.achieved_share * 100) | round | int }}%</span>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  {% endif %}
+
+  {% if report.reportable_zones %}
+    <div class="section">
+      <h3 class="section-title">Zones behind the field average</h3>
+      <p>
+        Healthy zones are not listed. A cause is named only where something in
+        the record corroborates it — where nothing does, the zone is named
+        without one rather than attributed to the likeliest explanation.
+      </p>
+      <table class="doc-table">
+        <thead>
+          <tr>
+            <th>Zone</th>
+            <th>Finding</th>
+            <th>Likely cause</th>
+            <th>Next step</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for zone in report.reportable_zones %}
+            <tr>
+              <td>{{ zone.label }}</td>
+              <td>{{ zone.summary or '—' }}</td>
+              {% if zone.causes %}
+                <td>{{ zone.causes | join('; ') }}</td>
+              {% else %}
+                <td class="absent">— nothing corroborates one</td>
+              {% endif %}
+              <td>{{ zone.action or '—' }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+
+  {% if report.execution_notes %}
+    <div class="section keep">
+      <h3 class="section-title">How inputs went on</h3>
+      <p>
+        Placement and timing, where they changed how much of the bag reached the
+        crop. Applications with nothing notable about them are not listed.
+      </p>
+      <ul>
+        {% for note in report.execution_notes %}
+          <li>{{ note }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+
+  {% if report.retrospective %}
+    <div class="section">
+      <h3 class="section-title">Season retrospective</h3>
+      {% if report.retrospective.headline %}
+        <p>{{ report.retrospective.headline }}</p>
+      {% endif %}
+
+      {% if report.retrospective.factors %}
+        <table class="doc-table">
+          <thead>
+            <tr>
+              <th>Contributor</th>
+              <th class="num">Yield effect</th>
+              <th>Evidence</th>
+              <th>Next season</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for factor in report.retrospective.factors %}
+              <tr>
+                <td>{{ factor.label }}</td>
+                <td class="num">{{ '%.2f' | format(factor.tonnes_per_ha) }} t/ha</td>
+                <td>{{ factor.evidence }}</td>
+                <td>{{ factor.next_season if factor.controllable else '—' }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+
+      {#
+        The unexplained remainder is printed, not absorbed into the factors
+        above. Closing the attribution to 100% would present a guess with the
+        same weight as the evidenced lines beside it.
+      #}
+      {% if report.retrospective.unexplained_t_ha %}
+        <div class="callout">
+          <span class="label">Unexplained</span>
+          <p style="margin-bottom: 0;">
+            {{ '%.2f' | format(report.retrospective.unexplained_t_ha) }} t/ha of
+            the gap is not accounted for by anything in the record. It is
+            reported rather than assigned to the causes above.
+          </p>
+        </div>
+      {% endif %}
+    </div>
+  {% endif %}
+
+{% endblock %}
