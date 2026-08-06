@@ -1,0 +1,107 @@
+{#
+  A specimen sheet: every primitive the design system offers, on one document.
+
+  Not a real document — it reports on nothing. It exists so that:
+
+    * the layout system can be looked at before any document depends on it, and
+    * a test can render every primitive and catch a template or CSS regression
+      that would otherwise only surface in a pack already sent to a buyer.
+
+  When a new primitive is added to the stylesheet, add it here. A primitive that
+  is not on the specimen is a primitive nobody has actually seen.
+#}
+{% extends "base.html" %}
+
+{% block content %}
+
+  <div class="section">
+    <h3 class="section-title">Metrics</h3>
+    <div class="metrics">
+      <div class="metric">
+        <span class="label">Hectares covered</span>
+        <span class="value">214</span>
+      </div>
+      <div class="metric">
+        <span class="label">Fields</span>
+        <span class="value">37</span>
+      </div>
+      <div class="metric">
+        <span class="label">Growers</span>
+        <span class="value">12</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h3 class="section-title">Table</h3>
+    <table class="doc-table">
+      <thead>
+        <tr>
+          <th>Field</th>
+          <th>Crop</th>
+          <th class="num">Area</th>
+          <th class="num">Established</th>
+          <th>Note</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in specimen_rows %}
+          <tr>
+            <td>{{ row.field }}</td>
+            <td>{{ row.crop }}</td>
+            <td class="num">{{ row.area }} <span class="unit">ha</span></td>
+            {% if row.established is none %}
+              <td class="num absent">—</td>
+            {% else %}
+              <td class="num">{{ row.established }}<span class="unit">%</span></td>
+            {% endif %}
+            <td>{{ row.note }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="caption">
+      A dash is a value the system declines to state, not a zero. Rendering an
+      unmeasured stand as 0% would be the document layer undoing the engine's
+      refusal to guess.
+    </p>
+  </div>
+
+  <div class="section">
+    <h3 class="section-title">Callouts</h3>
+
+    <div class="callout">
+      <span class="label">Finding</span>
+      <p style="margin-bottom: 0;">
+        The neutral callout. Used for a finding the reader should act on but
+        which is not itself a problem.
+      </p>
+    </div>
+
+    <div class="callout warn">
+      <span class="label">Attention</span>
+      <p style="margin-bottom: 0;">
+        Used where a window is closing or a figure is below target — information
+        with a deadline attached, not an alarm.
+      </p>
+    </div>
+
+    <div class="callout alert">
+      <span class="label">Unexplained</span>
+      <p style="margin-bottom: 0;">
+        Reserved for genuine problems: a missed irreversible window, a delivery
+        shortfall nothing accounts for. If everything is an alert, nothing is.
+      </p>
+    </div>
+  </div>
+
+  <div class="section">
+    <h4 class="subsection-title">Body copy</h4>
+    <p>
+      Set at 9.5&nbsp;pt on a 14&nbsp;pt leading. Larger than agricultural
+      paperwork usually defaults to, because a good proportion of these pages are
+      read as a phone photograph of a printout rather than as the printout.
+    </p>
+  </div>
+
+{% endblock %}

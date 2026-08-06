@@ -28,6 +28,12 @@ those are absent, so a bare `pytest` runs green without secrets.
   `015_bootstrap_schema.sql` (a guard test enforces this), and self-heal in
   `database.init_db()`.
 - Field access always goes through `resolve_access` for correct 403-vs-404.
+- **Generated documents live in `services/documents/`.** Every colour, size and
+  spacing value comes from `tokens.py`; templates extend `base.html` and never
+  own the page furniture. A document that leaves a client's building cannot be
+  re-rendered, so the mark and the verification line are generated, never typed.
+  See the package docstring, and `templates/_specimen.html` for every primitive
+  on one page — add to the specimen whenever you add a primitive.
 
 ## Pending agronomist review
 

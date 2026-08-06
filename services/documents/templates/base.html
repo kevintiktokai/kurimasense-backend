@@ -1,0 +1,72 @@
+{#
+  The page shell every KurimaSense document extends.
+
+  It owns three things no individual document should own:
+
+    * the stylesheet (generated from tokens, injected by render.py)
+    * the `.doc-meta` block, which is what puts the verification line, the
+      subject, the period and the issue number into the footer of *every* page
+    * the cover band carrying the mark
+
+  A document template supplies `content` and nothing else. That is deliberate:
+  if a template could override the furniture, the furniture would eventually
+  differ between documents, and the furniture is the part a leaf buyer reads.
+#}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{{ identity.subject }} — {{ title }}</title>
+  <style>{{ stylesheet }}</style>
+</head>
+<body>
+
+  {#
+    The running header and footer are not here. They come from `@page` rules
+    emitted by stylesheet.page_furniture_css, because CSS `string-set` resolves
+    to nothing when its carrier is hidden — and an empty footer on a forwarded
+    document is the failure this whole package exists to prevent.
+  #}
+
+  <div class="cover">
+    <div class="cover-band">
+      <span class="label">{{ kind_label }}</span>
+      <h1 class="display">{{ title }}</h1>
+      {% if subtitle %}<p class="caption subtitle">{{ subtitle }}</p>{% endif %}
+    </div>
+
+    <table class="doc-table" style="margin-bottom: 0;">
+      <tbody>
+        <tr>
+          <td style="width: 34%;"><span class="label">Prepared for</span>{{ identity.subject }}</td>
+          <td style="width: 33%;"><span class="label">Coverage</span>{{ period_label }}</td>
+          <td style="width: 33%;"><span class="label">Issued</span>{{ issued_label }}</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  {% block content %}{% endblock %}
+
+  {#
+    The mark, stated once at full size where a reader can see who produced this.
+    The footer repeats it small on every page; this is the one place it is
+    allowed to be the size of a signature.
+
+    When coverage could not be honestly asserted, `verification` is empty and
+    this says so rather than falling back to an unqualified claim — see
+    identity.verification_line.
+  #}
+  <div class="section" style="margin-top: {{ space(8) }};">
+    <p class="cover-mark">{{ mark }}</p>
+    {% if verification %}
+      <p class="caption">{{ verification }}</p>
+    {% else %}
+      <p class="caption">
+        This document does not carry a verification line: {{ verification_refusal }}
+      </p>
+    {% endif %}
+  </div>
+
+</body>
+</html>

@@ -1,0 +1,64 @@
+---
+name: kurima-documents
+description: Author or change a generated KurimaSense PDF document (evidence pack, portfolio report, field report, season plan). Use when adding a template to services/documents/, changing document styling, or touching the mark, issue number or verification line.
+---
+
+# Writing a KurimaSense document
+
+These documents leave the client's building. A contractor forwards an evidence
+pack to a leaf buyer; a lender files a report. **Once sent it cannot be
+re-rendered or corrected.** Everything below follows from that.
+
+Read `services/documents/__init__.py` first — it maps the package.
+
+## Rules
+
+1. **Never write a colour, size or spacing value into a template or the
+   stylesheet.** They come from `tokens.py`. If you need a value that isn't
+   there, add a token — a near-miss hex is how four documents stop looking like
+   one product.
+
+2. **Never hand-write the mark or the verification line.** `identity.py` builds
+   them from the same values the document body reported on. If coverage can't be
+   honestly stated, `verification_line` raises `CoverageError` and the document
+   renders saying so. **Do not catch that and substitute a default.** A pack
+   claiming coverage over ground nobody observed is the artefact most likely to
+   end the company.
+
+3. **Extend `base.html`. Supply `content` and nothing else.** The page furniture
+   is shared on purpose — it's the part a buyer reads.
+
+4. **An absent value is a dash and a reason, never a zero.** The engines return
+   `None` rather than guessing; a template that renders `0%` for an unmeasured
+   stand undoes that at the last step. Use `class="absent"`.
+
+5. **Autoescaping stays on.** Grower and field names reach these templates. The
+   only `Markup` in the package is the stylesheet, and the caller-supplied parts
+   of that go through `css_string`.
+
+## Adding a document
+
+1. Add the kind to `KIND_PREFIXES` (`identity.py`) and `KIND_LABELS`
+   (`render.py`).
+2. Write `templates/<kind>.html` extending `base.html`, using only the existing
+   classes: `.section`, `.doc-table`, `.metric`, `.callout`, `.label`, `.num`,
+   `.absent`, `.caption`.
+3. If you need a new primitive, add it to `stylesheet.py` **and** to
+   `templates/_specimen.html`. A primitive not on the specimen is one nobody has
+   looked at.
+4. Test the pure parts without WeasyPrint; test the PDF behind
+   `pytest.importorskip("weasyprint")`.
+
+## Looking at what you made
+
+Tests do not tell you whether a document is well designed. Render it and look:
+
+```python
+from services.documents.render import build_context, render_pdf
+open("out.pdf", "wb").write(render_pdf("_specimen.html", build_context(...)))
+```
+
+Then rasterise (`pypdfium2`) and actually view the page. Three defects in the
+first specimen — headings misaligned over numeric columns, a subtitle with no
+air, a lost space in the footer — all passed the tests and were only visible in
+the image.
