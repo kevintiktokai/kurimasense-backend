@@ -73,9 +73,11 @@ def test_degenerate_polygons_return_empty():
     assert compute_sections(flat, grid=2) == []
 
 
-def test_grid_three_uses_generic_labels():
-    assert section_label(0, 0, 3) == "Zone R1C1"
-    assert section_label(2, 2, 3) == "Zone R3C3"
+def test_grid_three_splits_into_nine_directional_zones():
+    # Superseded the old "Zone R1C1" naming: row/column labels told a farmer
+    # nothing about where to walk, which is the whole job of a zone name.
+    assert section_label(0, 0, 3) == "North-West"
+    assert section_label(2, 2, 3) == "South-East"
     sections = compute_sections(RECT, grid=3)
     assert len(sections) == 9
 
@@ -105,7 +107,107 @@ def test_sections_routes_require_auth():
 
 def test_sections_grid_is_bounded():
     # The route caps grid via `le=MAX_GRID` so a field can't be sliced into
-    # hundreds of unwalkable micro-zones; guard the constant + geometry.
+    # hundreds of unwalkable micro-zones. The cap moved from 3 to 4 when grid
+    # size started scaling with field area (a 60 ha block needs more than nine
+    # zones to stay walkable) — what matters is that a cap still exists and
+    # stays small, not the exact number.
     import section_routes
-    assert section_routes.MAX_GRID == 3
-    assert len(compute_sections(RECT, grid=section_routes.MAX_GRID)) == 9
+    assert 2 <= section_routes.MAX_GRID <= 4
+    zones = compute_sections(RECT, grid=section_routes.MAX_GRID)
+    assert len(zones) == section_routes.MAX_GRID ** 2
+
+
+# --- Zone naming (directional, auto-generated) --------------------------------
+
+from field_sections import suggest_grid_size, WALKABLE_ZONE_HA  # noqa: E402
+
+
+def test_two_by_two_keeps_the_plain_compass_corners():
+    assert section_label(0, 0, 2) == "North-West"
+    assert section_label(0, 1, 2) == "North-East"
+    assert section_label(1, 0, 2) == "South-West"
+    assert section_label(1, 1, 2) == "South-East"
+
+
+def test_three_by_three_gives_a_full_compass_rose_with_a_centre():
+    labels = [[section_label(r, c, 3) for c in range(3)] for r in range(3)]
+    assert labels == [
+        ["North-West", "North", "North-East"],
+        ["West", "Centre", "East"],
+        ["South-West", "South", "South-East"],
+    ]
+
+
+def test_zones_are_never_named_by_row_and_column():
+    # "Zone R2C3" tells a farmer nothing about where to walk.
+    for grid in (2, 3, 4, 5):
+        for r in range(grid):
+            for c in range(grid):
+                label = section_label(r, c, grid)
+                assert not label.startswith("Zone R"), f"{grid}x{grid} produced {label}"
+                assert label.strip()
+
+
+def test_corners_stay_in_the_corners_at_every_grid_size():
+    # Evaluating cells at their centre keeps the bands symmetric; using the
+    # leading edge made "West" two columns wide and "East" one.
+    for grid in (3, 4, 5, 6):
+        assert section_label(0, 0, grid).startswith("North-West")
+        assert section_label(0, grid - 1, grid).startswith("North-East")
+        assert section_label(grid - 1, 0, grid).startswith("South-West")
+        assert section_label(grid - 1, grid - 1, grid).startswith("South-East")
+
+
+def test_large_grids_number_within_a_sector():
+    # A sector holding several cells must distinguish them, but still point
+    # somewhere: "North-East 2", not "Zone R1C4".
+    label = section_label(0, 0, 5)
+    assert label.startswith("North-West")
+    assert label[-1].isdigit()
+
+
+def test_every_zone_in_a_grid_gets_a_unique_name():
+    for grid in (2, 3, 4, 5, 6):
+        labels = [section_label(r, c, grid) for r in range(grid) for c in range(grid)]
+        assert len(set(labels)) == len(labels), f"duplicate names at {grid}x{grid}"
+
+
+def test_numbering_follows_the_reading_order_of_the_zone_list():
+    # North to south, west to east — so "North-West 2" is the one after
+    # "North-West 1" in the list the farmer is looking at.
+    assert section_label(0, 0, 5) == "North-West 1"
+    assert section_label(0, 1, 5) == "North-West 2"
+    assert section_label(1, 0, 5) == "North-West 3"
+
+
+# --- Grid sizing --------------------------------------------------------------
+
+def test_small_fields_stay_at_four_zones():
+    # Quartering a 2 ha plot is already fine-grained guidance.
+    assert suggest_grid_size(1.5) == 2
+    assert suggest_grid_size(8) == 2
+
+
+def test_large_fields_get_more_zones_so_each_stays_walkable():
+    # A fixed 2x2 turns a 400 ha block into four 100 ha slabs, which is not
+    # guidance — "the North-East is stressed" has to narrow something down.
+    assert suggest_grid_size(25) > 2
+    assert suggest_grid_size(60) > suggest_grid_size(10)
+
+
+def test_zone_size_is_driven_toward_something_walkable():
+    for area in (12, 30, 55):
+        grid = suggest_grid_size(area)
+        assert area / (grid * grid) <= WALKABLE_ZONE_HA * 1.01
+
+
+def test_grid_is_capped_so_the_farmer_reads_places_not_a_heatmap():
+    assert suggest_grid_size(400) <= 4
+    assert suggest_grid_size(10_000) <= 4
+    assert suggest_grid_size(400, max_grid=6) <= 6
+
+
+def test_unknown_area_falls_back_to_four_zones():
+    assert suggest_grid_size(None) == 2
+    assert suggest_grid_size(0) == 2
+    assert suggest_grid_size(-5) == 2

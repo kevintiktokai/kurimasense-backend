@@ -22,7 +22,7 @@ from typing import Optional
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from psycopg2.extras import RealDictCursor
 
-from field_sections import compute_sections
+from field_sections import compute_sections, suggest_grid_size
 from season_routes import get_principal
 from services.field_state.aggregator import (
     resolve_access, FieldNotFound, FieldAccessDenied,
@@ -30,7 +30,10 @@ from services.field_state.aggregator import (
 
 router = APIRouter(tags=["sections"])
 
-MAX_GRID = 3  # 2 → 4 zones (default), 3 → 9 zones; beyond that zones stop being walkable guidance
+MAX_GRID = 4  # 4 → 16 zones. Past this a farmer is reading a heat map rather
+              # than a list of places to walk, so the cap stays low. Raised from
+              # 3 because a large farm quartered into 100 ha slabs is not
+              # guidance — see suggest_grid_size, which scales with field area.
 
 
 def _resolve_field(field_id: str, principal: dict) -> dict:
@@ -46,6 +49,17 @@ def _resolve_field(field_id: str, principal: dict) -> dict:
         raise HTTPException(status_code=403, detail="Access denied")
 
 
+def _area_of(field: dict) -> Optional[float]:
+    """Field area in hectares, for choosing a grid that keeps zones walkable."""
+    raw = field.get("size_hectares")
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def _polygon_of(field: dict) -> list:
     coords = field.get("polygon_coordinates")
     if isinstance(coords, str):
@@ -59,15 +73,21 @@ def _polygon_of(field: dict) -> list:
 @router.get("/fields/{field_id}/sections")
 def get_field_sections(
     field_id: str,
-    grid: int = Query(2, ge=1, le=MAX_GRID),
+    grid: Optional[int] = Query(None, ge=1, le=MAX_GRID),
     principal: dict = Depends(get_principal),
 ):
     """Zones for the field plus the most recent per-zone analysis (if any).
 
     Always returns the zone geometry — a field that has never been
     zone-analyzed still renders its grid in the UI, with ``ndvi: null``.
+
+    When ``grid`` is omitted it is chosen from the field's area, so zones stay
+    roughly walkable on both a 2 ha plot and a 60 ha block. An explicit value
+    still wins.
     """
     field = _resolve_field(field_id, principal)
+    if grid is None:
+        grid = suggest_grid_size(_area_of(field), max_grid=MAX_GRID)
     sections = compute_sections(_polygon_of(field), grid=grid)
     if not sections:
         raise HTTPException(status_code=422, detail="Field has no usable boundary polygon")
@@ -194,12 +214,19 @@ def _run_section_analysis(field_id: str, tenant_id: Optional[str],
 def analyze_field_sections(
     field_id: str,
     background_tasks: BackgroundTasks,
-    grid: int = Query(2, ge=1, le=MAX_GRID),
+    grid: Optional[int] = Query(None, ge=1, le=MAX_GRID),
     principal: dict = Depends(get_principal),
 ):
     """Kick off per-zone satellite sampling (background; ~seconds per zone).
-    Client polls GET /fields/{id}/sections until ``analyzed_at`` advances."""
+    Client polls GET /fields/{id}/sections until ``analyzed_at`` advances.
+
+    Defaults to the same area-derived grid as the read endpoint, so analysis
+    lands on the zones the farmer is actually looking at rather than a
+    different set they never asked for.
+    """
     field = _resolve_field(field_id, principal)
+    if grid is None:
+        grid = suggest_grid_size(_area_of(field), max_grid=MAX_GRID)
     sections = compute_sections(_polygon_of(field), grid=grid)
     if not sections:
         raise HTTPException(status_code=422, detail="Field has no usable boundary polygon")
