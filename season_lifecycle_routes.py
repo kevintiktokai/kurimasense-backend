@@ -38,7 +38,7 @@ from services.planning.establishment import (
 )
 from services.planning.fertiliser import build_fertiliser_programme
 from services.planning.postharvest import build_post_harvest_plan
-from services.seasons.retrospective import build_retrospective
+from services.seasons.retrospective import build_retrospective, derive_topdress_delay
 from services.planning.windows import build_action_windows
 from services.seasons import lifecycle
 from services.seasons import service as seasons
@@ -135,6 +135,62 @@ def _variety_potential(crop: Optional[str], variety: Optional[str]) -> Optional[
     except Exception as e:
         print(f"[season_lifecycle_routes] variety potential lookup failed: {e}")
         return None
+
+
+def _derive_topdress_delay_for(
+    season: Dict[str, Any], user: AuthenticatedUser
+) -> Optional[int]:
+    """Days late the first nitrogen went on, from this season's logged inputs.
+
+    Returns None when nothing identifiable was logged — which the retrospective
+    treats as "no evidence" rather than "on time".
+    """
+    field_id = season.get("field_id")
+    if not field_id or not season.get("planting_date"):
+        return None
+
+    # When the window should have opened, from the crop's own schedule.
+    expected_day = 28
+    try:
+        from crop_profiles import get_crop_profile_or_generic
+        programme = build_fertiliser_programme(
+            get_crop_profile_or_generic(season.get("crop_type") or "")
+        )
+        step = next((s for s in programme.steps if s.key == "top_dress_1"), None)
+        if step and step.days_after_planting is not None:
+            expected_day = step.days_after_planting
+    except Exception as e:
+        print(f"[season_lifecycle_routes] top-dress window lookup failed: {e}")
+
+    try:
+        from database import get_db_connection
+        from psycopg2.extras import RealDictCursor
+
+        conn = get_db_connection()
+        if not conn:
+            return None
+        try:
+            from services.seasons.repository import _arm
+            _arm(conn, user.user_id, user.tenant_ids)
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute(
+                "SELECT input_type, input_date FROM field_inputs "
+                "WHERE field_id = %s::uuid AND input_date IS NOT NULL "
+                "ORDER BY input_date ASC",
+                (field_id,),
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+            cur.close()
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"[season_lifecycle_routes] input history lookup failed: {e}")
+        return None
+
+    return derive_topdress_delay(rows, season.get("planting_date"), expected_day)
 
 
 def _field_context(field: dict) -> Dict[str, Any]:
@@ -333,10 +389,17 @@ def get_season_retrospective(
     if potential is None:
         potential = _variety_potential(season.get("crop_type"), season.get("variety"))
 
+    # Derive the top-dress delay from what was actually logged, rather than
+    # asking the caller. An explicit override still wins, so the value can be
+    # corrected when a farmer knows the record is wrong.
+    delay = late_topdress_days
+    if delay is None:
+        delay = _derive_topdress_delay_for(season, user)
+
     return build_retrospective(
         season,
         potential_yield_t_ha=potential,
-        late_topdress_days=late_topdress_days,
+        late_topdress_days=delay,
     ).to_dict()
 
 
