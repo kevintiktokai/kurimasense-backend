@@ -37,6 +37,7 @@ from services.planning.establishment import (
     stand_check_row_length_m,
 )
 from services.planning.fertiliser import build_fertiliser_programme
+from services.planning.execution import assess_application, summarise_season_execution
 from services.planning.postharvest import build_post_harvest_plan
 from services.seasons.retrospective import build_retrospective, derive_topdress_delay
 from services.planning.windows import build_action_windows
@@ -401,6 +402,83 @@ def get_season_retrospective(
         potential_yield_t_ha=potential,
         late_topdress_days=delay,
     ).to_dict()
+
+
+@router.get("/seasons/{season_id}/execution")
+def get_season_execution(
+    season_id: str,
+    soil_texture: Optional[str] = Query(None),
+    user: AuthenticatedUser = Depends(get_authenticated_user),
+):
+    """How well this season's nitrogen actually went on, not just that it did.
+
+    A task tick says an application happened. It does not say whether the
+    nitrogen reached the crop: urea banded, urea broadcast onto dry soil, and
+    urea followed by a downpour on sand are three completely different seasons
+    that look identical in the task list.
+
+    Applications without enough recorded are reported as unassessable rather
+    than assumed good — averaging an unknown in as perfect would quietly reward
+    recording nothing.
+    """
+    season = _resolve_season(season_id, user)
+
+    rows: list = []
+    try:
+        from database import get_db_connection
+        from psycopg2.extras import RealDictCursor
+
+        conn = get_db_connection()
+        if conn:
+            try:
+                from services.seasons.repository import _arm
+                _arm(conn, user.user_id, user.tenant_ids)
+                cur = conn.cursor(cursor_factory=RealDictCursor)
+                cur.execute(
+                    "SELECT input_type, product_name, application_method, "
+                    "       incorporated, rain_mm_48h, quantity, unit, input_date "
+                    "FROM field_inputs "
+                    "WHERE field_id = %s::uuid AND input_date IS NOT NULL "
+                    "ORDER BY input_date ASC",
+                    (season["field_id"],),
+                )
+                rows = [dict(r) for r in cur.fetchall()]
+                cur.close()
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+    except Exception as e:
+        # An un-migrated column must not take the view down.
+        print(f"[season_lifecycle_routes] input execution lookup failed: {e}")
+
+    assessments = []
+    applications = []
+    for r in rows:
+        a = assess_application(
+            input_type=r.get("input_type"),
+            product=r.get("product_name"),
+            method=r.get("application_method"),
+            incorporated=r.get("incorporated"),
+            rain_mm_48h=float(r["rain_mm_48h"]) if r.get("rain_mm_48h") is not None else None,
+            soil_texture=soil_texture,
+        )
+        assessments.append(a)
+        applications.append({
+            "input_type": r.get("input_type"),
+            "product": r.get("product_name"),
+            "input_date": r["input_date"].isoformat() if r.get("input_date") else None,
+            "quantity": float(r["quantity"]) if r.get("quantity") is not None else None,
+            "unit": r.get("unit"),
+            "assessment": a.to_dict(),
+        })
+
+    return {
+        "season_id": season_id,
+        "applications": applications,
+        **summarise_season_execution(assessments),
+    }
 
 
 @router.get("/fields/{field_id}/post-harvest")

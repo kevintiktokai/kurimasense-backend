@@ -344,3 +344,11 @@ ALTER TABLE field_inputs           ADD COLUMN IF NOT EXISTS season_id UUID REFER
 ALTER TABLE field_activities       ADD COLUMN IF NOT EXISTS season_id UUID REFERENCES seasons(id) ON DELETE SET NULL;
 ALTER TABLE field_section_analysis ADD COLUMN IF NOT EXISTS season_id UUID REFERENCES seasons(id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS idx_daily_logs_season ON daily_logs(season_id, log_date);
+
+-- Input execution quality (migration 020). Mirrored so convergence holds with
+-- DB_SELF_HEAL_SCHEMA=false; 020 remains canonical.
+ALTER TABLE field_inputs ADD COLUMN IF NOT EXISTS product_name TEXT;
+ALTER TABLE field_inputs ADD COLUMN IF NOT EXISTS application_method TEXT;
+ALTER TABLE field_inputs ADD COLUMN IF NOT EXISTS incorporated BOOLEAN;
+ALTER TABLE field_inputs ADD COLUMN IF NOT EXISTS rain_mm_48h NUMERIC(6,1);
+ALTER TABLE field_inputs ADD COLUMN IF NOT EXISTS notes TEXT;
