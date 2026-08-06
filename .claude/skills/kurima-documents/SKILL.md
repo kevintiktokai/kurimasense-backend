@@ -37,7 +37,12 @@ Read `services/documents/__init__.py` first — it maps the package.
    `None` rather than guessing; a template that renders `0%` for an unmeasured
    stand undoes that at the last step. Use `class="absent"`.
 
-5. **Autoescaping stays on.** Grower and field names reach these templates. The
+5. **A portfolio document must never be built for a demo without checking
+   consent.** `portfolio_report.anonymise_rows` removes names, and its docstring
+   is explicit that this is a guard against an accident, not permission — the
+   districts and hectares are still a real client's. Read it before using it.
+
+6. **Autoescaping stays on.** Grower and field names reach these templates. The
    only `Markup` in the package is the stylesheet, and the caller-supplied parts
    of that go through `css_string`.
 

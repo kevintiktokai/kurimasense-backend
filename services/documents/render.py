@@ -23,6 +23,7 @@ from markupsafe import Markup
 
 from . import tokens as t
 from .evidence_pack import EvidencePack
+from .portfolio_report import PortfolioReport
 from .identity import CoverageError, DocumentIdentity, MARK, format_hectares
 from .stylesheet import page_furniture_css, stylesheet
 
@@ -215,6 +216,59 @@ def render_evidence_pack(pack: EvidencePack, *, issue_number: str) -> bytes:
         theme_status_labels=THEME_STATUS_LABELS,
     )
     return render_pdf("evidence_pack.html", context)
+
+
+def render_portfolio_report(
+    report: PortfolioReport, *, issue_number: str
+) -> bytes:
+    """
+    A :class:`~services.documents.portfolio_report.PortfolioReport` as PDF bytes.
+
+    ``hectares`` on the identity is the **observed** figure, never hectares
+    under management. The verification line is generated from it, and a
+    portfolio report claiming to have verified ground it has never seen is the
+    same failure as an evidence pack doing so — with a lender on the other end.
+    """
+    identity = DocumentIdentity(
+        kind="portfolio_report",
+        issue_number=issue_number,
+        issued_at=utcnow(),
+        subject=report.client_name,
+        coverage_start=report.coverage_start,
+        coverage_end=report.coverage_end,
+        hectares=report.hectares_observed or None,
+    )
+
+    managed = report.hectares_under_management
+
+    def share(hectares: float) -> str:
+        """A district's share of the book. Guarded because a portfolio with no
+        recorded areas would otherwise divide by zero at render time — in front
+        of whoever asked for the document."""
+        if not managed:
+            return "—"
+        return f"{hectares / managed * 100:.0f}%"
+
+    context = build_context(
+        identity,
+        title=report.client_name,
+        title_accent=(
+            f"{report.coverage_start:%Y}/{report.coverage_end:%y} portfolio"
+        ),
+        subtitle=(
+            "Scale, concentration and condition across the book, with the "
+            "fields not yet observed named rather than netted out."
+        ),
+        report=report,
+        hectares=format_hectares,
+        share=share,
+        observed_label=(
+            format_hectares(report.hectares_observed)
+            if report.hectares_observed else "—"
+        ),
+        managed_label=format_hectares(managed) if managed else "—",
+    )
+    return render_pdf("portfolio_report.html", context)
 
 
 def utcnow() -> datetime:

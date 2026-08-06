@@ -351,6 +351,11 @@ h1, h2, h3, .display, .title, .section-title, .subsection-title {{
    two unrelated fragments. Renderers fall back to breaking when the content
    genuinely exceeds a page, so this is safe to over-apply. */
 .section.keep {{ break-inside: avoid; }}
+/* An intro paragraph directly under a heading belongs to it. Without this the
+   heading and its sentence sit at the foot of one page and the table they
+   introduce starts the next, which reads as two unrelated things — and unlike
+   `.section.keep` this works for tables that genuinely have to run over pages. */
+.section-title + p {{ break-after: avoid; }}
 /* No rule under the heading — the playbook doesn't use one, and the deep-green
    serif against warm paper carries the hierarchy on its own. A rule as well
    reads as belt and braces.

@@ -1,0 +1,192 @@
+{#
+  Portfolio report.
+
+  Ordered for a reader deciding whether to lend against this book, or to renew
+  it — not for the person who assembled it:
+
+    1. Scale, and what of it has actually been seen.
+    2. Concentration by district. A portfolio in one district is one weather
+       event, and it is the first thing anyone asks.
+    3. Condition, as a distribution rather than an average.
+    4. The attention list — worst first, largest first within that.
+    5. Fields with no observation, named.
+
+  Every claim comes from services/documents/portfolio_report.py.
+#}
+{% extends "base.html" %}
+
+{% block content %}
+
+  <div class="section">
+    <h3 class="section-title">Scale and coverage</h3>
+
+    <div class="metrics">
+      <div class="metric">
+        <span class="label">Hectares observed</span>
+        <span class="value">{{ observed_label }}</span>
+      </div>
+      <div class="metric">
+        <span class="label">Under management</span>
+        <span class="value">{{ managed_label }}</span>
+      </div>
+      <div class="metric">
+        <span class="label">Fields</span>
+        <span class="value">{{ report.field_count }}</span>
+      </div>
+      <div class="metric">
+        <span class="label">Growers</span>
+        <span class="value">{{ report.grower_count }}</span>
+      </div>
+    </div>
+
+    {% if report.qualifications %}
+      <div class="callout warn">
+        <span class="label">Read the figures above with these</span>
+        <ul style="margin: 0; padding-left: 14pt;">
+          {% for note in report.qualifications %}
+            <li>{{ note }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+    {% else %}
+      <div class="callout">
+        <span class="label">Fully observed</span>
+        <p style="margin-bottom: 0;">
+          Every field in this portfolio has a current observation. Nothing below
+          is estimated from an absence.
+        </p>
+      </div>
+    {% endif %}
+  </div>
+
+  <div class="section">
+    <h3 class="section-title">Concentration by district</h3>
+    <table class="doc-table">
+      <thead>
+        <tr>
+          <th>District</th>
+          <th class="num">Fields</th>
+          <th class="num">Observed</th>
+          <th class="num">Hectares</th>
+          <th class="num">Share</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in report.districts %}
+          <tr>
+            <td>{{ row.district }}</td>
+            <td class="num">{{ row.fields }}</td>
+            <td class="num">{{ row.observed_fields }}</td>
+            <td class="num">{{ hectares(row.hectares) }}</td>
+            <td class="num">{{ share(row.hectares) }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section">
+    <h3 class="section-title">Condition</h3>
+    {% if report.bands %}
+      <table class="doc-table">
+        <thead>
+          <tr>
+            <th>Band</th>
+            <th class="num">Fields</th>
+            <th class="num">Hectares</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in report.bands %}
+            <tr>
+              <td>{{ row.band | capitalize }}</td>
+              <td class="num">{{ row.fields }}</td>
+              <td class="num">{{ hectares(row.hectares) }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <p class="caption">
+        Distribution rather than an average, because an average hides the tail —
+        and the tail is what a lender is exposed to. Only scored fields appear:
+        a field nobody has observed has no band, and inventing one would put it
+        into a credit assessment.
+      </p>
+    {% else %}
+      <p class="absent">
+        No field in this portfolio has been scored yet, so there is no
+        distribution to report. This is an absence of observation, not a finding.
+      </p>
+    {% endif %}
+  </div>
+
+  {% if report.attention %}
+    <div class="section">
+      <h3 class="section-title">Fields needing attention</h3>
+      <p>
+        Worst first, then largest first — two equally urgent fields are not
+        equally expensive.
+      </p>
+      <table class="doc-table">
+        <thead>
+          <tr>
+            <th>Field</th>
+            <th>Grower</th>
+            <th>District</th>
+            <th class="num">Hectares</th>
+            <th class="num">Score</th>
+            <th>Concern</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for f in report.attention %}
+            <tr>
+              <td>{{ f.field_name }}</td>
+              <td>{{ f.grower_name or '—' }}</td>
+              <td>{{ f.district or '—' }}</td>
+              <td class="num">{{ hectares(f.hectares) if f.hectares else '—' }}</td>
+              {% if f.kurima_score is none %}
+                <td class="num absent">—</td>
+              {% else %}
+                <td class="num">{{ f.kurima_score }}</td>
+              {% endif %}
+              <td>{{ f.primary_concern or '—' }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+
+  {% if report.unobserved_fields %}
+    <div class="section keep">
+      <h3 class="section-title">Fields with no observation</h3>
+      <p>
+        In the portfolio but not yet seen. Excluded from every score, band and
+        hectare figure above — they are not healthy fields and they are not
+        failing ones, they are unknown.
+      </p>
+      <table class="doc-table">
+        <thead>
+          <tr>
+            <th>Field</th>
+            <th>Grower</th>
+            <th>District</th>
+            <th class="num">Hectares</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for f in report.unobserved_fields %}
+            <tr>
+              <td>{{ f.field_name }}</td>
+              <td>{{ f.grower_name or '—' }}</td>
+              <td>{{ f.district or '—' }}</td>
+              <td class="num">{{ hectares(f.hectares) if f.hectares else '—' }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+
+{% endblock %}
