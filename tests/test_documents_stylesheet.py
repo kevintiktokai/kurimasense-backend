@@ -232,6 +232,13 @@ def test_the_cover_foot_is_pinned_rather_than_auto_margined():
     assert "bottom:" in foot
 
 
+def test_an_intro_paragraph_stays_with_its_heading():
+    # Heading and sentence at the foot of one page, the table they introduce
+    # starting the next. Unlike `.section.keep` this works for tables that
+    # genuinely have to run over pages.
+    assert ".section-title + p" in stylesheet()
+
+
 def test_short_sections_can_opt_out_of_breaking():
     # Not a default: a grower list has to be allowed to run over pages. But a
     # heading and intro stranded a page away from their four-row table read as
