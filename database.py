@@ -445,6 +445,37 @@ def init_db():
                     WHERE timb_grower_number IS NOT NULL;
             """)
 
+            # Document registry (migration 022) — what was issued, to whom, and
+            # what it claimed at the time. Without it an issue number printed on
+            # a forwarded pack refers to nothing on our side.
+            #
+            # No delivery tracking here on purpose; see the migration's header.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS document_issues (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                    kind TEXT NOT NULL,
+                    issue_number TEXT NOT NULL UNIQUE,
+                    issue_year INTEGER NOT NULL,
+                    sequence INTEGER NOT NULL,
+                    subject TEXT NOT NULL,
+                    coverage_start DATE,
+                    coverage_end DATE,
+                    hectares NUMERIC(12,2),
+                    content_sha256 TEXT NOT NULL,
+                    issued_by_user_id UUID REFERENCES profiles(id),
+                    issued_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                    forwarded_at TIMESTAMP WITH TIME ZONE,
+                    forwarded_note TEXT
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_document_issues_kind_year_seq
+                    ON document_issues (kind, issue_year, sequence);
+                CREATE INDEX IF NOT EXISTS idx_document_issues_tenant
+                    ON document_issues (tenant_id, issued_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_document_issues_hash
+                    ON document_issues (content_sha256);
+            """)
+
             # Institutional operations tables (migration 013) — team invites,
             # agronomist field activities, and field assignments. Self-heal on
             # boot like the tables above; the member-role/status ALTERs are also
