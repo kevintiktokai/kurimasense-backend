@@ -234,3 +234,82 @@ def analyze_field_sections(
     tenant_id = str(field["tenant_id"]) if field.get("tenant_id") else None
     background_tasks.add_task(_run_section_analysis, field_id, tenant_id, sections, grid)
     return {"status": "started", "zones": len(sections), "grid": grid}
+
+
+@router.get("/fields/{field_id}/zones/diagnosis")
+def get_zone_diagnosis(
+    field_id: str,
+    grid: Optional[int] = Query(None, ge=1, le=MAX_GRID),
+    principal: dict = Depends(get_principal),
+):
+    """Why each zone is where it is, worst first.
+
+    A zone number tells a farmer where to walk but nothing about what they will
+    find. This joins the per-zone NDVI already collected with the farmer's own
+    scouting pins — attributed to the zone whose polygon contains them — and the
+    field's soil profile, so a weak patch comes with a candidate explanation
+    instead of just a colour.
+
+    Causes are only named where something corroborates them. An unevidenced
+    guess is worse than silence: a farmer who walks expecting waterlogging and
+    finds armyworm stops trusting the map.
+    """
+    from services.zones.diagnosis import diagnose_zones, field_mean_ndvi
+
+    field = _resolve_field(field_id, principal)
+    if grid is None:
+        grid = suggest_grid_size(_area_of(field), max_grid=MAX_GRID)
+
+    # Reuse the read endpoint so zone geometry, labels and NDVI are identical
+    # to what the map is showing — two views of the same field must not
+    # disagree about which zone is which.
+    payload = get_field_sections(field_id, grid=grid, principal=principal)
+    zones = payload.get("sections", [])
+
+    observations: list = []
+    soil: dict = {}
+    from database import get_db_connection
+    conn = get_db_connection()
+    if conn:
+        try:
+            from tenancy import arm_rls_gucs
+            arm_rls_gucs(conn, principal["requester_id"],
+                         [str(field["tenant_id"])] if field.get("tenant_id") else [])
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute(
+                "SELECT category, severity, notes, lat, lon, created_at "
+                "FROM scouting_observations WHERE field_id = %s::uuid "
+                "AND lat IS NOT NULL AND lon IS NOT NULL "
+                "ORDER BY created_at DESC LIMIT 200",
+                (field_id,),
+            )
+            observations = [dict(r) for r in cur.fetchall()]
+            cur.close()
+        except Exception as e:
+            # Diagnosis without scouting context is still useful; a missing
+            # table or column must not take the whole view down.
+            print(f"[section_routes] scouting lookup failed: {e}")
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    try:
+        from services.soil_intelligence import get_stored_profile
+        profile = get_stored_profile(
+            field_id, principal["requester_id"], principal.get("tenant_ids")
+        )
+        if profile:
+            soil = {k: a.value for k, a in (profile.attributes or {}).items()}
+    except Exception as e:
+        print(f"[section_routes] soil lookup failed: {e}")
+
+    return {
+        "field_id": field_id,
+        "grid": grid,
+        # Computed here rather than read from the sections payload, which does
+        # not carry it — the diagnosis is what needs a field baseline.
+        "field_mean_ndvi": field_mean_ndvi(zones),
+        "zones": diagnose_zones(zones, observations=observations, soil=soil),
+    }
