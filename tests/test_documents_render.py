@@ -154,3 +154,122 @@ def test_pdf_is_a4():
     # A4 is 595.28 x 841.89 pt.
     assert round(float(box.width)) == 595
     assert round(float(box.height)) == 842
+
+
+# ── Evidence pack ─────────────────────────────────────────────────────────────
+
+
+def _pack(**overrides):
+    from services.documents.evidence_pack import (
+        FieldEvidence, GrowerEvidence, build_evidence_pack,
+    )
+
+    themes = frozenset(
+        {"land_use", "soil", "crop_protection", "good_agricultural_practice"}
+    )
+
+    def fld(name, ha, observed=True, th=themes):
+        return FieldEvidence(name.lower(), name, ha, "Tobacco", observed, th)
+
+    kwargs = dict(
+        client_name="Servemox",
+        coverage_start=date(2025, 11, 1),
+        coverage_end=date(2026, 5, 31),
+        growers=[
+            GrowerEvidence("g1", "Tariro", "M12345", (fld("Home Field", 12.4),)),
+            GrowerEvidence("g2", "Rudo", None, (fld("River Block", 31.0, observed=False, th=frozenset()),)),
+        ],
+    )
+    kwargs.update(overrides)
+    return build_evidence_pack(**kwargs)
+
+
+def test_evidence_pack_renders_to_a_pdf():
+    from services.documents.render import render_evidence_pack
+
+    pdf = render_evidence_pack(_pack(), issue_number="EP-2026-000143")
+    assert pdf.startswith(b"%PDF-")
+
+
+def test_the_verification_line_states_observed_hectares_not_contracted():
+    # The one that matters. 12.4 ha observed, 43.4 ha under contract — a line
+    # claiming 43 would assert coverage over ground nobody looked at.
+    # Printed as "12 ha": format_hectares drops the decimal above 10 ha, since
+    # satellite-derived boundaries do not justify one.
+    import io
+
+    pypdf = pytest.importorskip("pypdf")
+    from services.documents.render import render_evidence_pack
+
+    pack = _pack()
+    assert pack.total_hectares > pack.covered_hectares  # the trap exists
+
+    pdf = render_evidence_pack(pack, issue_number="EP-2026-000143")
+    text = "\n".join(
+        p.extract_text() or "" for p in pypdf.PdfReader(io.BytesIO(pdf)).pages
+    )
+    assert "· 12 ha" in text
+    assert "43 ha" not in text
+
+
+def test_a_pack_with_nothing_observed_renders_without_a_verification_line():
+    # Correct rather than defensive: there is genuinely nothing to verify, and
+    # the document says so instead of carrying an unqualified mark.
+    import io
+
+    pypdf = pytest.importorskip("pypdf")
+    from services.documents.evidence_pack import FieldEvidence, GrowerEvidence
+    from services.documents.render import render_evidence_pack
+
+    pack = _pack(
+        growers=[
+            GrowerEvidence(
+                "g1", "Tariro", "M1",
+                (FieldEvidence("f", "F", 10.0, "Tobacco", False, frozenset()),),
+            )
+        ]
+    )
+    pdf = render_evidence_pack(pack, issue_number="EP-2026-000001")
+    text = "\n".join(
+        p.extract_text() or "" for p in pypdf.PdfReader(io.BytesIO(pdf)).pages
+    )
+    assert "does not carry a verification line" in text
+    assert "Verified by KurimaSense ·" not in text
+
+
+def test_untraceable_growers_appear_in_the_rendered_table():
+    from services.documents.render import render_html
+
+    # Rendered, not just computed: the gap has to survive into the document.
+    html = render_html(
+        "evidence_pack.html",
+        _pack_context(),
+    )
+    assert "Rudo" in html
+    assert "not recorded" in html
+
+
+def _pack_context():
+    from services.documents.identity import DocumentIdentity, format_hectares
+    from services.documents.render import THEME_STATUS_LABELS, build_context, utcnow
+
+    pack = _pack()
+    identity = DocumentIdentity(
+        kind="evidence_pack",
+        issue_number="EP-2026-000143",
+        issued_at=utcnow(),
+        subject=pack.client_name,
+        coverage_start=pack.coverage_start,
+        coverage_end=pack.coverage_end,
+        hectares=pack.covered_hectares or None,
+    )
+    return build_context(
+        identity,
+        title=pack.client_name,
+        subtitle="Season evidence",
+        embed_fonts=False,
+        pack=pack,
+        hectares=format_hectares,
+        hectares_label=format_hectares(pack.covered_hectares),
+        theme_status_labels=THEME_STATUS_LABELS,
+    )

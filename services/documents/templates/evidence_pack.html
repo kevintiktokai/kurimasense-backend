@@ -1,0 +1,162 @@
+{#
+  Season Evidence Pack.
+
+  The artefact a contractor forwards to a leaf buyer. Its order is chosen for
+  the person receiving it, not the person sending it:
+
+    1. What this covers, and what it does not — before any figure, so nobody
+       reads the numbers without the caveats.
+    2. STP themes, because that is what a compliance team opens it for.
+    3. The grower table, with TIMB numbers, because that is what makes it
+       checkable rather than merely readable.
+    4. Fields not observed, named. A gap named is a gap a buyer can price;
+       a gap omitted is one they find later.
+
+  Every claim comes from services/documents/evidence_pack.py. Nothing on this
+  page computes anything.
+#}
+{% extends "base.html" %}
+
+{% block content %}
+
+  <div class="section">
+    <h3 class="section-title">What this pack covers</h3>
+
+    <div class="metrics">
+      <div class="metric">
+        <span class="label">Hectares observed</span>
+        <span class="value">{{ hectares_label }}</span>
+      </div>
+      <div class="metric">
+        <span class="label">Growers</span>
+        <span class="value">{{ pack.grower_count }}</span>
+      </div>
+      <div class="metric">
+        <span class="label">Traceable to TIMB</span>
+        <span class="value">{{ pack.traceable_growers | length }}</span>
+      </div>
+      <div class="metric">
+        <span class="label">Fields</span>
+        <span class="value">{{ pack.field_count }}</span>
+      </div>
+    </div>
+
+    {#
+      The qualifications go here — above everything, not in an appendix. The
+      playbook's position is that one data controversy ends the company; the
+      defence is that the pack said so itself, first and in the same typeface
+      as the good news.
+    #}
+    {% if pack.qualifications %}
+      <div class="callout warn">
+        <span class="label">Read the figures above with these</span>
+        <ul style="margin: 0; padding-left: 14pt;">
+          {% for note in pack.qualifications %}
+            <li>{{ note }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+    {% else %}
+      <div class="callout">
+        <span class="label">Complete</span>
+        <p style="margin-bottom: 0;">
+          Every grower in this pack carries a TIMB number, every field was
+          observed in the period, and every theme below is evidenced.
+        </p>
+      </div>
+    {% endif %}
+  </div>
+
+  <div class="section">
+    <h3 class="section-title">Sustainable Tobacco Programme themes</h3>
+    <table class="doc-table">
+      <thead>
+        <tr>
+          <th>Theme</th>
+          <th class="num">Fields evidenced</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for theme in pack.themes %}
+          <tr>
+            <td>{{ theme.label }}</td>
+            {% if theme.share is none %}
+              <td class="num absent">—</td>
+            {% else %}
+              <td class="num">{{ theme.fields_with_evidence }} / {{ theme.fields_total }}</td>
+            {% endif %}
+            <td>{{ theme_status_labels[theme.status] }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="caption">
+      A theme with no fields in scope is shown as a dash, not as zero. Nothing
+      here reports an absence of findings as a finding of absence.
+    </p>
+  </div>
+
+  <div class="section">
+    <h3 class="section-title">Growers</h3>
+    <table class="doc-table">
+      <thead>
+        <tr>
+          <th>Grower</th>
+          <th>TIMB number</th>
+          <th class="num">Fields</th>
+          <th class="num">Hectares observed</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for grower in pack.growers %}
+          <tr>
+            <td>{{ grower.grower_name }}</td>
+            {% if grower.timb_grower_number %}
+              <td>{{ grower.timb_grower_number }}</td>
+            {% else %}
+              {# Named, not omitted. This row is the actionable one. #}
+              <td class="absent">— not recorded</td>
+            {% endif %}
+            <td class="num">{{ grower.fields | length }}</td>
+            <td class="num">{{ hectares(grower.covered_hectares) }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% if pack.unobserved_fields %}
+    <div class="section">
+      <h3 class="section-title">Fields not observed in this period</h3>
+      <p>
+        These fields are in scope but were not observed between
+        {{ period_label }}. They are excluded from the hectare figure above and
+        from every theme count.
+      </p>
+      <table class="doc-table">
+        <thead>
+          <tr>
+            <th>Field</th>
+            <th>Crop</th>
+            <th class="num">Hectares</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for f in pack.unobserved_fields %}
+            <tr>
+              <td>{{ f.field_name }}</td>
+              <td>{{ f.crop or '—' }}</td>
+              {% if f.hectares is none %}
+                <td class="num absent">—</td>
+              {% else %}
+                <td class="num">{{ hectares(f.hectares) }}</td>
+              {% endif %}
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+
+{% endblock %}
