@@ -37,6 +37,7 @@ from services.planning.establishment import (
     stand_check_row_length_m,
 )
 from services.planning.fertiliser import build_fertiliser_programme
+from services.planning.postharvest import build_post_harvest_plan
 from services.planning.windows import build_action_windows
 from services.seasons import lifecycle
 from services.seasons import service as seasons
@@ -266,6 +267,39 @@ def get_action_windows(
         "planting_date": season.get("planting_date"),
         "windows": windows,
     }
+
+
+@router.get("/fields/{field_id}/post-harvest")
+def get_post_harvest_plan(
+    field_id: str,
+    crop: Optional[str] = Query(None, description="Defaults to the field's current crop"),
+    user: AuthenticatedUser = Depends(get_authenticated_user),
+):
+    """Drying, grading, storage and monitoring for a crop that is off the field.
+
+    Harvest closes the loop for the model; for the farmer it opens the riskiest
+    window of the year. Regional storage losses run 20-30%, so a flawless season
+    can still lose a quarter of itself in the shed. Every crop profile has
+    carried ``harvest_moisture``, ``storage_conditions`` and
+    ``post_harvest_notes`` since the knowledge base was written; nothing has
+    ever displayed them.
+    """
+    field = _resolve(field_id, user)
+
+    crop_name = crop or field.get("crop_type")
+    if not crop_name:
+        raise HTTPException(
+            status_code=400,
+            detail="No crop set for this field, so no post-harvest plan can be built.",
+        )
+
+    try:
+        from crop_profiles import get_crop_profile_or_generic
+        profile = get_crop_profile_or_generic(crop_name)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Crop profile unavailable: {e}")
+
+    return build_post_harvest_plan(profile).to_dict()
 
 
 @router.get("/fields/{field_id}/season-history")
