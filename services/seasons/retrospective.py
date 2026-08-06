@@ -32,7 +32,8 @@ research is explicit that farmers discount advice they cannot interrogate.
 from __future__ import annotations
 
 from dataclasses import dataclass, field as dc_field
-from typing import Any, Dict, List, Optional
+from datetime import date, datetime
+from typing import Any, Dict, List, Optional, Sequence
 
 # Below this fraction of target, a stand is thin enough to be worth naming as a
 # cause. Above it, plant-to-plant compensation absorbs the difference.
@@ -94,6 +95,19 @@ class Retrospective:
             "headline": self.headline,
             "notes": self.notes,
         }
+
+
+def _as_date(value: Any) -> Optional[date]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    try:
+        return datetime.strptime(str(value)[:10], "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
 
 
 def _as_float(value: Any) -> Optional[float]:
@@ -296,3 +310,69 @@ def build_retrospective(
         )
 
     return retro
+
+
+# ---------------------------------------------------------------------------
+# Deriving input timing from what was actually logged
+# ---------------------------------------------------------------------------
+
+# Input types that carry nitrogen. Matched loosely because farmers type these
+# freely ("AN", "ammonium nitrate", "urea top dress").
+_NITROGEN_KEYWORDS = (
+    "an", "ammonium nitrate", "urea", "top dress", "topdress", "top-dress",
+    "nitrogen", "uan", "can",
+)
+
+# Basal compounds are not top-dressing, and matching them would report the
+# top-dress as impossibly early.
+_BASAL_KEYWORDS = ("compound", "basal", "dap", "map", "npk")
+
+
+def _looks_like_nitrogen(input_type: Optional[str]) -> bool:
+    if not input_type:
+        return False
+    t = str(input_type).strip().lower()
+    if any(b in t for b in _BASAL_KEYWORDS):
+        return False
+    # Bare "an" must match as a whole word, or it fires on every word with
+    # those letters in it ("manure", "planting").
+    tokens = {tok.strip(" .,-") for tok in t.replace("-", " ").split()}
+    if "an" in tokens or "can" in tokens:
+        return True
+    return any(k in t for k in _NITROGEN_KEYWORDS if k not in ("an", "can"))
+
+
+def derive_topdress_delay(
+    inputs: Sequence[Dict[str, Any]],
+    planting_date: Any,
+    expected_day: int,
+) -> Optional[int]:
+    """How many days after the window opened the first nitrogen actually went on.
+
+    Returns ``None`` when nothing identifiable was logged — which is the right
+    answer, not zero. Reading "no record" as "applied on time" would quietly
+    credit farmers for work there is no evidence of, and the whole retrospective
+    depends on not doing that.
+
+    Negative delays (applied early) clamp to 0: early nitrogen is a different
+    conversation, not a yield penalty to charge here.
+    """
+    planted = _as_date(planting_date)
+    if not planted:
+        return None
+
+    days: List[int] = []
+    for row in inputs or []:
+        if not _looks_like_nitrogen(row.get("input_type")):
+            continue
+        applied = _as_date(row.get("input_date"))
+        if not applied:
+            continue
+        dap = (applied - planted).days
+        if dap < 0:
+            continue
+        days.append(dap)
+
+    if not days:
+        return None
+    return max(0, min(days) - expected_day)

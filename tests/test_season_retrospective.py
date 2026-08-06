@@ -248,3 +248,65 @@ def test_retrospective_serialises_for_the_api():
     assert d["gap_t_ha"] == pytest.approx(2.3)
     assert d["factors"][0]["controllable"] is True
     assert "unexplained_t_ha" in d
+
+
+# --- Deriving top-dress timing from logged inputs ----------------------------
+
+from services.seasons.retrospective import derive_topdress_delay  # noqa: E402
+
+
+def inp(input_type, input_date):
+    return {"input_type": input_type, "input_date": input_date}
+
+
+def test_nitrogen_applied_in_the_window_reads_as_on_time():
+    assert derive_topdress_delay([inp("AN", "2026-12-13")], "2026-11-15", 28) == 0
+
+
+def test_delay_is_measured_from_when_the_window_opened():
+    # Window opens day 28; applied day 48 -> 20 days late.
+    assert derive_topdress_delay([inp("Urea top dress", "2027-01-02")], "2026-11-15", 28) == 20
+
+
+def test_the_first_application_is_what_counts_not_the_last():
+    rows = [inp("AN", "2027-01-20"), inp("AN", "2026-12-15")]
+    assert derive_topdress_delay(rows, "2026-11-15", 28) == 2
+
+
+def test_basal_compounds_are_not_mistaken_for_top_dressing():
+    # Compound D goes on at planting; reading it as the top-dress would report
+    # the nitrogen as impossibly early.
+    rows = [inp("Compound D", "2026-11-15"), inp("Basal NPK", "2026-11-15")]
+    assert derive_topdress_delay(rows, "2026-11-15", 28) is None
+
+
+def test_nothing_logged_returns_none_rather_than_zero():
+    # Reading "no record" as "applied on time" would credit farmers for work
+    # there is no evidence of — the retrospective depends on not doing that.
+    assert derive_topdress_delay([], "2026-11-15", 28) is None
+    assert derive_topdress_delay([inp("Herbicide", "2026-12-01")], "2026-11-15", 28) is None
+
+
+def test_early_application_clamps_to_zero_rather_than_going_negative():
+    # Early nitrogen is a different conversation, not a penalty to charge here.
+    assert derive_topdress_delay([inp("AN", "2026-11-25")], "2026-11-15", 28) == 0
+
+
+def test_inputs_before_planting_are_ignored():
+    rows = [inp("AN", "2026-10-01"), inp("AN", "2027-01-02")]
+    assert derive_topdress_delay(rows, "2026-11-15", 28) == 20
+
+
+def test_bare_an_matches_as_a_word_not_a_substring():
+    # "manure" and "planting" both contain the letters; neither is AN.
+    assert derive_topdress_delay([inp("manure", "2026-12-13")], "2026-11-15", 28) is None
+    assert derive_topdress_delay([inp("an", "2026-12-13")], "2026-11-15", 28) == 0
+
+
+def test_missing_or_malformed_dates_are_skipped():
+    rows = [inp("AN", None), inp("AN", "nonsense"), inp("AN", "2027-01-02")]
+    assert derive_topdress_delay(rows, "2026-11-15", 28) == 20
+
+
+def test_no_planting_date_means_no_delay_can_be_derived():
+    assert derive_topdress_delay([inp("AN", "2026-12-13")], None, 28) is None
