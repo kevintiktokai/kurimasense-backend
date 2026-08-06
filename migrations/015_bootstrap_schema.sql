@@ -352,3 +352,36 @@ ALTER TABLE field_inputs ADD COLUMN IF NOT EXISTS application_method TEXT;
 ALTER TABLE field_inputs ADD COLUMN IF NOT EXISTS incorporated BOOLEAN;
 ALTER TABLE field_inputs ADD COLUMN IF NOT EXISTS rain_mm_48h NUMERIC(6,1);
 ALTER TABLE field_inputs ADD COLUMN IF NOT EXISTS notes TEXT;
+
+-- TIMB grower number (migration 021). Mirrored so convergence holds with
+-- DB_SELF_HEAL_SCHEMA=false; 021 remains canonical.
+ALTER TABLE growers ADD COLUMN IF NOT EXISTS timb_grower_number TEXT;
+CREATE INDEX IF NOT EXISTS idx_growers_timb_number
+    ON growers (tenant_id, timb_grower_number)
+    WHERE timb_grower_number IS NOT NULL;
+
+-- Document registry (migration 022). Mirrored; 022 remains canonical, and its
+-- comments explain why there is no delivery tracking here.
+CREATE TABLE IF NOT EXISTS document_issues (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    issue_number TEXT NOT NULL UNIQUE,
+    issue_year INTEGER NOT NULL,
+    sequence INTEGER NOT NULL,
+    subject TEXT NOT NULL,
+    coverage_start DATE,
+    coverage_end DATE,
+    hectares NUMERIC(12,2),
+    content_sha256 TEXT NOT NULL,
+    issued_by_user_id UUID REFERENCES profiles(id),
+    issued_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    forwarded_at TIMESTAMP WITH TIME ZONE,
+    forwarded_note TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_document_issues_kind_year_seq
+    ON document_issues (kind, issue_year, sequence);
+CREATE INDEX IF NOT EXISTS idx_document_issues_tenant
+    ON document_issues (tenant_id, issued_at DESC);
+CREATE INDEX IF NOT EXISTS idx_document_issues_hash
+    ON document_issues (content_sha256);
