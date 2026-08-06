@@ -24,6 +24,7 @@ from database import get_db_connection
 from auth_roles import require_institutional
 from tenancy import arm_rls_gucs
 from schemas import AuthenticatedUser, Grower, CreateGrowerRequest, UpdateGrowerRequest
+from services.documents.grower_number import GrowerNumberError, normalise_grower_number
 
 logger = logging.getLogger("kurimasense")
 
@@ -32,7 +33,7 @@ router = APIRouter(prefix="/tenants/me/growers", tags=["growers"])
 _GROWER_COLS = (
     "id::text AS id, tenant_id::text AS tenant_id, name, phone, email, coordinates, "
     "claimed_by_user_id::text AS claimed_by_user_id, created_by_user_id::text AS created_by_user_id, "
-    "notes, created_at, updated_at"
+    "notes, timb_grower_number, created_at, updated_at"
 )
 
 
@@ -52,6 +53,20 @@ def _require_write(user: AuthenticatedUser) -> None:
         raise HTTPException(status_code=403, detail="Viewers cannot modify growers")
 
 
+def _grower_number(value: str | None) -> str | None:
+    """
+    Normalise a TIMB number, turning a refusal into a 400 rather than a 500.
+
+    Only length is enforced — the format is not validated, because rejecting a
+    valid grower whose number looks unusual is a worse failure than storing an
+    odd one. See services/documents/grower_number.py.
+    """
+    try:
+        return normalise_grower_number(value)
+    except GrowerNumberError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 def _require_tenant(user: AuthenticatedUser) -> str:
     if not user.tenant_id:
         raise HTTPException(status_code=403, detail="No tenant context for this user")
@@ -67,12 +82,14 @@ def create_grower(body: CreateGrowerRequest, user: AuthenticatedUser = Depends(r
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute(
             f"""
-            INSERT INTO growers (tenant_id, name, phone, email, coordinates, notes, created_by_user_id)
-            VALUES (%s::uuid, %s, %s, %s, %s::jsonb, %s, %s::uuid)
+            INSERT INTO growers (tenant_id, name, phone, email, coordinates, notes,
+                                 timb_grower_number, created_by_user_id)
+            VALUES (%s::uuid, %s, %s, %s, %s::jsonb, %s, %s, %s::uuid)
             RETURNING {_GROWER_COLS}
             """,
             (tenant_id, body.name, body.phone, body.email,
-             _json(body.coordinates), body.notes, user.user_id),
+             _json(body.coordinates), body.notes,
+             _grower_number(body.timb_grower_number), user.user_id),
         )
         row = cur.fetchone()
         conn.commit()
@@ -132,6 +149,9 @@ def update_grower(grower_id: str, body: UpdateGrowerRequest, user: Authenticated
         if val is not None:
             sets.append(f"{field} = %s")
             params.append(val)
+    if body.timb_grower_number is not None:
+        sets.append("timb_grower_number = %s")
+        params.append(_grower_number(body.timb_grower_number))
     if body.coordinates is not None:
         sets.append("coordinates = %s::jsonb")
         params.append(_json(body.coordinates))
