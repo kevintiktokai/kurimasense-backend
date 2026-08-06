@@ -13,12 +13,22 @@ corrected, so consistency has to be structural rather than a matter of whoever
 writes the next template remembering the hex codes. Everything visual in
 ``services/documents`` reads from here and nothing hardcodes a colour or a size.
 
-**Mirrors the app, deliberately.** The values below are the same ones in
-``kurima-sense/app/globals.css`` (``--ee-primary``, ``--ee-text``, ``--ee-muted``
-and friends). A document and a screen have to look like the same product; if
-these two drift, the document stops corroborating the app.
+**Sampled from the Velocity Playbook**, which is the KurimaSense document that
+already leaves the building, and from the logo it was built around. A pack
+arriving in the same inbox as the playbook has to look like it came from the
+same company.
 
-**Print is not screen**, though, so this is a mirror and not a copy:
+.. note::
+
+   **These differ from the app on purpose, and someone should decide whether
+   that stays true.** The app's ``--ee-primary`` is ``#0fb885``, a teal-mint.
+   The playbook and the logo's leaves are ``#6DBE45``, a leaf green. They are
+   not variants of each other. The documents follow the playbook because that
+   is what a client has already seen and what the mark actually contains — but
+   the right long-run answer is probably that the app moves, not that the two
+   stay apart. Flagged rather than quietly reconciled.
+
+**Print is not screen**, so this is not a straight copy of the playbook either:
 
 * The app's neumorphic shadows (``--shadow-neu``) are absent. They render as
   grey mud on paper and as nothing at all through a fax-quality scan, which is
@@ -37,28 +47,41 @@ from typing import Final
 
 # ── Palette ───────────────────────────────────────────────────────────────────
 #
-# Mirrored from the app's `:root` custom properties. Names match the CSS
-# variable they came from so a drift is greppable in both repos.
+# Sampled from the Velocity Playbook's rendered pages. Each value is what the
+# playbook actually prints, not an approximation of it.
 
-PRIMARY: Final = "#0fb885"  # --ee-primary   brand green, used as signal not wash
-TEXT: Final = "#2D3A30"  # --ee-text      body copy
-MUTED: Final = "#8B9D8F"  # --ee-muted     labels, captions, secondary rows
-BG: Final = "#F4F1ED"     # --ee-bg        warm paper tone
-SURFACE: Final = "#FFFFFF"  # --ee-surface
-SUN: Final = "#E8A365"    # --ee-sun       warning / attention
-WATER: Final = "#5C9EAD"  # --ee-water     water, irrigation
-LOAM: Final = "#0E1A14"   # --ee-loam      institutional dark, cover pages
-CLAY: Final = "#C8A98A"   # --ee-clay      warm neutral
+PRIMARY: Final = "#6DBE45"  # leaf green — the logo's leaves, the playbook accent
+INK: Final = "#0B3A22"      # deep green — headings and the wordmark's first half
+TEXT: Final = "#22302A"     # body copy: green-black, never neutral grey
+MUTED: Final = "#7C8A80"    # captions, secondary rows
+CLAY: Final = "#785536"     # section eyebrows and labels — warm, not grey
+PAPER: Final = "#FBF8F2"    # the page. Warm; nothing here sits on pure white
+PANEL: Final = "#F3EEE3"    # callout and metric fill, one step down from paper
+LOAM: Final = "#062515"     # the cover. Deep forest, greener than a true black
+CREAM: Final = "#FBF8F2"    # type on loam
+SUN: Final = "#E8A365"      # attention — a deadline, not an alarm
 
-#: Nothing on a KurimaSense document is pure black. Rules and hairlines are the
-#: text colour at low opacity, flattened against paper — black rules read as
-#: cheap, and against the warm background they read as a printer artefact.
-RULE: Final = "#D8D5CF"
-HAIRLINE: Final = "#E6E3DE"
+#: Kept so the document palette still names the app's water hue; used for
+#: irrigation figures when those reach a document.
+WATER: Final = "#5C9EAD"
+
+#: Retained as an alias so callers reading `SURFACE` get the page, not white.
+#: Nothing on a KurimaSense document sits on pure white — the playbook's page is
+#: warm, and a white panel on a warm page reads as a pasted screenshot.
+SURFACE: Final = PAPER
+BG: Final = PAPER
+
+#: Nothing here is pure black. Rules are the ink flattened against paper — black
+#: rules read as cheap, and on a warm ground they read as a printer artefact.
+RULE: Final = "#D9D2C6"
+HAIRLINE: Final = "#E8E2D6"
 
 #: Reserved for genuine problems — a missed window, an unexplained shortfall.
 #: Not used for "below target", which is information rather than an alarm.
 ALERT: Final = "#B4483C"
+
+#: The mark, shipped as a file so a document renders identically with no network.
+MARK_FILENAME: Final = "mark.png"
 
 
 def tint(hex_colour: str, strength: float, *, on: str = SURFACE) -> str:

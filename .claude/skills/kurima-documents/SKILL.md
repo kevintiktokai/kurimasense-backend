@@ -18,6 +18,11 @@ Read `services/documents/__init__.py` first — it maps the package.
    there, add a token — a near-miss hex is how four documents stop looking like
    one product.
 
+   The palette is sampled from the **Velocity Playbook**, not from the app.
+   These differ on purpose (`#6DBE45` leaf green vs the app's `#0fb885`
+   teal-mint) and a test pins the divergence. If you unify them, delete that
+   test along with the decision — don't edit it to make a surprise go away.
+
 2. **Never hand-write the mark or the verification line.** `identity.py` builds
    them from the same values the document body reported on. If coverage can't be
    honestly stated, `verification_line` raises `CoverageError` and the document
@@ -49,6 +54,21 @@ Read `services/documents/__init__.py` first — it maps the package.
 4. Test the pure parts without WeasyPrint; test the PDF behind
    `pytest.importorskip("weasyprint")`.
 
+## Page-level traps, all found by rendering
+
+Four of these shipped green and were only visible in an image:
+
+- **`background` on `html` propagates to the canvas** and paints over *every*
+  page, including the dark cover — turning it light and making every line of
+  cream type invisible. Page colour goes on `@page`.
+- **`margin-top: auto` in a flex column is not honoured.** The cover bunched
+  into the top third and still rendered. The cover foot is absolutely
+  positioned.
+- **`string-set` resolves to nothing from a hidden element.** The running
+  footer came out empty. Furniture is baked into `@page` content.
+- **Jinja autoescaping mangles an injected stylesheet.** Mark it `Markup`, and
+  put caller input through `css_string`.
+
 ## Looking at what you made
 
 Tests do not tell you whether a document is well designed. Render it and look:
@@ -58,7 +78,8 @@ from services.documents.render import build_context, render_pdf
 open("out.pdf", "wb").write(render_pdf("_specimen.html", build_context(...)))
 ```
 
-Then rasterise (`pypdfium2`) and actually view the page. Three defects in the
-first specimen — headings misaligned over numeric columns, a subtitle with no
-air, a lost space in the footer — all passed the tests and were only visible in
-the image.
+Then rasterise (`pypdfium2`) and **actually look at every page**, including the
+last one. Defects found this way so far: headings misaligned over numeric
+columns, a subtitle with no air, a lost space in the footer, a mark split across
+a page boundary, a section heading stranded a page from its table, and all four
+traps above. Every one passed a green suite.
