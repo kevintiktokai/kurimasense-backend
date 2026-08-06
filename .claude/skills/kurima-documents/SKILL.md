@@ -46,6 +46,18 @@ Read `services/documents/__init__.py` first — it maps the package.
    only `Markup` in the package is the stylesheet, and the caller-supplied parts
    of that go through `css_string`.
 
+## Which documents carry a verification line
+
+Not all of them, and this is a judgement about what the document *is*:
+
+- **Evidence pack, portfolio report** — yes. They assert coverage across ground,
+  and the line states **observed** hectares, never contracted or under
+  management.
+- **Field report** — no. It explains one field's season rather than verifying
+  hectares, so its identity carries no hectares, `verification_line` refuses,
+  and the footer reads "Issued without a verification line". That is correct,
+  not a gap: a mark reading as certification would overstate what it is.
+
 ## Adding a document
 
 1. Add the kind to `KIND_PREFIXES` (`identity.py`) and `KIND_LABELS`
