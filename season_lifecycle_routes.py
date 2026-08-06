@@ -37,6 +37,7 @@ from services.planning.establishment import (
     stand_check_row_length_m,
 )
 from services.planning.fertiliser import build_fertiliser_programme
+from services.planning.windows import build_action_windows
 from services.seasons import lifecycle
 from services.seasons import service as seasons
 
@@ -218,6 +219,55 @@ def abandon_season(
 # ---------------------------------------------------------------------------
 # Rotation context
 # ---------------------------------------------------------------------------
+@router.get("/fields/{field_id}/windows")
+def get_action_windows(
+    field_id: str,
+    soil_texture: Optional[str] = Query(None),
+    include_closed: bool = Query(False),
+    user: AuthenticatedUser = Depends(get_authenticated_user),
+):
+    """The operations that are closing, ranked by cost per remaining day.
+
+    A farmer with forty things to do does not need a longer list — they need to
+    know which few are irreversible this week. Ranking by date alone puts a
+    cheap task closing tomorrow above a costly one closing next week, which is
+    exactly the prioritisation that loses a season.
+    """
+    _resolve(field_id, user)
+
+    from services.seasons import repository as season_repo
+    season = season_repo.get_active_season(field_id, user.user_id, user.tenant_ids)
+    if not season:
+        return {
+            "field_id": field_id,
+            "season_id": None,
+            "windows": [],
+            "reason": "No season is currently growing in this field.",
+        }
+
+    try:
+        from crop_profiles import get_crop_profile_or_generic
+        profile = get_crop_profile_or_generic(season.get("crop_type") or "")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Crop profile unavailable: {e}")
+
+    windows = build_action_windows(
+        profile,
+        planting_date=season.get("planting_date"),
+        emergence_date=season.get("emergence_date"),
+        soil_texture=soil_texture,
+        stand_already_checked=season.get("established_population_per_ha") is not None,
+        include_closed=include_closed,
+    )
+    return {
+        "field_id": field_id,
+        "season_id": season.get("id"),
+        "crop_type": season.get("crop_type"),
+        "planting_date": season.get("planting_date"),
+        "windows": windows,
+    }
+
+
 @router.get("/fields/{field_id}/season-history")
 def get_field_season_history(
     field_id: str,
