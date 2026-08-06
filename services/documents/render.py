@@ -29,6 +29,7 @@ from .stylesheet import page_furniture_css, stylesheet
 _HERE = Path(__file__).resolve().parent
 TEMPLATES_DIR = _HERE / "templates"
 FONTS_DIR = _HERE / "fonts"
+ASSETS_DIR = _HERE / "assets"
 
 #: Read by templates for the cover band's eyebrow. Kept here rather than in
 #: `identity` because it is presentation: the same `kind` renders differently in
@@ -63,6 +64,7 @@ def build_context(
     identity: DocumentIdentity,
     *,
     title: str,
+    title_accent: str | None = None,
     subtitle: str | None = None,
     embed_fonts: bool = True,
     **extra: Any,
@@ -86,10 +88,18 @@ def build_context(
     fonts_url = FONTS_DIR.as_uri() if embed_fonts and FONTS_DIR.is_dir() else None
     period_label = _period_label(identity)
 
+    # The mark is optional so the templates render in a checkout without the
+    # binary asset — but its absence is a missing logo, not a missing document,
+    # so it degrades to the wordmark set in type rather than raising.
+    mark_file = ASSETS_DIR / tokens_mark_filename()
+    mark_url = mark_file.as_uri() if mark_file.is_file() else None
+
     context: dict[str, Any] = {
         "identity": identity,
         "title": title,
+        "title_accent": title_accent,
         "subtitle": subtitle,
+        "mark_url": mark_url,
         "kind_label": KIND_LABELS.get(identity.kind, identity.kind),
         "mark": MARK,
         "verification": verification,
@@ -118,6 +128,11 @@ def build_context(
     }
     context.update(extra)
     return context
+
+
+def tokens_mark_filename() -> str:
+    """Indirection so the mark's filename lives with the other brand tokens."""
+    return t.MARK_FILENAME
 
 
 def _period_label(identity: DocumentIdentity) -> str:
@@ -186,7 +201,12 @@ def render_evidence_pack(pack: EvidencePack, *, issue_number: str) -> bytes:
         # what kind of document this is. Repeating "Season Evidence Pack" twice
         # on the same band reads as a template nobody finished filling in.
         title=pack.client_name,
-        subtitle=f"Season evidence, {pack.coverage_start:%B %Y} – {pack.coverage_end:%B %Y}",
+        title_accent=f"{pack.coverage_start:%Y}/{pack.coverage_end:%y} season",
+        subtitle=(
+            "Grower-level evidence for the period stated below, covering land "
+            "use, soil, crop protection agent usage and good agricultural "
+            "practice. Figures are qualified on the first page inside."
+        ),
         pack=pack,
         hectares=format_hectares,
         hectares_label=(

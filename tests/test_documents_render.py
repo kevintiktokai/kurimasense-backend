@@ -106,6 +106,8 @@ def test_absent_values_render_as_a_dash_not_a_zero():
 
 
 def test_refusal_sentence_appears_in_the_document_when_coverage_is_unknown():
+    # On the cover, where the verification line would otherwise sit. A document
+    # that silently drops the line looks identical to one that carries it.
     html = render_html("_specimen.html", _context(_identity(coverage_start=None)))
     assert "does not carry a verification line" in html
 

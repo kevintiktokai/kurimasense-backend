@@ -37,21 +37,27 @@ def font_face_rules(fonts_url: str) -> str:
     that no longer matches the app it is corroborating.
     """
     faces = [
-        (t.FONT_HEADING, "Fraunces-Regular.ttf", 400),
-        (t.FONT_HEADING, "Fraunces-SemiBold.ttf", 600),
-        (t.FONT_HEADING, "Fraunces-Bold.ttf", 700),
-        (t.FONT_BODY, "HankenGrotesk-Regular.ttf", 400),
-        (t.FONT_BODY, "HankenGrotesk-Medium.ttf", 500),
-        (t.FONT_BODY, "HankenGrotesk-SemiBold.ttf", 600),
-        (t.FONT_BODY, "HankenGrotesk-Bold.ttf", 700),
+        (t.FONT_HEADING, "Fraunces-Regular.ttf", 400, "normal"),
+        (t.FONT_HEADING, "Fraunces-SemiBold.ttf", 600, "normal"),
+        (t.FONT_HEADING, "Fraunces-Bold.ttf", 700, "normal"),
+        # Italic is not decoration here — the green italic second line of a
+        # cover title is the playbook's signature, and without a real italic
+        # face the renderer falls back to the roman and the cover quietly stops
+        # looking like ours.
+        (t.FONT_HEADING, "Fraunces-SemiBoldItalic.ttf", 600, "italic"),
+        (t.FONT_HEADING, "Fraunces-BoldItalic.ttf", 700, "italic"),
+        (t.FONT_BODY, "HankenGrotesk-Regular.ttf", 400, "normal"),
+        (t.FONT_BODY, "HankenGrotesk-Medium.ttf", 500, "normal"),
+        (t.FONT_BODY, "HankenGrotesk-SemiBold.ttf", 600, "normal"),
+        (t.FONT_BODY, "HankenGrotesk-Bold.ttf", 700, "normal"),
     ]
     base = fonts_url.rstrip("/")
     return "\n".join(
-        "@font-face {{ font-family: '{family}'; font-style: normal; "
+        "@font-face {{ font-family: '{family}'; font-style: {style}; "
         "font-weight: {weight}; src: url('{base}/{filename}') format('truetype'); }}".format(
-            family=family, weight=weight, base=base, filename=filename
+            family=family, weight=weight, base=base, filename=filename, style=style
         )
-        for family, filename, weight in faces
+        for family, filename, weight, style in faces
     )
 
 
@@ -146,6 +152,11 @@ def stylesheet(fonts_url: str | None = None) -> str:
 @page {{
   size: {t.PAGE_SIZE};
   margin: {t.MARGIN_TOP} {t.MARGIN_SIDE} {t.MARGIN_BOTTOM} {t.MARGIN_SIDE};
+  /* The paper tone belongs here, not on `html`. A background on the root
+     element propagates to the canvas and paints over every page including the
+     cover — which silently turned the dark cover light and made every line of
+     cream type on it invisible. */
+  background: {t.PAPER};
 
   @top-left {{
     font-family: {body_stack};
@@ -179,12 +190,22 @@ def stylesheet(fonts_url: str | None = None) -> str:
   }}
 }}
 
-/* The cover carries the mark at full size, so it suppresses the running
-   furniture — a header repeating the subject directly above a title that says
-   the same thing looks like a template that was not finished. */
+/* The cover is a full dark page. Painting it with `background` on `@page` and
+   dropping the margin to zero beats bleeding a div out past the page margin:
+   a block taller than the content area breaks onto a second page, and the
+   resulting stray dark sliver is the kind of defect that only shows up in the
+   copy a buyer received.
+
+   All four margin boxes are suppressed here — the cover states its own
+   provenance, including the verification line, in the metadata block at its
+   foot. A muted grey footer over a dark page would be invisible anyway. */
 @page :first {{
+  margin: 0;
+  background: {t.LOAM};
   @top-left {{ content: none; }}
   @top-right {{ content: none; }}
+  @bottom-left {{ content: none; }}
+  @bottom-right {{ content: none; }}
 }}
 """)
 
@@ -193,7 +214,6 @@ def stylesheet(fonts_url: str | None = None) -> str:
 html {{
   font-family: {body_stack};
   color: {t.TEXT};
-  background: {t.SURFACE};
 }}
 body {{ margin: 0; }}
 {_step('body', 'body, p, li, td, th')}
@@ -231,42 +251,135 @@ h1, h2, h3, .display, .title, .section-title, .subsection-title {{
     # used. On paper a full dark page is expensive to print and reads as a
     # brochure, so it is a band rather than a page.
     parts.append(f"""
-.cover {{ margin-bottom: {t.space(10)}; }}
-.cover-band {{
-  background: {t.LOAM};
-  color: {t.BG};
-  padding: {t.space(8)} {t.space(7)};
-  margin: 0 0 {t.space(7)} 0;
+/* The cover is a full dark page, as the playbook's is — not a band on white.
+   A client who has seen the playbook should recognise this before reading a
+   word of it. `@page :first` paints the bleed; this fills it. */
+.cover {{
+  color: {t.CREAM};
+  box-sizing: border-box;
+  position: relative;
+  /* `@page :first` has no margin, so the padding here *is* the cover's margin
+     and the block fills the sheet exactly. */
+  padding: {t.MARGIN_TOP} {t.MARGIN_SIDE} {t.MARGIN_BOTTOM} {t.MARGIN_SIDE};
+  height: 297mm;
+  page-break-after: always;
 }}
-.cover-band .display {{ color: {t.BG}; margin-top: {t.space(2)}; }}
-.cover-band .label {{ color: {t.CLAY}; }}
-/* The subtitle needs air under a 30pt display line, or it reads as a caption
-   that has slipped up into the title. */
-.cover-band .subtitle {{
-  color: {t.CLAY};
-  margin: {t.space(2)} 0 0 0;
+/* Pinned to the foot by absolute position rather than `margin-top: auto` in a
+   flex column: WeasyPrint does not honour auto margins there, and the failure
+   is silent — the whole cover bunches into the top third and still renders. */
+.cover-foot {{
+  position: absolute;
+  left: {t.MARGIN_SIDE};
+  right: {t.MARGIN_SIDE};
+  bottom: {t.MARGIN_BOTTOM};
 }}
-.cover-mark {{
+.cover .display, .cover .title {{ color: {t.CREAM}; }}
+.cover .label {{ color: {t.PRIMARY}; }}
+
+.cover-mark-block {{ margin-bottom: {t.space(16)}; }}
+.cover-mark-block img {{ width: 13mm; height: auto; display: block; }}
+.wordmark {{
   font-family: {heading_stack};
-  font-weight: 600;
-  color: {t.PRIMARY};
+  font-size: {t.SCALE['title'].size_pt:g}pt;
+  font-weight: 700;
   letter-spacing: -0.01em;
+  margin-top: {t.space(2)};
 }}
+/* "Kurima" cream, "Sense" green — the playbook's lockup, reproduced rather
+   than approximated. */
+.wordmark .kurima {{ color: {t.CREAM}; }}
+.wordmark .sense {{ color: {t.PRIMARY}; }}
+
+/* The green italic second line is the playbook's signature move on a title.
+   Worth keeping: it is the one thing that makes the cover unmistakably ours
+   rather than a generic dark report cover. */
+.cover .display .accent {{
+  color: {t.PRIMARY};
+  font-style: italic;
+  display: block;
+}}
+.cover .subtitle {{
+  color: {t.CREAM};
+  opacity: 0.72;
+  max-width: 110mm;
+  margin: {t.space(4)} 0 {t.space(6)} 0;
+  font-size: {t.SCALE['body'].size_pt:g}pt;
+  line-height: {t.SCALE['body'].leading_pt:g}pt;
+}}
+
+/* Metadata sits at the foot of the cover under a hairline, as the playbook
+   does — it is provenance, not a headline. `margin-top: auto` pins it there
+   however long the title runs. */
+.cover-meta {{
+  padding-top: {t.space(4)};
+  border-top: 0.5pt solid rgba(251, 248, 242, 0.22);
+  display: flex;
+  gap: {t.space(6)};
+}}
+.cover-meta > div {{ flex: 1; }}
+.cover-meta > div.wide {{ flex: 1.6; }}
+.cover-meta .label {{ color: {t.PRIMARY}; margin-bottom: {t.space(1)}; }}
+.cover-meta .value {{ color: {t.CREAM}; font-size: {t.SCALE['body'].size_pt:g}pt; }}
+
+/* The verification line, stated on the cover as well as in every subsequent
+   footer. The cover suppresses the running furniture, and a cover that is the
+   one page not carrying the claim is the page most likely to be photographed
+   and sent on by itself. */
+.cover-verification {{
+  margin-top: {t.space(4)};
+  color: {t.PRIMARY};
+  font-size: {t.SCALE['caption'].size_pt:g}pt;
+  line-height: {t.SCALE['caption'].leading_pt:g}pt;
+}}
+
+/* There is no closing mark block. The lockup is on the cover at full size and
+   the footer carries "Verified by KurimaSense" on every page — a third
+   repetition at the end bought nothing and, being unsplittable, pushed itself
+   onto a nearly blank final page. The playbook asks for a discreet mark, and
+   two placements is discreet. */
 """)
 
     # ── Sections ──────────────────────────────────────────────────────────────
     parts.append(f"""
 .section {{ margin-bottom: {t.space(8)}; }}
-/* Never orphan a section heading at the foot of a page — in a document read as
-   a scan, a heading on one page and its table on the next is read as two
-   unrelated things. */
+/* The first section on the page after the cover would otherwise sit directly
+   under the running header, reading as though the header were its eyebrow. */
+.cover + .section {{ margin-top: {t.space(3)}; }}
+/* Opt-in for sections a template knows are short. `break-inside: avoid` is
+   wrong as a default — a grower list has to be allowed to run over pages — but
+   a four-row table whose heading and intro sit on the previous page reads as
+   two unrelated fragments. Renderers fall back to breaking when the content
+   genuinely exceeds a page, so this is safe to over-apply. */
+.section.keep {{ break-inside: avoid; }}
+/* No rule under the heading — the playbook doesn't use one, and the deep-green
+   serif against warm paper carries the hierarchy on its own. A rule as well
+   reads as belt and braces.
+
+   Never orphan a heading at the foot of a page: in a document read as a scan, a
+   heading on one page and its table on the next is read as two unrelated
+   things. */
 .section-title {{
+  color: {t.INK};
   margin-bottom: {t.space(3)};
-  padding-bottom: {t.space(2)};
-  border-bottom: 1pt solid {t.RULE};
   break-after: avoid;
 }}
-.subsection-title {{ margin: {t.space(4)} 0 {t.space(2)} 0; break-after: avoid; }}
+/* The numbered clay eyebrow above a section heading — "01 · METHOD". Warm, not
+   grey: on this paper a grey label looks like a rendering fault. */
+.eyebrow {{
+  font-family: {body_stack};
+  font-size: {t.SCALE['label'].size_pt:g}pt;
+  font-weight: 600;
+  letter-spacing: {t.SCALE['label'].tracking_em}em;
+  text-transform: uppercase;
+  color: {t.CLAY};
+  display: block;
+  margin-bottom: {t.space(1)};
+}}
+.subsection-title {{
+  color: {t.INK};
+  margin: {t.space(4)} 0 {t.space(2)} 0;
+  break-after: avoid;
+}}
 p {{ margin: 0 0 {t.space(3)} 0; }}
 """)
 
@@ -282,22 +395,22 @@ p {{ margin: 0 0 {t.space(3)} 0; }}
   margin: 0 0 {t.space(4)} 0;
 }}
 .doc-table th {{
+  color: {t.CLAY};
   font-family: {body_stack};
   font-size: {t.SCALE['label'].size_pt:g}pt;
   font-weight: 600;
   letter-spacing: {t.SCALE['label'].tracking_em}em;
   text-transform: uppercase;
-  color: {t.MUTED};
   text-align: left;
   padding: {t.space(2)} {t.space(2)};
-  border-bottom: 1pt solid {t.TEXT};
+  border-bottom: 1pt solid {t.INK};
 }}
 .doc-table td {{
   padding: {t.space(2)};
   border-bottom: 0.5pt solid {t.HAIRLINE};
   vertical-align: top;
 }}
-.doc-table tbody tr:nth-child(even) {{ background: {t.tint(t.BG, 0.55)}; }}
+.doc-table tbody tr:nth-child(even) {{ background: {t.PANEL}; }}
 /* Header repeats on every page a long table spans. A grower list runs to
    several pages and an unheaded continuation is unreadable. */
 .doc-table thead {{ display: table-header-group; }}
@@ -324,11 +437,12 @@ p {{ margin: 0 0 {t.space(3)} 0; }}
 .metric {{
   flex: 1;
   padding: {t.space(3)};
-  background: {t.tint(t.BG, 0.7)};
+  background: {t.PANEL};
   border-left: 2pt solid {t.PRIMARY};
 }}
 .metric .value {{
   font-family: {heading_stack};
+  color: {t.INK};
   font-size: {t.SCALE['title'].size_pt:g}pt;
   line-height: {t.SCALE['title'].leading_pt:g}pt;
   font-weight: 600;
@@ -337,10 +451,11 @@ p {{ margin: 0 0 {t.space(3)} 0; }}
 .callout {{
   padding: {t.space(3)} {t.space(4)};
   margin: 0 0 {t.space(4)} 0;
-  background: {t.tint(t.PRIMARY, 0.08)};
+  background: {t.PANEL};
   border-left: 2pt solid {t.PRIMARY};
   break-inside: avoid;
 }}
+.callout .label {{ color: {t.CLAY}; }}
 .callout.warn {{
   background: {t.tint(t.SUN, 0.12)};
   border-left-color: {t.SUN};

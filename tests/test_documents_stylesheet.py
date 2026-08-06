@@ -22,22 +22,39 @@ from services.documents.stylesheet import (
 # ── Tokens ────────────────────────────────────────────────────────────────────
 
 
-def test_palette_mirrors_the_app():
-    # These are the app's `--ee-*` custom properties. If someone changes one side
-    # only, a document and a screen stop looking like the same product — this
-    # test is the tripwire, and updating it should mean updating globals.css too.
-    assert t.PRIMARY == "#0fb885"
-    assert t.TEXT == "#2D3A30"
-    assert t.MUTED == "#8B9D8F"
-    assert t.BG == "#F4F1ED"
+def test_palette_matches_the_velocity_playbook():
+    # Sampled from the playbook's rendered pages — the KurimaSense document that
+    # already leaves the building. A pack arriving in the same inbox has to look
+    # like it came from the same company, so these are the tripwire: changing one
+    # should mean the playbook changed too.
+    assert t.PRIMARY == "#6DBE45"   # the logo's leaves, the playbook accent
+    assert t.INK == "#0B3A22"       # headings
+    assert t.PAPER == "#FBF8F2"     # the page
+    assert t.LOAM == "#062515"      # the cover
+    assert t.CLAY == "#785536"      # labels and eyebrows
+
+
+def test_the_documents_do_not_use_the_apps_primary():
+    # Deliberate divergence, flagged rather than quietly reconciled: the app's
+    # --ee-primary is #0fb885, a teal-mint, while the playbook and the logo are
+    # a leaf green. If someone unifies them, this test should be deleted with
+    # that decision — not edited to make a surprise go away.
+    assert t.PRIMARY != "#0fb885"
+
+
+def test_nothing_in_the_palette_sits_on_pure_white():
+    # The playbook's page is warm. A white panel on a warm page reads as a
+    # pasted screenshot.
+    assert t.SURFACE == t.PAPER
+    assert t.PAPER != "#FFFFFF"
 
 
 def test_tint_at_full_strength_is_the_hue_itself():
-    assert t.tint(t.PRIMARY, 1.0) == "#0FB885"
+    assert t.tint(t.PRIMARY, 1.0) == t.PRIMARY.upper()
 
 
 def test_tint_at_zero_strength_is_the_ground():
-    assert t.tint(t.PRIMARY, 0.0, on=t.SURFACE) == "#FFFFFF"
+    assert t.tint(t.PRIMARY, 0.0, on=t.SURFACE) == t.PAPER.upper()
 
 
 def test_tint_mixes_towards_the_ground_it_sits_on():
@@ -188,6 +205,64 @@ def test_cover_page_suppresses_the_running_header():
     assert "@page :first" in css
 
 
+def test_the_page_colour_is_set_on_page_not_on_html():
+    # This one shipped as a bug and is worth pinning. A background on the root
+    # element propagates to the canvas and paints over *every* page, including
+    # the dark cover — which silently turned the cover light and made every line
+    # of cream type on it invisible. The document still rendered.
+    css = stylesheet()
+    html_block = css.split("html {", 1)[1].split("}", 1)[0]
+    assert "background" not in html_block
+    assert f"background: {t.PAPER}" in css
+
+
+def test_the_cover_page_is_dark():
+    css = stylesheet()
+    first = css.split("@page :first {", 1)[1]
+    assert f"background: {t.LOAM}" in first
+
+
+def test_the_cover_foot_is_pinned_rather_than_auto_margined():
+    # `margin-top: auto` in a flex column is not honoured by WeasyPrint, and the
+    # failure is silent: the whole cover bunches into the top third and still
+    # renders. Absolute positioning cannot half-work.
+    css = stylesheet()
+    foot = css.split(".cover-foot {", 1)[1].split("}", 1)[0]
+    assert "position: absolute" in foot
+    assert "bottom:" in foot
+
+
+def test_short_sections_can_opt_out_of_breaking():
+    # Not a default: a grower list has to be allowed to run over pages. But a
+    # heading and intro stranded a page away from their four-row table read as
+    # two unrelated fragments.
+    css = stylesheet()
+    assert ".section.keep" in css
+
+
+def test_there_is_no_closing_mark_block():
+    # Removed after a render showed it pushing itself onto a nearly blank final
+    # page. The mark is on the cover and in every footer; that is enough, and it
+    # is what "discreet" in the brief means.
+    assert ".closing-mark" not in stylesheet()
+
+
+def test_the_wordmark_is_two_colours():
+    # "Kurima" in cream, "Sense" in green — the playbook's lockup. A single
+    # colour is a different mark.
+    css = stylesheet()
+    assert ".wordmark .kurima" in css and ".wordmark .sense" in css
+
+
+def test_an_italic_heading_face_is_bundled():
+    # The green italic second line of a cover title is the playbook's signature.
+    # Without a real italic face the renderer falls back to the roman and the
+    # cover quietly stops looking like ours.
+    rules = font_face_rules("file:///fonts")
+    assert "font-style: italic" in rules
+    assert "Fraunces-SemiBoldItalic.ttf" in rules
+
+
 def test_long_tables_repeat_their_header():
     # A grower list runs to several pages; an unheaded continuation is unreadable.
     css = stylesheet()
@@ -218,10 +293,9 @@ def test_stylesheet_contains_no_hardcoded_hex_outside_the_palette():
     known = {
         c.upper()
         for c in [
-            t.PRIMARY, t.TEXT, t.MUTED, t.BG, t.SURFACE, t.SUN, t.WATER,
-            t.LOAM, t.CLAY, t.RULE, t.HAIRLINE, t.ALERT,
-            t.tint(t.BG, 0.55), t.tint(t.BG, 0.7),
-            t.tint(t.PRIMARY, 0.08), t.tint(t.SUN, 0.12), t.tint(t.ALERT, 0.08),
+            t.PRIMARY, t.INK, t.TEXT, t.MUTED, t.CLAY, t.PAPER, t.PANEL,
+            t.LOAM, t.CREAM, t.SUN, t.WATER, t.RULE, t.HAIRLINE, t.ALERT,
+            t.tint(t.SUN, 0.12), t.tint(t.ALERT, 0.08),
         ]
     }
     found = {m.upper() for m in re.findall(r"#[0-9A-Fa-f]{6}\b", stylesheet())}

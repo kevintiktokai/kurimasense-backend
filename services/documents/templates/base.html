@@ -29,44 +29,56 @@
   #}
 
   <div class="cover">
-    <div class="cover-band">
-      <span class="label">{{ kind_label }}</span>
-      <h1 class="display">{{ title }}</h1>
-      {% if subtitle %}<p class="caption subtitle">{{ subtitle }}</p>{% endif %}
+
+    {# Mark and wordmark, top-left, as the playbook has them. #}
+    <div class="cover-mark-block">
+      {% if mark_url %}<img src="{{ mark_url }}" alt="">{% endif %}
+      <div class="wordmark"><span class="kurima">Kurima</span><span class="sense">Sense</span></div>
     </div>
 
-    <table class="doc-table" style="margin-bottom: 0;">
-      <tbody>
-        <tr>
-          <td style="width: 34%;"><span class="label">Prepared for</span>{{ identity.subject }}</td>
-          <td style="width: 33%;"><span class="label">Coverage</span>{{ period_label }}</td>
-          <td style="width: 33%;"><span class="label">Issued</span>{{ issued_label }}</td>
-        </tr>
-      </tbody>
-    </table>
+    <span class="label">{{ kind_label }}</span>
+    <h1 class="display">
+      {{ title }}
+      {% if title_accent %}<span class="accent">{{ title_accent }}</span>{% endif %}
+    </h1>
+    {% if subtitle %}<p class="subtitle">{{ subtitle }}</p>{% endif %}
+
+    {#
+      Provenance at the foot, under a hairline — the playbook's pattern. This is
+      not a headline; it is what lets someone six months later say which
+      document they are holding.
+    #}
+    <div class="cover-foot">
+      <div class="cover-meta">
+        <div>
+          <span class="label">Prepared for</span>
+          <span class="value">{{ identity.subject }}</span>
+        </div>
+        <div class="wide">
+          <span class="label">Coverage</span>
+          <span class="value">{{ period_label }}</span>
+        </div>
+        <div>
+          <span class="label">Issued</span>
+          <span class="value">{{ issued_label }}</span>
+        </div>
+        <div class="wide">
+          <span class="label">Document</span>
+          <span class="value">{{ identity.issue_number }}</span>
+        </div>
+      </div>
+
+      <p class="cover-verification">
+        {% if verification %}
+          {{ verification }}
+        {% else %}
+          This document does not carry a verification line: {{ verification_refusal }}
+        {% endif %}
+      </p>
+    </div>
   </div>
 
   {% block content %}{% endblock %}
-
-  {#
-    The mark, stated once at full size where a reader can see who produced this.
-    The footer repeats it small on every page; this is the one place it is
-    allowed to be the size of a signature.
-
-    When coverage could not be honestly asserted, `verification` is empty and
-    this says so rather than falling back to an unqualified claim — see
-    identity.verification_line.
-  #}
-  <div class="section" style="margin-top: {{ space(8) }};">
-    <p class="cover-mark">{{ mark }}</p>
-    {% if verification %}
-      <p class="caption">{{ verification }}</p>
-    {% else %}
-      <p class="caption">
-        This document does not carry a verification line: {{ verification_refusal }}
-      </p>
-    {% endif %}
-  </div>
 
 </body>
 </html>
