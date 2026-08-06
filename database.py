@@ -371,6 +371,17 @@ def init_db():
                 )
             """)
 
+            # Input execution quality (migration 020) — HOW an input went on,
+            # not just what and how much. Nullable throughout: an application
+            # logged without these is still valid, it just cannot be assessed.
+            cursor.execute("""
+                ALTER TABLE field_inputs ADD COLUMN IF NOT EXISTS product_name TEXT;
+                ALTER TABLE field_inputs ADD COLUMN IF NOT EXISTS application_method TEXT;
+                ALTER TABLE field_inputs ADD COLUMN IF NOT EXISTS incorporated BOOLEAN;
+                ALTER TABLE field_inputs ADD COLUMN IF NOT EXISTS rain_mm_48h NUMERIC(6,1);
+                ALTER TABLE field_inputs ADD COLUMN IF NOT EXISTS notes TEXT;
+            """)
+
             # Seasons (migration 019) — the temporal crop record, split out of
             # `fields`. Before this, a field WAS its current season, so planting
             # a new crop overwrote the last one and rotation history was
