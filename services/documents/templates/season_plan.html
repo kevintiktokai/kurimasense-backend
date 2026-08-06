@@ -1,0 +1,165 @@
+{#
+  Season plan.
+
+  The one document that goes into the field: in a pocket, rained on, read
+  standing up next to a planter. So it is ordered by *when*, not by topic — a
+  farmer reading in November wants planting, in January the second top-dress —
+  and the committed programme is separated from anything conditional, because a
+  plan that reads as a set of orders gets followed past the point where it
+  stopped applying.
+#}
+{% extends "base.html" %}
+
+{% block content %}
+
+  <div class="section">
+    <h3 class="section-title">This plan</h3>
+    <table class="doc-table">
+      <tbody>
+        <tr>
+          <td>
+            <span class="label">Crop</span>
+            {{ plan.crop | capitalize }}{% if plan.variety %} · {{ plan.variety }}{% endif %}
+          </td>
+          <td>
+            <span class="label">Area</span>
+            {% if plan.hectares %}{{ hectares(plan.hectares) }}{% else %}—{% endif %}
+          </td>
+          <td>
+            <span class="label">Planting</span>
+            {% if plan.planned_planting_date %}
+              {{ plan.planned_planting_date.strftime('%-d %B %Y') }}
+            {% else %}
+              <span class="absent">not set</span>
+            {% endif %}
+          </td>
+        </tr>
+      </tbody>
+    </table>
+
+    {% if plan.qualifications %}
+      <div class="callout warn">
+        <span class="label">Before you use this</span>
+        <ul style="margin: 0; padding-left: 14pt;">
+          {% for note in plan.qualifications %}
+            <li>{{ note }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+    {% endif %}
+  </div>
+
+  {% if plan.establishment %}
+    <div class="section keep">
+      <h3 class="section-title">Getting the stand right</h3>
+      <p>
+        This is the part of the season you cannot go back and fix. Everything
+        after it is either protecting this stand or compensating for it.
+      </p>
+      <div class="metrics">
+        <div class="metric">
+          <span class="label">Target population</span>
+          <span class="value">{{ population(plan.establishment.target_population_per_ha) }}</span>
+        </div>
+        <div class="metric">
+          <span class="label">Row spacing</span>
+          <span class="value">{{ plan.establishment.row_spacing_cm | round | int }} cm</span>
+        </div>
+        <div class="metric">
+          <span class="label">In-row spacing</span>
+          <span class="value">{{ plan.establishment.in_row_spacing_cm | round | int }} cm</span>
+        </div>
+      </div>
+
+      {# The countable check. This is the sentence the whole planning body of
+         work exists to put in someone's hand. #}
+      <div class="callout">
+        <span class="label">Check it in the field</span>
+        <p style="margin-bottom: 0;">{{ plan.establishment.field_check }}</p>
+      </div>
+
+      {% if plan.equipment_tips %}
+        <h4 class="subsection-title">Before you start</h4>
+        <ul>
+          {% for tip in plan.equipment_tips %}<li>{{ tip }}</li>{% endfor %}
+        </ul>
+      {% endif %}
+      {% if plan.hand_planting_tips %}
+        <h4 class="subsection-title">Planting by hand</h4>
+        <ul>
+          {% for tip in plan.hand_planting_tips %}<li>{{ tip }}</li>{% endfor %}
+        </ul>
+      {% endif %}
+    </div>
+  {% endif %}
+
+  {% if plan.committed_steps %}
+    <div class="section">
+      <h3 class="section-title">The programme, in order</h3>
+      <p>
+        Dated from your planting date. If planting moves, every date below moves
+        with it — regenerate the plan rather than working from this copy.
+      </p>
+      <table class="doc-table">
+        <thead>
+          <tr>
+            <th>When</th>
+            <th>What</th>
+            <th>Rate</th>
+            {# The engine's timing text, which names the growth stage. The date
+               beside it is derived from planting; this is what to look for on
+               the plant if the season has run early or late. #}
+            <th>Stage</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for step in plan.committed_steps %}
+            <tr>
+              {% if step.on_date %}
+                <td>{{ step.on_date.strftime('%-d %b') }}</td>
+              {% else %}
+                <td class="absent">—</td>
+              {% endif %}
+              <td>{{ step.label }}</td>
+              <td>{{ step.detail or '—' }}</td>
+              <td>{{ step.when_text or '—' }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+
+  {% if plan.conditional_steps %}
+    <div class="section keep">
+      <h3 class="section-title">Only if the condition holds</h3>
+      <p>
+        These are not part of the programme above. Each depends on something
+        that has not happened yet — read the condition before acting.
+      </p>
+      <table class="doc-table">
+        <thead>
+          <tr>
+            <th>When</th>
+            <th>What</th>
+            <th>Only if</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for step in plan.conditional_steps %}
+            <tr>
+              {% if step.on_date %}
+                <td>{{ step.on_date.strftime('%-d %b') }}</td>
+              {% else %}
+                <td class="absent">—</td>
+              {% endif %}
+              <td>{{ step.label }}{% if step.detail %} · {{ step.detail }}{% endif %}</td>
+              <td>{{ step.conditional_on or 'Optional — judge on the day' }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+
+{% endblock %}

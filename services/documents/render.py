@@ -24,6 +24,7 @@ from markupsafe import Markup
 from . import tokens as t
 from .evidence_pack import EvidencePack
 from .field_report import FieldReport
+from .season_plan import SeasonPlan
 from .portfolio_report import PortfolioReport
 from .identity import CoverageError, DocumentIdentity, MARK, format_hectares
 from .stylesheet import page_furniture_css, stylesheet
@@ -296,16 +297,6 @@ def render_field_report(report: FieldReport, *, issue_number: str) -> bytes:
         hectares=None,
     )
 
-    def population(value: float | None) -> str:
-        """Plants per hectare at the precision a hand count supports.
-
-        Nobody counts 41,237 plants — they count a row and multiply. Printing
-        the arithmetic's full precision claims an accuracy the method does not
-        have, so it is rounded to the nearest thousand and shown as ``41k``."""
-        if value is None:
-            return "—"
-        return f"{round(value / 1000):,}k"
-
     context = build_context(
         identity,
         title=report.field_name,
@@ -321,6 +312,54 @@ def render_field_report(report: FieldReport, *, issue_number: str) -> bytes:
         population=population,
     )
     return render_pdf("field_report.html", context)
+
+
+def population(value: float | None) -> str:
+    """
+    Plants per hectare at the precision a hand count supports.
+
+    Nobody counts 41,237 plants — they count a row and multiply. Printing the
+    arithmetic's full precision claims an accuracy the method does not have, so
+    it is rounded to the nearest thousand and shown as ``41k``.
+    """
+    if value is None:
+        return "—"
+    return f"{round(value / 1000):,}k"
+
+
+def render_season_plan(plan: SeasonPlan, *, issue_number: str) -> bytes:
+    """
+    A :class:`~services.documents.season_plan.SeasonPlan` as PDF bytes.
+
+    No verification line, for the same reason the field report has none and one
+    more besides: a plan describes what has not happened yet. Verifying a
+    forecast is a category error, and a mark that read as certification on a
+    document a farmer takes into the field would be the most misleading of the
+    four.
+    """
+    identity = DocumentIdentity(
+        kind="season_plan",
+        issue_number=issue_number,
+        issued_at=utcnow(),
+        subject=plan.field_name,
+        coverage_start=plan.coverage_start,
+        coverage_end=plan.coverage_end,
+        hectares=None,
+    )
+    context = build_context(
+        identity,
+        title=plan.field_name,
+        title_accent=f"{plan.crop} plan".capitalize(),
+        subtitle=(
+            "What to do and when, dated from your planting date. Take it with "
+            "you — the field check on the establishment page is the one thing "
+            "that cannot be done from a screen."
+        ),
+        plan=plan,
+        hectares=format_hectares,
+        population=population,
+    )
+    return render_pdf("season_plan.html", context)
 
 
 def utcnow() -> datetime:

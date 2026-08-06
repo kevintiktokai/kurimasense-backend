@@ -374,3 +374,90 @@ def test_healthy_zones_do_not_reach_the_page():
     )
     assert "Northeast one" in text
     assert "Southeast one" not in text
+
+
+# ── Season plan ───────────────────────────────────────────────────────────────
+
+
+class _Establishment:
+    target_population_per_ha = 44000
+    row_spacing_cm = 90.0
+    in_row_spacing_cm = 25.0
+    field_check = "Walk 4 paces along a row — you should count roughly 12 plants."
+
+
+_FERTILISER = {
+    "steps": [
+        {"key": "basal", "label": "Basal fertiliser", "product": "Compound D",
+         "rate_text": "300 kg/ha", "timing_text": "At planting",
+         "scheduled_date": "2025-11-20"},
+        {"key": "lime", "label": "Liming", "product": "Lime", "rate_text": "2 t/ha",
+         "timing_text": "Before land prep", "scheduled_date": None,
+         "optional": True, "conditional_on": "only if a soil test shows pH below 5.2"},
+    ]
+}
+
+
+def _plan(**overrides):
+    from services.documents.season_plan import build_season_plan
+
+    kwargs = dict(
+        field_name="Home Field", crop="maize", persona="smallholder",
+        hectares=12.4, planned_planting_date=date(2025, 11, 20),
+        coverage_start=date(2025, 10, 1), coverage_end=date(2026, 6, 30),
+        establishment=_Establishment(), fertiliser=_FERTILISER,
+    )
+    kwargs.update(overrides)
+    return build_season_plan(**kwargs)
+
+
+def _plan_text(plan):
+    import io
+
+    pypdf = pytest.importorskip("pypdf")
+    from services.documents.render import render_season_plan
+
+    pdf = render_season_plan(plan, issue_number="SP-2026-000004")
+    return "\n".join(
+        p.extract_text() or "" for p in pypdf.PdfReader(io.BytesIO(pdf)).pages
+    )
+
+
+def test_season_plan_renders_to_a_pdf():
+    from services.documents.render import render_season_plan
+
+    assert render_season_plan(_plan(), issue_number="SP-2026-000004").startswith(b"%PDF-")
+
+
+def test_a_plan_carries_no_verification_line():
+    # A plan describes what has not happened yet. Verifying a forecast is a
+    # category error, and a mark reading as certification on the one document a
+    # farmer takes into the field would be the most misleading of the four.
+    text = _plan_text(_plan())
+    assert "Verified by KurimaSense ·" not in text
+    assert "Issued without a verification line" in text
+
+
+def test_a_smallholder_plan_carries_no_machinery_advice():
+    text = _plan_text(_plan(persona="smallholder"))
+    assert "Planting by hand" in text
+    assert "Calibrate the planter" not in text
+
+
+def test_a_commercial_plan_carries_no_hand_planting_advice():
+    text = _plan_text(_plan(persona="farmer"))
+    assert "Calibrate the planter" in text
+    assert "string line" not in text
+
+
+def test_the_conditional_step_is_kept_out_of_the_committed_programme():
+    # A plan that presents every line as an order gets followed past the point
+    # where it stopped applying.
+    text = _plan_text(_plan())
+    assert "Only if the condition holds" in text
+    assert "only if a soil test shows pH below 5.2" in text
+
+
+def test_the_field_check_sentence_reaches_the_page():
+    # The sentence the whole planning body of work exists to put in a hand.
+    assert "count roughly 12 plants" in _plan_text(_plan())
