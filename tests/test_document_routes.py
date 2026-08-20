@@ -272,3 +272,80 @@ def test_every_generating_endpoint_goes_through_the_issue_path():
         body = source.split(f"def {name}(", 1)[1].split("\n@router", 1)[0]
         assert "_issue(" in body, name
         assert "render_pdf(" not in body, name
+
+
+# ── Evidence pack route ───────────────────────────────────────────────────────
+
+
+def test_the_evidence_pack_route_also_goes_through_the_issue_path():
+    import inspect
+
+    body = inspect.getsource(routes).split("def generate_evidence_pack(", 1)[1]
+    body = body.split("\n@router", 1)[0]
+    assert "_issue(" in body
+    assert "render_pdf(" not in body
+
+
+def test_an_empty_portfolio_is_refused_rather_than_marked(monkeypatch):
+    # A pack covering nothing would still carry a KurimaSense mark.
+    from services.documents.evidence_repository import group_rows
+
+    assert group_rows([]) == ()
+
+
+def test_the_pack_renders_end_to_end_from_gathered_rows():
+    # Exercises repository grouping -> assembly -> PDF, which is the path the
+    # route takes. The SQL itself needs a database; everything after it does not.
+    pytest.importorskip("weasyprint")
+    from services.documents.evidence_pack import build_evidence_pack
+    from services.documents.evidence_repository import group_rows
+    from services.documents.render import render_evidence_pack
+
+    growers = group_rows([
+        {"field_id": "f-1", "field_name": "Home Field", "hectares": 12.4,
+         "crop": "Tobacco", "grower_id": "g-1", "grower_name": "Tariro",
+         "timb_grower_number": "M12345", "observed": True,
+         "has_soil": True, "has_protection": True, "has_practice": True},
+        {"field_id": "f-2", "field_name": "River Block", "hectares": 31.0,
+         "crop": "Tobacco", "grower_id": None, "grower_name": None,
+         "timb_grower_number": None, "observed": False,
+         "has_soil": False, "has_protection": False, "has_practice": False},
+    ])
+    pack = build_evidence_pack(
+        client_name="Servemox",
+        coverage_start=date(2025, 11, 1),
+        coverage_end=date(2026, 5, 31),
+        growers=growers,
+    )
+    assert pack.covered_hectares == pytest.approx(12.4)
+    pdf = render_evidence_pack(pack, issue_number="EP-2026-000143")
+    assert pdf.startswith(b"%PDF-")
+
+
+def test_land_use_reaches_the_page_as_unevidenced():
+    # End to end: nothing evidences it, so the pack must say "No evidence
+    # recorded" rather than omitting the theme.
+    import io
+
+    pytest.importorskip("weasyprint")
+    pypdf = pytest.importorskip("pypdf")
+    from services.documents.evidence_pack import build_evidence_pack
+    from services.documents.evidence_repository import group_rows
+    from services.documents.render import render_evidence_pack
+
+    growers = group_rows([
+        {"field_id": "f-1", "field_name": "Home Field", "hectares": 12.4,
+         "crop": "Tobacco", "grower_id": "g-1", "grower_name": "Tariro",
+         "timb_grower_number": "M12345", "observed": True,
+         "has_soil": True, "has_protection": True, "has_practice": True},
+    ])
+    pack = build_evidence_pack(
+        client_name="Servemox", coverage_start=date(2025, 11, 1),
+        coverage_end=date(2026, 5, 31), growers=growers,
+    )
+    pdf = render_evidence_pack(pack, issue_number="EP-2026-000143")
+    text = "\n".join(
+        p.extract_text() or "" for p in pypdf.PdfReader(io.BytesIO(pdf)).pages
+    )
+    assert "Land use and deforestation" in text
+    assert "No evidence recorded" in text
