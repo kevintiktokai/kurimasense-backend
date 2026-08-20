@@ -3,6 +3,7 @@ Generating and looking up documents.
 
     POST /fields/{field_id}/documents/season-plan     — plan for the field
     POST /fields/{field_id}/documents/field-report    — one field, one season
+    POST /portfolio/documents/evidence-pack           — the STP pack
     POST /portfolio/documents/portfolio-report        — the whole book
     GET  /documents                                   — what has been issued
     GET  /documents/{issue_number}                    — what a number refers to
@@ -364,6 +365,73 @@ async def generate_portfolio_report(
     )
 
 
+# ── Evidence pack ─────────────────────────────────────────────────────────────
+
+
+@router.post("/portfolio/documents/evidence-pack")
+def generate_evidence_pack(
+    tenant_id: Optional[str] = Query(None, description="Admin override."),
+    coverage_start: Optional[date] = Query(None),
+    coverage_end: Optional[date] = Query(None),
+    user: AuthenticatedUser = Depends(get_authenticated_user),
+):
+    """
+    The pack a contractor forwards to a leaf buyer.
+
+    The coverage window is a query parameter here and defaulted elsewhere,
+    because this is the one document whose window is a claim: it appears in the
+    verification line, and a contractor reporting on last season needs to say so
+    rather than accept the last 240 days.
+    """
+    from services.documents.evidence_pack import build_evidence_pack
+    from services.documents.evidence_repository import (
+        EvidenceUnavailable, gather_growers,
+    )
+    from services.documents.identity import DocumentIdentity
+    from services.documents.render import render_evidence_pack, utcnow
+
+    target = _tenant_for(user, tenant_id)
+    start, end = _coverage(coverage_start, coverage_end)
+
+    try:
+        growers = gather_growers(
+            target, coverage_start=start, coverage_end=end,
+            user_id=user.user_id,
+            tenant_ids=[str(t) for t in (user.tenant_ids or [])],
+        )
+    except EvidenceUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+    if not growers:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "No fields in this portfolio for the period requested. An "
+                "evidence pack covering nothing would still carry a mark."
+            ),
+        )
+
+    pack = build_evidence_pack(
+        client_name=_tenant_name(target, user),
+        coverage_start=start,
+        coverage_end=end,
+        growers=growers,
+    )
+
+    return _issue(
+        kind="evidence_pack",
+        tenant_id=target,
+        user=user,
+        render=lambda number: render_evidence_pack(pack, issue_number=number),
+        identity_for=lambda number: DocumentIdentity(
+            kind="evidence_pack", issue_number=number, issued_at=utcnow(),
+            subject=pack.client_name, coverage_start=pack.coverage_start,
+            coverage_end=pack.coverage_end,
+            hectares=pack.covered_hectares or None,
+        ),
+    )
+
+
 # ── The registry ──────────────────────────────────────────────────────────────
 
 
@@ -529,6 +597,32 @@ def _stand_check_from(season: dict):
         target_population_per_ha=_as_float(season.get("target_population_per_ha")),
         established_population_per_ha=established,
     )
+
+
+def _tenant_name(tenant_id: str, user: AuthenticatedUser) -> str:
+    """The client's name for the cover.
+
+    Falls back to the id rather than to a blank cover: a pack headed by nothing
+    is worse than one headed by a UUID, because the second is obviously wrong.
+    """
+    from database import get_db_connection
+
+    conn = get_db_connection()
+    if not conn:
+        return tenant_id
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM tenants WHERE id = %s::uuid", (tenant_id,))
+        row = cur.fetchone()
+        cur.close()
+    except Exception:  # pragma: no cover - a missing name must not block a pack
+        return tenant_id
+    finally:
+        try:
+            conn.close()
+        except Exception:  # pragma: no cover
+            pass
+    return (row[0] if row and row[0] else tenant_id)
 
 
 def _as_date(value: Any) -> Optional[date]:
