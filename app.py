@@ -205,6 +205,11 @@ app.include_router(notification_router)
 from irrigation_routes import router as irrigation_router  # noqa: E402
 app.include_router(irrigation_router)
 
+# Generated documents. Every endpoint here issues through the registry, so a PDF
+# cannot leave the service without a row recording what it claimed.
+from document_routes import router as document_router  # noqa: E402
+app.include_router(document_router)
+
 # CORS Configuration
 # Allow specific origins from environment or default to known frontends
 allowed_origins_env = os.environ.get("CORS_ORIGINS", "").strip()
