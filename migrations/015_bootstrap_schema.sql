@@ -353,6 +353,56 @@ ALTER TABLE field_inputs ADD COLUMN IF NOT EXISTS incorporated BOOLEAN;
 ALTER TABLE field_inputs ADD COLUMN IF NOT EXISTS rain_mm_48h NUMERIC(6,1);
 ALTER TABLE field_inputs ADD COLUMN IF NOT EXISTS notes TEXT;
 
+-- Tenancy columns (migration 025). Mirrored, and placed HERE rather than at the
+-- end because everything below this line references these objects: 021 alters
+-- growers, 023 indexes growers and fields.tenant_id/grower_id.
+--
+-- This file called itself the complete runtime schema while never creating
+-- `growers` and never adding `fields.tenant_id` — the column every scoped read
+-- in the product filters on. Both came from migrate_fields_to_tenants.py, a
+-- standalone script outside the sequence, so a database built from the
+-- migrations alone failed at 023 on objects that had never been created. 025
+-- remains canonical and explains the history.
+CREATE TABLE IF NOT EXISTS growers (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    phone TEXT,
+    email TEXT,
+    coordinates JSONB,
+    claimed_by_user_id UUID REFERENCES profiles(id),
+    created_by_user_id UUID REFERENCES profiles(id),
+    notes TEXT,
+    deleted_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_growers_tenant ON growers(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_growers_claimed ON growers(claimed_by_user_id);
+CREATE INDEX IF NOT EXISTS idx_growers_active ON growers(deleted_at) WHERE deleted_at IS NULL;
+
+ALTER TABLE fields ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id);
+ALTER TABLE fields ADD COLUMN IF NOT EXISTS grower_id UUID REFERENCES growers(id);
+
+-- RLS for both (migration 025). growers is named in 008's policy sweep and
+-- 017's FORCE list, but both guard on table existence, so on a fresh build they
+-- ran before it existed and skipped it silently.
+ALTER TABLE public.growers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.growers FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS ts_growers ON public.growers;
+CREATE POLICY ts_growers ON public.growers
+    FOR ALL
+    USING (tenant_id = ANY (public.app_tenant_ids()))
+    WITH CHECK (tenant_id = ANY (public.app_tenant_ids()));
+ALTER TABLE public.fields ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.fields FORCE ROW LEVEL SECURITY;
+
+-- FORCE for the tables added after 017 (migration 024). 017 forces a hardcoded
+-- list, so everything added since silently missed it. 024 remains canonical.
+-- document_issues gets its own block below, after it is created.
+ALTER TABLE public.seasons                FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.field_section_analysis FORCE ROW LEVEL SECURITY;
+
 -- TIMB grower number (migration 021). Mirrored so convergence holds with
 -- DB_SELF_HEAL_SCHEMA=false; 021 remains canonical.
 ALTER TABLE growers ADD COLUMN IF NOT EXISTS timb_grower_number TEXT;
@@ -385,6 +435,18 @@ CREATE INDEX IF NOT EXISTS idx_document_issues_tenant
     ON document_issues (tenant_id, issued_at DESC);
 CREATE INDEX IF NOT EXISTS idx_document_issues_hash
     ON document_issues (content_sha256);
+
+-- RLS for the registry (migration 024). It had no policy at all, while two of
+-- registry.py's queries look rows up by issue number with no tenant predicate —
+-- correct only because a route remembered to call _assert_visible. 024 remains
+-- canonical and explains why that is not a table to leave on one check.
+ALTER TABLE public.document_issues ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS ts_document_issues ON public.document_issues;
+CREATE POLICY ts_document_issues ON public.document_issues
+    FOR ALL
+    USING (tenant_id = ANY (public.app_tenant_ids()))
+    WITH CHECK (tenant_id = ANY (public.app_tenant_ids()));
+ALTER TABLE public.document_issues FORCE ROW LEVEL SECURITY;
 
 -- Hot-path indexes (migration 023). Mirrored so convergence holds with
 -- DB_SELF_HEAL_SCHEMA=false; 023 remains canonical and explains why each exists.
