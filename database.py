@@ -493,6 +493,32 @@ def init_db():
                     USING (tenant_id = ANY (public.app_tenant_ids()))
                     WITH CHECK (tenant_id = ANY (public.app_tenant_ids()));
             """)
+
+            # Idempotency keys (migration 026). The offline outbox retries
+            # POSTs — that is its job — and the ambiguous failure (request
+            # arrived, response lost) would otherwise record a farmer's harvest
+            # twice.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS idempotency_keys (
+                    key TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    endpoint TEXT NOT NULL,
+                    response_status INTEGER,
+                    response_body JSONB,
+                    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                    completed_at TIMESTAMP WITH TIME ZONE,
+                    PRIMARY KEY (key, user_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_idempotency_created
+                    ON idempotency_keys (created_at);
+                ALTER TABLE public.idempotency_keys ENABLE ROW LEVEL SECURITY;
+                ALTER TABLE public.idempotency_keys FORCE ROW LEVEL SECURITY;
+                DROP POLICY IF EXISTS us_idempotency_keys ON public.idempotency_keys;
+                CREATE POLICY us_idempotency_keys ON public.idempotency_keys
+                    FOR ALL
+                    USING (user_id = current_setting('app.user_id', true))
+                    WITH CHECK (user_id = current_setting('app.user_id', true));
+            """)
             cursor.execute("""
                 DO $$
                 DECLARE
