@@ -277,9 +277,13 @@ def get_calibration(
 def admin_recompute_calibration(
     x_admin_token: str = Header(..., alias="X-Admin-Token"),
 ):
+    import hmac
     import os
+
+    # Constant-time. `!=` on a secret leaks its prefix through timing, and this
+    # token recomputes calibration across every tenant.
     expected = os.environ.get("ADMIN_TOKEN", "")
-    if not expected or x_admin_token != expected:
+    if not expected or not hmac.compare_digest(x_admin_token or "", expected):
         raise HTTPException(status_code=403, detail="Invalid admin token")
 
     from services.calibration.compute import calibrate, segment, CalibrationPair

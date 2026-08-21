@@ -40,14 +40,9 @@ def get_principal(
     """Resolve the caller to {requester_id, tenant_ids, is_admin}. Mirrors
     app.get_state_principal: an institutional API key scoped by X-Tenant-Id, or
     the role-aware session user."""
-    if x_api_key:
-        expected = os.environ.get("INSTITUTIONAL_API_KEY")
-        if expected and x_api_key == expected and x_tenant_id:
-            return {"requester_id": x_tenant_id, "tenant_ids": [x_tenant_id], "is_admin": False}
-        raise HTTPException(status_code=401, detail="Invalid API key or missing X-Tenant-Id scope")
-    from auth_roles import get_authenticated_user
-    user = get_authenticated_user(authorization)
-    return {"requester_id": user.user_id, "tenant_ids": user.tenant_ids, "is_admin": user.role == "admin"}
+    from auth_roles import resolve_principal
+
+    return resolve_principal(authorization, x_api_key, x_tenant_id)
 
 
 def _as_date(value) -> Optional[datetime]:
