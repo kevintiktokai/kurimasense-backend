@@ -16,11 +16,13 @@ from psycopg2.extras import RealDictCursor
 from errors import internal_error
 from fastapi import FastAPI, HTTPException, Depends, Header, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.concurrency import run_in_threadpool
 from typing import Optional
+from services.idempotency import keys as idem_keys
+from services.idempotency import repository as idem_repo
 
 from dotenv import load_dotenv
 
@@ -262,7 +264,10 @@ class RobustCORSMiddleware(BaseHTTPMiddleware):
                     headers={
                         "Access-Control-Allow-Origin": origin,
                         "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
-                        "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Requested-With, Accept, Origin",
+                        # Idempotency-Key must be listed or the browser blocks
+                        # the preflight and the offline outbox silently loses
+                        # its duplicate protection.
+                        "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Requested-With, Accept, Origin, Idempotency-Key",
                         "Access-Control-Allow-Credentials": "true",
                         "Access-Control-Max-Age": "86400",
                     }
@@ -322,6 +327,144 @@ class TimingMiddleware(BaseHTTPMiddleware):
         return response
 
 app.add_middleware(TimingMiddleware)
+
+
+class IdempotencyMiddleware(BaseHTTPMiddleware):
+    """
+    Make a replayed capture land once.
+
+    The offline outbox retries POSTs — that is its job. The dangerous case is
+    the ambiguous one: the request arrived, the row was committed, and only the
+    response was lost. The client cannot tell that apart from "never arrived",
+    so it retries, and the harvest is recorded twice. A farmer logging a
+    harvest at the edge of coverage is the *intended* user of the outbox, so
+    this is its normal failure mode, not an edge case.
+
+    Middleware rather than a per-route dependency: the guard then covers every
+    mutating endpoint uniformly, including ones added later, and no route has
+    to remember anything.
+
+    Degrades open throughout. If the key store is unavailable the request
+    proceeds unguarded — refusing a farmer's harvest because a bookkeeping
+    table is down is a worse outcome than the duplicate this prevents.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        key = request.headers.get("idempotency-key")
+        if not idem_keys.is_guarded(request.method, key) or not idem_keys.is_valid_key(key):
+            return await call_next(request)
+
+        key = idem_keys.normalise_key(key)
+        user_id = _idempotency_subject(request)
+        if not user_id:
+            # Unauthenticated: no subject to scope the key to, and an unscoped
+            # key store is one a stranger can write into. Let it through — auth
+            # will reject it a moment later anyway.
+            return await call_next(request)
+
+        endpoint = idem_keys.endpoint_fingerprint(request.method, request.url.path)
+        seen_endpoint, stored, in_flight = idem_repo.lookup(key, user_id)
+
+        decision = idem_keys.decide(
+            method=request.method,
+            path=request.url.path,
+            key=key,
+            existing_endpoint=seen_endpoint,
+            existing=stored,
+            claim_in_progress=in_flight,
+        )
+
+        if decision == "conflict":
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "detail": (
+                        "This idempotency key was already used for a different "
+                        "request. Use a new key."
+                    )
+                },
+            )
+        if decision == "replay" and stored is not None:
+            # Answer with what the first attempt returned. The client is
+            # replaying because it never learned the outcome; "yes, and here is
+            # the record" is the answer it has been waiting for.
+            response = JSONResponse(status_code=stored.status, content=stored.body)
+            response.headers["Idempotent-Replay"] = "true"
+            return response
+        if decision == "in_flight":
+            return JSONResponse(
+                status_code=409,
+                content={"detail": "That request is still being processed."},
+            )
+
+        if not idem_repo.claim(key, user_id, endpoint):
+            # Someone claimed it between our lookup and now. The insert losing
+            # the race is what makes two simultaneous drains safe.
+            return JSONResponse(
+                status_code=409,
+                content={"detail": "That request is still being processed."},
+            )
+
+        try:
+            response = await call_next(request)
+        except Exception:
+            idem_repo.release(key, user_id)
+            raise
+
+        if not idem_keys.should_remember(response.status_code):
+            # A 5xx is not remembered: the client must be able to genuinely
+            # retry, and a stored 500 would make one bad moment permanent.
+            idem_repo.release(key, user_id)
+            return response
+
+        body = await _drain(response)
+        idem_repo.complete(key, user_id, response.status_code, _as_json(body))
+        return Response(
+            content=body,
+            status_code=response.status_code,
+            headers=dict(response.headers),
+            media_type=response.media_type,
+        )
+
+
+def _idempotency_subject(request: Request) -> Optional[str]:
+    """
+    Who the key belongs to, read from the bearer token without verifying it.
+
+    Unverified is fine *for this purpose*: the token is verified moments later
+    by the route's auth dependency, and a forged subject here can only collide
+    with its own key namespace. It cannot read another user's stored response,
+    because a wrong subject simply misses.
+    """
+    header = request.headers.get("authorization") or ""
+    if not header.lower().startswith("bearer "):
+        return None
+    try:
+        import jwt
+
+        claims = jwt.decode(header[7:], options={"verify_signature": False})
+        subject = claims.get("sub")
+        return str(subject) if subject else None
+    except Exception:
+        return None
+
+
+async def _drain(response) -> bytes:
+    """Read a streamed response body so it can be stored and re-sent."""
+    chunks = [section async for section in response.body_iterator]
+    return b"".join(chunks)
+
+
+def _as_json(body: bytes):
+    try:
+        return json.loads(body)
+    except Exception:
+        # Non-JSON (a PDF, say). Storing the status alone still prevents the
+        # duplicate; the replay just cannot echo the original bytes.
+        return None
+
+
+app.add_middleware(IdempotencyMiddleware)
 
 # GZip compress responses > 500 bytes (saves ~40-60% on JSON payloads like /ai/insights)
 app.add_middleware(GZipMiddleware, minimum_size=500)

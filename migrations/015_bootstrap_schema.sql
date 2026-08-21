@@ -448,6 +448,28 @@ CREATE POLICY ts_document_issues ON public.document_issues
     WITH CHECK (tenant_id = ANY (public.app_tenant_ids()));
 ALTER TABLE public.document_issues FORCE ROW LEVEL SECURITY;
 
+-- Idempotency keys (migration 026). Mirrored; 026 remains canonical and
+-- explains why the offline outbox needs this and lib/http does not.
+CREATE TABLE IF NOT EXISTS idempotency_keys (
+    key TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    endpoint TEXT NOT NULL,
+    response_status INTEGER,
+    response_body JSONB,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    completed_at TIMESTAMP WITH TIME ZONE,
+    PRIMARY KEY (key, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_idempotency_created
+    ON idempotency_keys (created_at);
+ALTER TABLE public.idempotency_keys ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.idempotency_keys FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS us_idempotency_keys ON public.idempotency_keys;
+CREATE POLICY us_idempotency_keys ON public.idempotency_keys
+    FOR ALL
+    USING (user_id = current_setting('app.user_id', true))
+    WITH CHECK (user_id = current_setting('app.user_id', true));
+
 -- Hot-path indexes (migration 023). Mirrored so convergence holds with
 -- DB_SELF_HEAL_SCHEMA=false; 023 remains canonical and explains why each exists.
 CREATE INDEX IF NOT EXISTS idx_fields_tenant ON fields (tenant_id);
