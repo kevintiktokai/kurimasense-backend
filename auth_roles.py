@@ -320,3 +320,52 @@ def require_admin_token(x_admin_token: Optional[str] = Header(None)) -> bool:
     if not expected or not x_admin_token or not hmac.compare_digest(x_admin_token, expected):
         raise HTTPException(status_code=401, detail="Invalid or missing admin token")
     return True
+
+
+# ---------------------------------------------------------------------------
+# Principal resolution (shared)
+# ---------------------------------------------------------------------------
+def resolve_principal(
+    authorization: Optional[str],
+    x_api_key: Optional[str],
+    x_tenant_id: Optional[str],
+) -> dict:
+    """
+    Resolve a caller to ``{requester_id, tenant_ids, is_admin}``.
+
+    Two ways in:
+
+    * **Institutional API key** — ``X-API-Key`` matching ``INSTITUTIONAL_API_KEY``
+      plus ``X-Tenant-Id`` naming the tenant being read. Tenant scoping is then
+      enforced downstream.
+    * **Session** — the role-aware Supabase user, which carries its own
+      ``tenant_ids``.
+
+    Extracted because ``app.get_state_principal`` and
+    ``season_routes.get_principal`` were near-identical copies. Two hand-written
+    copies of an authentication decision drift, and the drift is invisible until
+    one of them is the lenient one.
+
+    The key comparison is constant-time. ``==`` on a secret leaks its prefix
+    through timing, and this key grants read access to a whole tenant's fields —
+    the same reason :func:`require_admin_token` above has always used
+    ``hmac.compare_digest``.
+    """
+    if x_api_key:
+        expected = os.environ.get("INSTITUTIONAL_API_KEY")
+        if expected and hmac.compare_digest(x_api_key, expected) and x_tenant_id:
+            return {
+                "requester_id": x_tenant_id,
+                "tenant_ids": [x_tenant_id],
+                "is_admin": False,
+            }
+        raise HTTPException(
+            status_code=401, detail="Invalid API key or missing X-Tenant-Id scope"
+        )
+
+    user = get_authenticated_user(authorization)
+    return {
+        "requester_id": user.user_id,
+        "tenant_ids": user.tenant_ids,
+        "is_admin": user.role == "admin",
+    }

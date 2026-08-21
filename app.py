@@ -2042,15 +2042,9 @@ async def get_state_principal(
       ``X-Tenant-Id`` header naming the tenant being read. Tenant scoping is then
       enforced downstream (the aggregator returns 403 if the field is not in scope).
     """
-    if x_api_key:
-        expected = os.environ.get("INSTITUTIONAL_API_KEY")
-        if expected and x_api_key == expected and x_tenant_id:
-            return {"requester_id": x_tenant_id, "tenant_ids": [x_tenant_id], "is_admin": False}
-        raise HTTPException(status_code=401, detail="Invalid API key or missing X-Tenant-Id scope")
-    # Session: resolve the role-aware user so we get the caller's tenant_ids.
-    from auth_roles import get_authenticated_user
-    user = get_authenticated_user(authorization)
-    return {"requester_id": user.user_id, "tenant_ids": user.tenant_ids, "is_admin": user.role == "admin"}
+    from auth_roles import resolve_principal
+
+    return resolve_principal(authorization, x_api_key, x_tenant_id)
 
 
 @app.get("/field/{field_id}/state", response_model=FieldState)
