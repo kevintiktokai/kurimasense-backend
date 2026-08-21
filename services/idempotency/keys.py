@@ -93,15 +93,34 @@ def endpoint_fingerprint(method: str, path: str) -> str:
     return f"{method.upper()} {path}"
 
 
+#: Statuses the client is expected to retry, and must therefore be free to.
+#:
+#: The exact complement of the outbox's own retriable set
+#: (lib/offline/outbox.ts: ``status >= 500 || status === 408 || status === 429``).
+#: The two have to agree. If the server remembers an outcome the client treats
+#: as retriable, the client retries, is handed the remembered answer every
+#: time, exhausts its attempts and parks the capture as failed — turning a
+#: moment of rate limiting into a permanently lost harvest.
+TRANSIENT_STATUSES = frozenset({408, 429})
+
+
 def should_remember(status: int) -> bool:
     """
     Whether this outcome is worth storing against the key.
 
-    False for 5xx — see the module docstring. A stored 500 would make a
-    transient server failure permanent for that capture, which is worse than
-    the duplicate we are trying to avoid.
+    False for anything the client will retry: 5xx, plus 408 and 429. A stored
+    5xx makes a transient server failure permanent for that capture; a stored
+    429 does the same for a moment of rate limiting. Both are worse than the
+    duplicate this module exists to prevent, because a duplicate is at least
+    visible and recoverable — a capture that can never complete is neither.
+
+    True for the rest: 2xx because it is the outcome the client never heard,
+    and other 4xx because they are deterministic — the same request will be
+    rejected the same way, so re-running it to say so again is waste.
     """
-    return status < 500
+    if status >= 500:
+        return False
+    return status not in TRANSIENT_STATUSES
 
 
 def decide(

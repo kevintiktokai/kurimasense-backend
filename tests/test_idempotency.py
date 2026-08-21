@@ -95,12 +95,38 @@ def test_a_server_failure_is_not_remembered():
         assert should_remember(status) is False, status
 
 
-def test_success_and_client_errors_are_remembered():
+def test_a_rate_limit_is_not_remembered_either():
+    # Caught before this shipped. 429 and 408 are below 500, so a naive
+    # `status < 500` remembers them — and the outbox treats both as *retriable*
+    # (outbox.ts: status >= 500 || 408 || 429). So the client would retry, be
+    # handed the stored 429 every single time, exhaust its attempts, and park
+    # the capture as failed.
+    #
+    # A moment of rate limiting would become a permanently lost harvest, which
+    # is strictly worse than the duplicate this module exists to prevent: a
+    # duplicate is visible and recoverable, a capture that can never complete
+    # is neither.
+    for status in (408, 429):
+        assert should_remember(status) is False, status
+
+
+def test_the_remembered_set_is_the_complement_of_what_the_client_retries():
+    # These two live in different repos and must agree. If they ever diverge,
+    # the disagreement is silent and costs a farmer their record.
+    from services.idempotency.keys import TRANSIENT_STATUSES
+
+    assert TRANSIENT_STATUSES == frozenset({408, 429})
+    for status in sorted(TRANSIENT_STATUSES) + [500, 502, 503]:
+        assert should_remember(status) is False, status
+
+
+def test_success_and_deterministic_client_errors_are_remembered():
     # 2xx because that is the outcome the client never heard.
     for status in (200, 201, 204):
         assert should_remember(status) is True, status
     # 4xx because it is deterministic: the same request will be rejected the
-    # same way, and re-running it just to say so again is waste.
+    # same way, and re-running it just to say so again is waste. 408 and 429
+    # are deliberately absent — see above.
     for status in (400, 403, 404, 409, 422):
         assert should_remember(status) is True, status
 
@@ -211,6 +237,9 @@ def test_the_migration_scopes_the_key_by_user():
     assert "FORCE ROW LEVEL SECURITY" in migration
 
 
-@pytest.mark.parametrize("status,remembered", [(201, True), (422, True), (503, False)])
+@pytest.mark.parametrize(
+    "status,remembered",
+    [(201, True), (422, True), (503, False), (429, False), (408, False)],
+)
 def test_the_rule_in_one_line(status, remembered):
     assert should_remember(status) is remembered
