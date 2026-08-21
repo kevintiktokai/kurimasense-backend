@@ -476,6 +476,21 @@ def init_db():
                     ON document_issues (content_sha256);
             """)
 
+            # Hot-path indexes (migration 023). `fields` had one index, on the
+            # legacy consumer column, while every institutional query scopes by
+            # tenant — so the busiest table in the product was sequentially
+            # scanned on every portfolio load and every document generated.
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_fields_tenant ON fields (tenant_id);
+                CREATE INDEX IF NOT EXISTS idx_fields_grower ON fields (grower_id)
+                    WHERE grower_id IS NOT NULL;
+                CREATE INDEX IF NOT EXISTS idx_growers_tenant_active
+                    ON growers (tenant_id, created_at DESC)
+                    WHERE deleted_at IS NULL;
+                CREATE INDEX IF NOT EXISTS idx_field_inputs_date ON field_inputs (input_date)
+                    WHERE input_date IS NOT NULL;
+            """)
+
             # Institutional operations tables (migration 013) — team invites,
             # agronomist field activities, and field assignments. Self-heal on
             # boot like the tables above; the member-role/status ALTERs are also
