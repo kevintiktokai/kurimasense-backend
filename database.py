@@ -476,6 +476,90 @@ def init_db():
                     ON document_issues (content_sha256);
             """)
 
+            # RLS for the tables added after migration 017 (024).
+            #
+            # 017 forces RLS on a hardcoded list, so every table added since has
+            # silently missed it — nothing fails, it just isn't isolated.
+            # document_issues had no policy at all, and two of registry.py's
+            # queries (get_by_issue_number, mark_forwarded) carry no tenant
+            # predicate: they were correct only because a route remembered to
+            # call _assert_visible. A registry of what was issued to which
+            # client is not the table to leave on one application-layer check.
+            cursor.execute("""
+                ALTER TABLE public.document_issues ENABLE ROW LEVEL SECURITY;
+                DROP POLICY IF EXISTS ts_document_issues ON public.document_issues;
+                CREATE POLICY ts_document_issues ON public.document_issues
+                    FOR ALL
+                    USING (tenant_id = ANY (public.app_tenant_ids()))
+                    WITH CHECK (tenant_id = ANY (public.app_tenant_ids()));
+            """)
+            cursor.execute("""
+                DO $$
+                DECLARE
+                    t text;
+                    added_since_017 text[] := ARRAY[
+                        'field_section_analysis', 'seasons', 'document_issues'
+                    ];
+                BEGIN
+                    FOREACH t IN ARRAY added_since_017 LOOP
+                        IF EXISTS (SELECT 1 FROM pg_class c
+                                   JOIN pg_namespace n ON n.oid = c.relnamespace
+                                   WHERE n.nspname = 'public' AND c.relname = t) THEN
+                            EXECUTE format(
+                                'ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', t);
+                            EXECUTE format(
+                                'ALTER TABLE public.%I FORCE ROW LEVEL SECURITY', t);
+                        END IF;
+                    END LOOP;
+                END $$;
+            """)
+
+            # Tenancy columns (migration 025). MUST run before the 023 indexes
+            # below, which reference growers and fields.tenant_id/grower_id.
+            #
+            # These came from migrate_fields_to_tenants.py — a standalone script
+            # outside the migration sequence — so neither 015 nor this function
+            # created them, and a database built from the documented path had no
+            # `fields.tenant_id`: the column every scoped read in the product
+            # filters on. It has held up only because every environment to date
+            # was built by running that script first.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS growers (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    phone TEXT,
+                    email TEXT,
+                    coordinates JSONB,
+                    claimed_by_user_id UUID REFERENCES profiles(id),
+                    created_by_user_id UUID REFERENCES profiles(id),
+                    notes TEXT,
+                    deleted_at TIMESTAMP WITH TIME ZONE,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_growers_tenant ON growers(tenant_id);
+                CREATE INDEX IF NOT EXISTS idx_growers_claimed ON growers(claimed_by_user_id);
+                CREATE INDEX IF NOT EXISTS idx_growers_active ON growers(deleted_at)
+                    WHERE deleted_at IS NULL;
+
+                ALTER TABLE fields ADD COLUMN IF NOT EXISTS tenant_id UUID
+                    REFERENCES tenants(id);
+                ALTER TABLE fields ADD COLUMN IF NOT EXISTS grower_id UUID
+                    REFERENCES growers(id);
+            """)
+            cursor.execute("""
+                ALTER TABLE public.growers ENABLE ROW LEVEL SECURITY;
+                DROP POLICY IF EXISTS ts_growers ON public.growers;
+                CREATE POLICY ts_growers ON public.growers
+                    FOR ALL
+                    USING (tenant_id = ANY (public.app_tenant_ids()))
+                    WITH CHECK (tenant_id = ANY (public.app_tenant_ids()));
+                ALTER TABLE public.growers FORCE ROW LEVEL SECURITY;
+                ALTER TABLE public.fields  ENABLE ROW LEVEL SECURITY;
+                ALTER TABLE public.fields  FORCE ROW LEVEL SECURITY;
+            """)
+
             # Hot-path indexes (migration 023). `fields` had one index, on the
             # legacy consumer column, while every institutional query scopes by
             # tenant — so the busiest table in the product was sequentially
