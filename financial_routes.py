@@ -304,8 +304,16 @@ def get_exposure(
         growers = {r["id"]: r["name"] for r in cur.fetchall()}
 
         # Fields (+ their grower) for this tenant.
+        #
+        # Named columns rather than `f.*`: the * pulled `polygon_coordinates`
+        # — a boundary polygon per field — for every field in the book, on an
+        # endpoint that never looks at it. This is the same column list the
+        # field-state aggregator selects, which is what assemble_field_state
+        # below actually reads.
         cur.execute(
-            "SELECT f.*, f.id::text AS id, f.grower_id::text AS grower_id "
+            "SELECT f.id::text AS id, f.user_id, f.tenant_id::text AS tenant_id, "
+            "       f.grower_id::text AS grower_id, f.name, f.crop_type, f.variety, "
+            "       f.planting_date, f.size_hectares, f.health_score "
             "FROM fields f WHERE f.tenant_id = %s::uuid",
             (tenant_id,),
         )
@@ -314,9 +322,23 @@ def get_exposure(
 
         logs_by_field: Dict[str, list] = {}
         if field_ids:
+            # The newest 90 passes per field, matching the window every other
+            # caller of assemble_field_state uses (aggregator._fetch_daily_logs).
+            #
+            # This was every daily_log ever recorded, for every field in the
+            # tenant, with no window and no limit — then handed to a function
+            # that reads logs[-1] and logs[-30:]. For a contractor with a few
+            # hundred fields and two seasons of history that is six figures of
+            # rows pulled into Python to compute one exposure table, and it grows
+            # with every satellite pass rather than staying flat.
             cur.execute(
-                "SELECT field_id::text AS field_id, log_date, ndvi, evi, soil_moisture, cloud_cover "
-                "FROM daily_logs WHERE field_id = ANY(%s::uuid[]) ORDER BY field_id, log_date ASC",
+                "SELECT field_id, log_date, ndvi, evi, soil_moisture, cloud_cover FROM ("
+                "  SELECT field_id::text AS field_id, log_date, ndvi, evi, "
+                "         soil_moisture, cloud_cover, "
+                "         ROW_NUMBER() OVER (PARTITION BY field_id "
+                "                            ORDER BY log_date DESC) AS rn "
+                "  FROM daily_logs WHERE field_id = ANY(%s::uuid[])"
+                ") w WHERE rn <= 90 ORDER BY field_id, log_date ASC",
                 (field_ids,),
             )
             for r in cur.fetchall():

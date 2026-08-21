@@ -892,15 +892,22 @@ def _q(sql: str, params: tuple,
 def _fetch_daily_logs(field_id: str,
                       user_id: Optional[str] = None,
                       tenant_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
-    return _q(
+    # DESC then reversed, not ASC — `ORDER BY log_date ASC LIMIT 90` returns the
+    # ninety *oldest* observations, and `assemble_field_state` reads `logs[-1]`
+    # as the latest satellite pass. On any field past its first ~90 passes that
+    # made the field card report months-old NDVI as current and the pass itself
+    # as stale, which reads to a farmer as "the satellite stopped looking at my
+    # field". yield_model._recent_ndvi already does it this way round.
+    rows = _q(
         """
         SELECT log_date, ndvi, evi, soil_moisture, cloud_cover, sar_vv_db, sar_vh_db
         FROM daily_logs WHERE field_id = %s::uuid
-        ORDER BY log_date ASC LIMIT 90
+        ORDER BY log_date DESC LIMIT 90
         """,
         (field_id,),
         user_id=user_id, tenant_ids=tenant_ids,
     )
+    return list(reversed(rows))  # chronological, as every caller expects
 
 
 def _fetch_input_count(field_id: str,
