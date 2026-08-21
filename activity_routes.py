@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from typing import List, Optional
 
+from errors import internal_error
 from fastapi import APIRouter, Depends, HTTPException, Query
 from psycopg2.extras import RealDictCursor
 
@@ -130,7 +131,7 @@ def create_activity(field_id: str, body: CreateActivityRequest,
         conn.rollback(); conn.close(); raise
     except Exception as exc:
         conn.rollback(); conn.close()
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise internal_error(exc)
     else:
         conn.close()
     return _activity_from_row(row)
@@ -210,7 +211,7 @@ def update_activity(activity_id: str, body: UpdateActivityRequest,
         conn.rollback(); conn.close(); raise
     except Exception as exc:
         conn.rollback(); conn.close()
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise internal_error(exc)
     else:
         conn.close()
     return _activity_from_row(row)
@@ -230,7 +231,7 @@ def delete_activity(activity_id: str,
         conn.rollback(); conn.close(); raise
     except Exception as exc:
         conn.rollback(); conn.close()
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise internal_error(exc)
     else:
         conn.close()
 
@@ -319,7 +320,7 @@ def assign_field(field_id: str, body: AssignFieldRequest,
         conn.rollback(); conn.close(); raise
     except Exception as exc:
         conn.rollback(); conn.close()
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise internal_error(exc)
     else:
         conn.close()
 

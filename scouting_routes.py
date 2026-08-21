@@ -10,6 +10,7 @@ with correct 403-vs-404 behaviour.
 import json
 from typing import List
 
+from errors import internal_error
 from fastapi import APIRouter, Depends, HTTPException
 from psycopg2.extras import RealDictCursor
 
@@ -94,7 +95,7 @@ def create_scouting(
         raise
     except Exception as exc:
         conn.rollback()
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise internal_error(exc)
     finally:
         conn.close()
 

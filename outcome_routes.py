@@ -6,6 +6,7 @@ Tenant-scoped via get_authenticated_user; 403-vs-404 access pattern.
 from datetime import date
 from typing import List, Optional
 
+from errors import internal_error
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from psycopg2.extras import RealDictCursor
 
@@ -126,7 +127,7 @@ def create_harvest(
         raise
     except Exception as exc:
         conn.rollback()
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise internal_error(exc)
     finally:
         conn.close()
 
@@ -356,7 +357,7 @@ def admin_recompute_calibration(
         raise
     except Exception as exc:
         conn.rollback()
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise internal_error(exc)
     finally:
         conn.close()
 
