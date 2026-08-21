@@ -71,6 +71,37 @@ def test_the_yield_model_agrees_on_the_direction():
     assert "reversed(rows)" in yield_model
 
 
+def test_no_caller_anywhere_still_takes_the_oldest_passes():
+    # The window is fetched in four places — the aggregator, the yield model,
+    # the exposure endpoint and the score-recompute diagnostic — because each
+    # has its own connection story. Four copies of one decision is three
+    # chances to disagree, and they did: two had it right and two had it
+    # backwards. Until they are one function, this is what keeps them aligned.
+    offenders = []
+    for path in sorted(ROOT.glob("**/*.py")):
+        if "test" in path.name or ".venv" in str(path):
+            continue
+        # Comment lines excluded: the fixes' own comments quote the bad SQL to
+        # explain what it did.
+        for number, line in enumerate(path.read_text().splitlines(), start=1):
+            if line.strip().startswith("#"):
+                continue
+            if re.search(r"ORDER BY log_date ASC LIMIT", line):
+                offenders.append(f"{path.relative_to(ROOT)}:{number}")
+    assert offenders == [], (
+        "these take the oldest passes, and every consumer reads the last row as "
+        f"the latest one: {offenders}"
+    )
+
+
+def test_the_score_diagnostic_agrees_too():
+    # Read-only, but it prints the score and observation quality an operator
+    # trusts when asking why a field is scoring low.
+    script = (ROOT / "scripts" / "recompute_kurima_scores.py").read_text()
+    assert "ORDER BY log_date DESC LIMIT 90" in script
+    assert "reversed(" in script
+
+
 def test_the_exposure_endpoint_uses_the_same_window():
     # It fetched every daily_log ever recorded for every field in the tenant —
     # no window, no limit — and passed them to the same assemble_field_state.
