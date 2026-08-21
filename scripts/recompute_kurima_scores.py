@@ -64,12 +64,18 @@ def main():
 
         scored = 0
         for f in fields:
+            # DESC then reversed — see aggregator._fetch_daily_logs. ASC LIMIT 90
+            # takes the ninety *oldest* passes, and assemble_field_state reads
+            # logs[-1] as the latest one, so this printed scores and observation
+            # quality computed from months-old imagery. On a diagnostic whose
+            # whole job is answering "why is this field scoring low", that is the
+            # one thing it must not get wrong.
             cur.execute(
                 "SELECT log_date, ndvi, evi, soil_moisture, cloud_cover FROM daily_logs "
-                "WHERE field_id = %s::uuid ORDER BY log_date ASC LIMIT 90",
+                "WHERE field_id = %s::uuid ORDER BY log_date DESC LIMIT 90",
                 (f["id"],),
             )
-            logs = [dict(r) for r in cur.fetchall()]
+            logs = [dict(r) for r in reversed(cur.fetchall())]
             try:
                 state = assemble_field_state(
                     field_row=dict(f), requester_id=None, daily_logs=logs, enforce_owner=False,
