@@ -7,6 +7,7 @@ All queries filter by tenant_id from get_authenticated_user; 403-vs-404 enforced
 from datetime import date, timedelta
 from typing import Dict, List, Optional
 
+from errors import internal_error
 from fastapi import APIRouter, Depends, HTTPException
 from psycopg2.extras import RealDictCursor
 
@@ -113,7 +114,7 @@ def create_contract(
         raise
     except Exception as exc:
         conn.rollback()
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise internal_error(exc)
     finally:
         conn.close()
     return Contract(**dict(row))
@@ -171,7 +172,7 @@ def create_disbursement(
         raise
     except Exception as exc:
         conn.rollback()
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise internal_error(exc)
     finally:
         conn.close()
     return Disbursement(**dict(row))
@@ -233,7 +234,7 @@ def create_delivery(
         raise
     except Exception as exc:
         conn.rollback()
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise internal_error(exc)
     finally:
         conn.close()
     return Delivery(**dict(row))

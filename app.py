@@ -13,6 +13,7 @@ import time
 import uuid
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from errors import internal_error
 from fastapi import FastAPI, HTTPException, Depends, Header, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -1517,7 +1518,7 @@ def create_field(request: Request, payload: dict, background_tasks: BackgroundTa
         import traceback
         traceback.print_exc()
         conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error(e)
     finally:
         conn.close()
 
@@ -1787,7 +1788,7 @@ def log_input(request: Request, payload: dict, user_id: str = Depends(verify_tok
     except Exception as e:
         print(f"Log Input Error: {e}")
         conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error(e)
     finally:
         conn.close()
 
@@ -2155,7 +2156,7 @@ def router_endpoint(payload: dict, user_id: str = Depends(verify_token)):
     try:
         return route(payload)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise internal_error(exc)
 
 
 @app.post("/chat/send")
@@ -3148,7 +3149,7 @@ async def get_farm_tasks(
     except Exception as e:
         if conn: conn.close()
         print(f"Error fetching tasks: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error(e)
 
 @app.patch("/ai/tasks/{task_id}")
 async def update_farm_task(
@@ -3203,7 +3204,7 @@ async def update_farm_task(
     except Exception as e:
         if conn: conn.close()
         print(f"Error updating task: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error(e)
 
 @app.post("/ai/tasks")
 async def create_farm_task(
@@ -3243,7 +3244,7 @@ async def create_farm_task(
     except Exception as e:
         if conn: conn.close()
         print(f"Error creating task: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error(e)
 
 
 @app.get("/ai/tasks/history")
@@ -3309,7 +3310,7 @@ async def get_task_history(
     except Exception as e:
         if conn: conn.close()
         print(f"Error fetching task history: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error(e)
 
 
 @app.post("/ai/tasks/from-plan")
@@ -3352,7 +3353,7 @@ async def create_tasks_from_plan(
     except Exception as e:
         if conn: conn.close()
         print(f"Error creating tasks from plan: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error(e)
 
 
 # ========== CLIMATE INTELLIGENCE ENDPOINTS ==========
@@ -4388,7 +4389,7 @@ async def fertilizer_recommendation(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error(e)
 
 
 @app.get("/agro/ipm/{field_id}")
@@ -4442,7 +4443,7 @@ async def ipm_recommendations(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error(e)
 
 
 @app.get("/agro/irrigation/{field_id}")
@@ -4478,7 +4479,7 @@ async def irrigation_advice(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error(e)
 
 
 @app.get("/agro/harvest/{field_id}")
@@ -4534,7 +4535,7 @@ async def harvest_readiness(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error(e)
 
 
 @app.get("/agro/crop-intelligence/{field_id}")
@@ -4630,7 +4631,7 @@ async def crop_intelligence(
     except Exception as e:
         print(f"Crop Intelligence Error: {e}")
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error(e)
 
 
 @app.get("/agro/supported-crops")

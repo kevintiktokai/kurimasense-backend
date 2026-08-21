@@ -29,6 +29,7 @@ from __future__ import annotations
 import secrets
 from typing import List
 
+from errors import internal_error
 from fastapi import APIRouter, Depends, HTTPException
 from psycopg2.extras import RealDictCursor
 
@@ -182,7 +183,7 @@ def add_member(body: AddTeamMemberRequest,
     except Exception as exc:
         conn.rollback()
         conn.close()
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise internal_error(exc)
     else:
         conn.close()
 
@@ -257,7 +258,7 @@ def update_member(member_user_id: str, body: UpdateTeamMemberRequest,
     except Exception as exc:
         conn.rollback()
         conn.close()
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise internal_error(exc)
     else:
         conn.close()
 
@@ -311,7 +312,7 @@ def remove_member(member_user_id: str,
     except Exception as exc:
         conn.rollback()
         conn.close()
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise internal_error(exc)
     else:
         conn.close()
 
@@ -369,7 +370,7 @@ def create_invite(body: CreateInviteRequest,
     except Exception as exc:
         conn.rollback()
         conn.close()
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise internal_error(exc)
     else:
         conn.close()
     return TeamInvite(
@@ -404,7 +405,7 @@ def revoke_invite(invite_id: str,
     except Exception as exc:
         conn.rollback()
         conn.close()
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise internal_error(exc)
     else:
         conn.close()
 
@@ -473,7 +474,7 @@ def accept_invite(body: AcceptInviteRequest,
     except Exception as exc:
         conn.rollback()
         conn.close()
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise internal_error(exc)
     else:
         conn.close()
 
