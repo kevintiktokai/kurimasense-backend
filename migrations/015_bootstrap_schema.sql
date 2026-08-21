@@ -385,3 +385,14 @@ CREATE INDEX IF NOT EXISTS idx_document_issues_tenant
     ON document_issues (tenant_id, issued_at DESC);
 CREATE INDEX IF NOT EXISTS idx_document_issues_hash
     ON document_issues (content_sha256);
+
+-- Hot-path indexes (migration 023). Mirrored so convergence holds with
+-- DB_SELF_HEAL_SCHEMA=false; 023 remains canonical and explains why each exists.
+CREATE INDEX IF NOT EXISTS idx_fields_tenant ON fields (tenant_id);
+CREATE INDEX IF NOT EXISTS idx_fields_grower ON fields (grower_id)
+    WHERE grower_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_growers_tenant_active
+    ON growers (tenant_id, created_at DESC)
+    WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_field_inputs_date ON field_inputs (input_date)
+    WHERE input_date IS NOT NULL;
