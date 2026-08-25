@@ -29,6 +29,7 @@ least want to find out.
 
 import pathlib
 import re
+from tests.guards import SQL, without_comments
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 BOOTSTRAP = (ROOT / "migrations" / "015_bootstrap_schema.sql").read_text()
@@ -36,9 +37,7 @@ BOOTSTRAP = (ROOT / "migrations" / "015_bootstrap_schema.sql").read_text()
 
 def _statements(sql: str) -> list[str]:
     """Statements in file order, comments stripped. Order is the whole test."""
-    body = "\n".join(
-        line for line in sql.splitlines() if not line.strip().startswith("--")
-    )
+    body = without_comments(sql, SQL)
     return [s.strip() for s in body.split(";") if s.strip()]
 
 
