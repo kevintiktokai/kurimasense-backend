@@ -29,6 +29,7 @@ fails on the *fourth* one, before it ships.
 
 import pathlib
 import re
+from tests.guards import SQL, without_comments
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 MIGRATIONS = ROOT / "migrations"
@@ -41,9 +42,7 @@ def _sql() -> str:
 
 def _strip_comments(sql: str) -> str:
     """`--` lines. Without this, a rollback note reads as a live statement."""
-    return "\n".join(
-        line for line in sql.splitlines() if not line.strip().startswith("--")
-    )
+    return without_comments(sql, SQL)
 
 
 def tenant_scoped_tables() -> set[str]:

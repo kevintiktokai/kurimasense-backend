@@ -28,6 +28,7 @@ import pytest
 from fastapi import HTTPException
 
 from errors import internal_error
+from tests.guards import code_lines
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -51,9 +52,7 @@ def test_no_handler_returns_a_raw_exception_as_a_500():
     for path in _source_files():
         if path.name == "errors.py":  # the module documenting the old pattern
             continue
-        for number, line in enumerate(path.read_text().splitlines(), start=1):
-            if line.strip().startswith("#"):
-                continue
+        for number, line in code_lines(path.read_text()):
             if re.search(r"status_code=500\s*,\s*detail=str\(", line):
                 offenders.append(f"{path.relative_to(ROOT)}:{number}")
     assert offenders == [], (

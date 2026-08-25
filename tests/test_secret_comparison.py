@@ -14,6 +14,7 @@ import re
 import pytest
 
 import auth_roles
+from tests.guards import code_lines
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -33,8 +34,8 @@ def test_no_secret_is_compared_with_a_plain_equality():
     # the secret's prefix. hmac.compare_digest does not.
     offenders = []
     for path in _source_files():
-        for index, line in enumerate(path.read_text().split("\n"), start=1):
-            if "compare_digest" in line or line.lstrip().startswith("#"):
+        for index, line in code_lines(path.read_text()):
+            if "compare_digest" in line:
                 continue
             if re.search(r"(x_api_key|x_admin_token|api_key|admin_token)\s*[!=]=\s*expected", line):
                 offenders.append(f"{path.name}:{index}")

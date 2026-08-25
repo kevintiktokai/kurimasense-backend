@@ -36,6 +36,7 @@ oversight rather than a decision.
 import pathlib
 import re
 from datetime import date, timedelta
+from tests.guards import code_lines, without_comments
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 AGGREGATOR = (ROOT / "services" / "field_state" / "aggregator.py").read_text()
@@ -83,9 +84,7 @@ def test_no_caller_anywhere_still_takes_the_oldest_passes():
             continue
         # Comment lines excluded: the fixes' own comments quote the bad SQL to
         # explain what it did.
-        for number, line in enumerate(path.read_text().splitlines(), start=1):
-            if line.strip().startswith("#"):
-                continue
+        for number, line in code_lines(path.read_text()):
             if re.search(r"ORDER BY log_date ASC LIMIT", line):
                 offenders.append(f"{path.relative_to(ROOT)}:{number}")
     assert offenders == [], (
@@ -121,9 +120,7 @@ def test_the_exposure_endpoint_stops_selecting_every_column():
     financial = (ROOT / "financial_routes.py").read_text()
     exposure = financial.split("def get_exposure", 1)[1]
     # Comments stripped: the fix's own comment explains what `f.*` was doing.
-    code = "\n".join(
-        line for line in exposure.splitlines() if not line.strip().startswith("#")
-    )
+    code = without_comments(exposure)
     assert "f.*" not in code
 
 

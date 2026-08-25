@@ -31,6 +31,7 @@ from services.idempotency.keys import (
     normalise_key,
     should_remember,
 )
+from tests.guards import code_lines
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -202,8 +203,8 @@ def test_the_cors_preflight_allows_the_header():
     # unguarded, which is the worst of both worlds.
     app_source = (ROOT / "app.py").read_text()
     allow_headers = [
-        line for line in app_source.splitlines()
-        if "Access-Control-Allow-Headers" in line and not line.strip().startswith("#")
+        line for _, line in code_lines(app_source)
+        if "Access-Control-Allow-Headers" in line
     ]
     assert allow_headers, "no Access-Control-Allow-Headers line found"
     assert all("Idempotency-Key" in line for line in allow_headers), allow_headers
