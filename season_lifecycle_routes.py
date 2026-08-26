@@ -22,7 +22,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response
 
 from auth_roles import get_authenticated_user
 from schemas import AuthenticatedUser
@@ -38,6 +38,7 @@ from services.planning.establishment import (
 )
 from services.planning.fertiliser import build_fertiliser_programme
 from services.planning.execution import assess_application, summarise_season_execution
+from services.planning.curing import build_curing_plan
 from services.planning.postharvest import build_post_harvest_plan
 from services.seasons.retrospective import build_retrospective, derive_topdress_delay
 from services.planning.windows import build_action_windows
@@ -512,6 +513,42 @@ def get_post_harvest_plan(
         raise HTTPException(status_code=502, detail=f"Crop profile unavailable: {e}")
 
     return build_post_harvest_plan(profile).to_dict()
+
+
+@router.get("/fields/{field_id}/curing")
+def get_curing_plan(
+    field_id: str,
+    crop: Optional[str] = Query(None, description="Defaults to the field's current crop"),
+    user: AuthenticatedUser = Depends(get_authenticated_user),
+):
+    """The barn cycle for a flue-cured crop, and how many barns this field needs.
+
+    ``post-harvest`` above covers grain — dry to a moisture target, keep the
+    weevils out. None of it applies to a leaf that has to be held at 85%
+    humidity for two days on purpose, and tobacco is what most of this
+    product's farmers actually grow. A grower can execute a flawless season and
+    destroy it in the barn in three days.
+
+    Returns 204 rather than an error for a crop that is not flue-cured. The
+    field is fine, the crop is fine, there is simply nothing to say — and the
+    screen renders nothing rather than an empty heading. Notably that includes
+    burley: it is tobacco, and it is air-cured, and handing a burley grower a
+    70 °C ramp would ruin the crop.
+    """
+    field = _resolve(field_id, user)
+
+    crop_name = crop or field.get("crop_type")
+    if not crop_name:
+        raise HTTPException(
+            status_code=400,
+            detail="No crop set for this field, so no curing plan can be built.",
+        )
+
+    ctx = _field_context(field)
+    plan = build_curing_plan(crop_name, area_hectares=ctx["area_hectares"])
+    if plan is None:
+        return Response(status_code=204)
+    return plan.to_dict()
 
 
 @router.get("/fields/{field_id}/season-history")
