@@ -12,6 +12,7 @@ Contains:
 
 import os
 import re
+import asyncio
 import json
 import time
 import hashlib
@@ -443,6 +444,52 @@ async def get_field_context(field_id: str, user_id: str) -> FieldContext:
     return context
 
 
+def _coords_from_field(field_id: str, user_id: str):
+    """This field's centroid, or None. Blocking: psycopg2, run in a thread.
+
+    Split out of ``resolve_coordinates`` because that function is ``async`` and
+    ran this query straight on the event loop. Every ``/climate/*`` route calls
+    it first, so with one uvicorn worker a dashboard opening six weather cards
+    serialised on this lookup before any of them reached Open-Meteo — visible in
+    production as /climate/historical taking 26 seconds for a request whose own
+    upstream fetch took 700ms.
+    """
+    try:
+        # FORCE-ready: fields policy scopes by the caller's tenants. Flag-off
+        # keeps the legacy user_id filter byte-identical; flag-on scopes by
+        # tenant and drops the fields.user_id reference (see rls_force_runbook).
+        from tenancy import tenant_scoped_connection, rls_tenant_only
+        with tenant_scoped_connection(user_id) as (conn, tenant_ids):
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            if rls_tenant_only():
+                scope_sql, scope_param = "tenant_id = ANY(%s::uuid[])", tenant_ids
+            else:
+                scope_sql, scope_param = "user_id = %s::uuid", user_id
+            cursor.execute(
+                f"SELECT polygon_coordinates FROM fields WHERE id = %s::uuid AND {scope_sql}",
+                (field_id, scope_param),
+            )
+            row = cursor.fetchone()
+            cursor.close()
+
+        if row and row.get('polygon_coordinates'):
+            coords = row['polygon_coordinates']
+            if isinstance(coords, list) and len(coords) > 0:
+                lats = [p['lat'] for p in coords]
+                lons = [p['lon'] for p in coords]
+                return sum(lats) / len(lats), sum(lons) / len(lons)
+    except RuntimeError:
+        # DB unavailable — check mock fields
+        for f in MOCK_FIELDS:
+            if f.get("id") == field_id:
+                loc = f.get("location")
+                if loc:
+                    return loc["lat"], loc["lon"]
+    except Exception as e:
+        logger.warning(f"Field lookup error: {e}")
+    return None
+
+
 async def resolve_coordinates(field_id: str = None, lat: float = None, lon: float = None, user_id: str = None) -> tuple:
     """
     Resolve coordinates from field_id, explicit lat/lon, or default to Zimbabwe.
@@ -450,39 +497,9 @@ async def resolve_coordinates(field_id: str = None, lat: float = None, lon: floa
     default_lat, default_lon = -17.82, 31.05
 
     if field_id:
-        try:
-            # FORCE-ready: fields policy scopes by the caller's tenants. Flag-off
-            # keeps the legacy user_id filter byte-identical; flag-on scopes by
-            # tenant and drops the fields.user_id reference (see rls_force_runbook).
-            from tenancy import tenant_scoped_connection, rls_tenant_only
-            with tenant_scoped_connection(user_id) as (conn, tenant_ids):
-                cursor = conn.cursor(cursor_factory=RealDictCursor)
-                if rls_tenant_only():
-                    scope_sql, scope_param = "tenant_id = ANY(%s::uuid[])", tenant_ids
-                else:
-                    scope_sql, scope_param = "user_id = %s::uuid", user_id
-                cursor.execute(
-                    f"SELECT polygon_coordinates FROM fields WHERE id = %s::uuid AND {scope_sql}",
-                    (field_id, scope_param),
-                )
-                row = cursor.fetchone()
-                cursor.close()
-
-            if row and row.get('polygon_coordinates'):
-                coords = row['polygon_coordinates']
-                if isinstance(coords, list) and len(coords) > 0:
-                    lats = [p['lat'] for p in coords]
-                    lons = [p['lon'] for p in coords]
-                    return sum(lats) / len(lats), sum(lons) / len(lons)
-        except RuntimeError:
-            # DB unavailable — check mock fields
-            for f in MOCK_FIELDS:
-                if f.get("id") == field_id:
-                    loc = f.get("location")
-                    if loc:
-                        return loc["lat"], loc["lon"]
-        except Exception as e:
-            logger.warning(f"Field lookup error: {e}")
+        found = await asyncio.to_thread(_coords_from_field, field_id, user_id)
+        if found is not None:
+            return found
 
     if lat is not None and lon is not None:
         return lat, lon

@@ -894,10 +894,28 @@ async def generate_proactive_alerts(
         "soil_condition": {} # Placeholder for future soil data integration
     }
     
-    # Generate AI priorities and risks
+    # AI priorities and risks — from cache, or not at all on this request.
+    #
+    # This used to `await` the completion. `/field/{id}/state` is on the path
+    # every screen takes, and a dashboard opening seven fields with seven
+    # different crops and stages produced seven distinct cache keys, so
+    # single-flight could not collapse them: seven language model completions,
+    # in the request path, untimed. The farmer waited:
+    #
+    #     "path": "/field/805bdf95…/state", "duration_ms": 61776.54
+    #     "path": "/field/c13a4c80…/state", "duration_ms": 73743.01
+    #
+    # Now the first view of a field returns its deterministic alerts at once and
+    # warms the AI layer behind it; every view for the next six hours has both.
+    # Deliberately a real absence rather than a placeholder — a farmer is better
+    # served by the stage-based alerts alone than by "Monitor Field" dressed up
+    # as an AI insight.
     brain = get_brain()
-    ai_results = await brain.generate_ai_priorities_and_risks(ai_context)
-    
+    ai_results = brain.priorities_if_cached(ai_context)
+    if ai_results is None:
+        brain.refresh_priorities_soon(ai_context)
+        ai_results = {"actions": [], "risks": []}
+
     # Merge AI risks into alerts (optional, or keep separate)
     for risk in ai_results.get('risks', []):
         alerts.append(ProactiveAlert(
