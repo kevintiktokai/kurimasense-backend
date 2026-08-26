@@ -42,6 +42,7 @@ from __future__ import annotations
 from datetime import date
 from typing import List, Optional
 
+from .curing import build_curing_plan
 from .establishment import build_establishment_plan
 from .fertiliser import build_fertiliser_programme
 
@@ -237,6 +238,85 @@ def fertiliser_briefing(
     return "\n".join(lines)
 
 
+def curing_briefing(
+    crop: Optional[str],
+    *,
+    area_hectares: Optional[float] = None,
+) -> Optional[str]:
+    """
+    The barn cycle, for a crop that goes into a barn.
+
+    Returns ``None`` for anything that is not flue-cured, which includes burley
+    and other air-cured tobacco. That exclusion is the whole reason this goes
+    through :func:`~.curing.build_curing_plan` rather than testing the crop
+    name here: a chat asked "how do I cure this" will answer, and the flue
+    schedule applied to burley destroys the crop.
+    """
+    plan = build_curing_plan(crop, area_hectares=area_hectares)
+    if plan is None:
+        return None
+
+    low, high = plan.total_days
+    lines: List[str] = [
+        f"**Flue-curing (Tobacco Research Board / Kutsaga schedule — "
+        f"{low:g}–{high:g} days in the barn):**",
+    ]
+    for i, stage in enumerate(plan.stages, start=1):
+        t_low, t_high = stage.temperature_c
+        d_low, d_high = stage.duration_days
+        humidity = (
+            f", humidity ~{stage.relative_humidity_pct:g}%"
+            if stage.relative_humidity_pct is not None
+            else ""
+        )
+        lines.append(
+            f"{i}. {stage.name} — {t_low:g}–{t_high:g} °C for "
+            f"{d_low:g}–{d_high:g} days{humidity}. {stage.what_happens}"
+        )
+        lines.append(f"   · Watch for: {stage.watch_for}")
+
+    c_low, c_high = plan.conditioning_moisture_pct
+    lines.append(
+        f"{len(plan.stages) + 1}. Conditioning — add {c_low:g}–{c_high:g}% "
+        "moisture back into the leaf before it comes off the sticks, or it "
+        "shatters on handling and the grade goes with it."
+    )
+
+    if plan.barn_options:
+        lines.append("")
+        lines.append("**Barn capacity for this field:**")
+        # Not truncated. The first draft capped this at three, which for a 2 ha
+        # field cut off the plastic and rocket barns — the two Kutsaga names as
+        # suiting "beginners and low-income small-scale growers", which is most
+        # of this product's users. Sorting puts fewest-barns-first, so the cap
+        # dropped precisely the affordable options and kept the coal ones. There
+        # are at most six barn types; there was never enough to save.
+        for option in plan.barn_options:
+            barn = option.barn
+            unit = "barn" if option.count == 1 else "barns"
+            fuel = ""
+            if barn.fuel_kg_per_kg_cured is not None and barn.fuel:
+                fuel = (
+                    f" — about {barn.fuel_kg_per_kg_cured:g} kg of {barn.fuel} "
+                    "per kg of cured leaf"
+                )
+            lines.append(
+                f"- {option.count} × {barn.name} "
+                f"({barn.hectares[0]:g} ha each){fuel}. Suits {barn.suits}."
+            )
+        # Fuel type decides this, not efficiency, and we do not know what the
+        # grower can actually get hold of.
+        lines.append(
+            "  · Which of these is right depends on the fuel the grower can "
+            "actually source, not on which is most efficient."
+        )
+
+    for warning in plan.warnings:
+        lines.append(f"- ⚠️ {warning}")
+
+    return "\n".join(lines)
+
+
 def planning_briefing(
     crop: Optional[str],
     *,
@@ -272,6 +352,12 @@ def planning_briefing(
             area_hectares=area_hectares,
             irrigated=irrigated,
         ),
+        # Curing is included for a tobacco field from the day it is mapped, not
+        # withheld until harvest. A grower decides how many barns to build, and
+        # cuts or buys the wood to fire them, months before the first leaf is
+        # ready — by reaping time the decision has already been made. Returns
+        # None for every other crop, so nothing else carries the weight of it.
+        curing_briefing(crop, area_hectares=area_hectares),
     ]
     present = [s for s in sections if s]
     if not present:
@@ -280,8 +366,10 @@ def planning_briefing(
     header = (
         "**This field is mapped but not yet planted.** The farmer is asking "
         "about preparation, so ground the answer in the plan below and do not "
-        "discuss in-season stage, yield projection or harvest timing — none of "
-        "those exist for this field yet.\n"
+        "state a growth stage, a yield projection or a harvest date for this "
+        "field — none of those exist for it yet. Reference material further "
+        "down (curing, for instance) is background the farmer may ask about; "
+        "it is not a schedule for this field.\n"
         if not is_planted
         else ""
     )

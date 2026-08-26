@@ -141,6 +141,12 @@ class FieldContext:
     recent_alerts: List[str] = field(default_factory=list)
     recent_activities: List[str] = field(default_factory=list)
     location: Optional[Dict[str, float]] = None
+    # Planning inputs, not display fields. build_establishment_plan targets a
+    # plant population per natural region, and barn sizing is per hectare — so
+    # without these the chat answers the same question differently from the
+    # planning screen for the same field.
+    area_hectares: Optional[float] = None
+    natural_region: Optional[str] = None
     # Persisted Soil Intelligence Profile summary (see services/soil_intelligence).
     # Rendered verbatim into the prompt so the advisor always knows the field's
     # soil — texture, pH, nutrients, water capacity, terrain — without asking.
@@ -686,6 +692,8 @@ Respond with a JSON object:
                 planted = bool(field_context.planting_date)
                 briefing = planning_briefing(
                     field_context.crop_type,
+                    natural_region=field_context.natural_region,
+                    area_hectares=field_context.area_hectares,
                     planting_date=_as_context_date(field_context.planting_date),
                     is_planted=planted,
                 )

@@ -144,3 +144,41 @@ def test_a_direct_seeded_crop_still_gets_its_seed_rate():
     assert text is not None
     assert "Seed rate:" in text
     assert "Planting depth:" in text
+
+
+def test_the_chat_is_given_the_natural_region_and_the_area():
+    # Not cosmetic. build_establishment_plan targets a plant population per
+    # natural region, so with natural_region=None a Region IIa field got
+    #
+    #     planning screen:  50,000 plants/ha, 22.2 cm in-row
+    #     chat:             44,000 plants/ha, 25.3 cm in-row
+    #
+    # for the same field and crop — two spacings, no way for a farmer to tell
+    # which to plant by, and nothing failing anywhere. That is precisely the
+    # divergence this module was written to close, present in the code that
+    # closes it. Area does the same to barn sizing: the screen says "3 × rocket
+    # barn", the chat says nothing at all.
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    brain = (root / "ai_brain.py").read_text()
+    call = brain[brain.index("briefing = planning_briefing("):]
+    call = call[: call.index(")")]
+    assert "natural_region=field_context.natural_region" in call
+    assert "area_hectares=field_context.area_hectares" in call
+
+    # ...and the context has to actually carry them, or the call passes None.
+    assert "area_hectares: Optional[float] = None" in brain
+    assert "natural_region: Optional[str] = None" in brain
+    deps = (root / "deps.py").read_text()
+    assert "f.size_hectares, f.natural_region" in deps, "the query must select them"
+    assert "context.natural_region = row.get(\"natural_region\")" in deps
+
+
+def test_the_region_actually_changes_the_answer():
+    # Guard on the guard. If populations ever stop varying by region the test
+    # above becomes decoration, and the next person deletes the plumbing it
+    # protects because nothing appears to depend on it.
+    iia = build_establishment_plan("Maize", natural_region="IIa")
+    unknown = build_establishment_plan("Maize", natural_region=None)
+    assert iia.target_population_per_ha != unknown.target_population_per_ha
