@@ -3273,7 +3273,12 @@ async def get_ai_insights(user_id: str = Depends(verify_token)):
     return result
 
 @app.get("/ai/tasks")
-async def get_farm_tasks(
+# Sync on purpose. This handler does blocking psycopg2 work and awaits
+# nothing, so `async def` put that work straight onto the event loop: with one
+# uvicorn worker, a 50ms query here stalls every other in-flight request,
+# including the chat stream. FastAPI runs a plain `def` handler in its
+# threadpool instead, which is exactly where blocking I/O belongs.
+def get_farm_tasks(
     field_id: Optional[str] = None,
     date: Optional[str] = None,
     user_id: str = Depends(verify_token)
@@ -3337,7 +3342,12 @@ async def get_farm_tasks(
         raise internal_error(e)
 
 @app.patch("/ai/tasks/{task_id}")
-async def update_farm_task(
+# Sync on purpose. This handler does blocking psycopg2 work and awaits
+# nothing, so `async def` put that work straight onto the event loop: with one
+# uvicorn worker, a 50ms query here stalls every other in-flight request,
+# including the chat stream. FastAPI runs a plain `def` handler in its
+# threadpool instead, which is exactly where blocking I/O belongs.
+def update_farm_task(
     task_id: str,
     updates: dict,
     user_id: str = Depends(verify_token)
@@ -3392,7 +3402,12 @@ async def update_farm_task(
         raise internal_error(e)
 
 @app.post("/ai/tasks")
-async def create_farm_task(
+# Sync on purpose. This handler does blocking psycopg2 work and awaits
+# nothing, so `async def` put that work straight onto the event loop: with one
+# uvicorn worker, a 50ms query here stalls every other in-flight request,
+# including the chat stream. FastAPI runs a plain `def` handler in its
+# threadpool instead, which is exactly where blocking I/O belongs.
+def create_farm_task(
     task: dict,
     user_id: str = Depends(verify_token)
 ):
@@ -3433,7 +3448,12 @@ async def create_farm_task(
 
 
 @app.get("/ai/tasks/history")
-async def get_task_history(
+# Sync on purpose. This handler does blocking psycopg2 work and awaits
+# nothing, so `async def` put that work straight onto the event loop: with one
+# uvicorn worker, a 50ms query here stalls every other in-flight request,
+# including the chat stream. FastAPI runs a plain `def` handler in its
+# threadpool instead, which is exactly where blocking I/O belongs.
+def get_task_history(
     field_id: Optional[str] = None,
     days: int = 30,
     user_id: str = Depends(verify_token)
@@ -3499,7 +3519,12 @@ async def get_task_history(
 
 
 @app.post("/ai/tasks/from-plan")
-async def create_tasks_from_plan(
+# Sync on purpose. This handler does blocking psycopg2 work and awaits
+# nothing, so `async def` put that work straight onto the event loop: with one
+# uvicorn worker, a 50ms query here stalls every other in-flight request,
+# including the chat stream. FastAPI runs a plain `def` handler in its
+# threadpool instead, which is exactly where blocking I/O belongs.
+def create_tasks_from_plan(
     payload: dict,
     user_id: str = Depends(verify_token)
 ):
@@ -3618,24 +3643,31 @@ async def get_agricultural_metrics(
     """
     resolved_lat, resolved_lon = await resolve_coordinates(field_id, lat, lon, user_id)
     
-    # [NEW] Resolve variety for specific GDD calculation
-    variety = None
-    if field_id:
+    # Resolve variety for a variety-specific GDD calculation.
+    #
+    # In a threadpool, not inline: psycopg2 is blocking, and this handler is
+    # `async`, so the query ran on the event loop and stalled every other
+    # in-flight request behind it. On a one-worker instance that is how a
+    # dashboard's weather cards ended up serialising — /climate/agricultural
+    # took 6.4s in production for a lookup of one column.
+    def _variety_for_field():
         conn = get_db_connection()
-        if conn:
-            try:
-                # FORCE-ready: ts_fields scopes by the caller's tenants.
-                arm_rls_gucs(conn, user_id, caller_tenant_ids(user_id))
-                cursor = conn.cursor(cursor_factory=RealDictCursor)
-                cursor.execute("SELECT variety FROM fields WHERE id = %s", (field_id,))
-                row = cursor.fetchone()
-                if row:
-                    variety = row['variety']
-                cursor.close()
-                conn.close()
-            except Exception:
-                pass
-    
+        if not conn:
+            return None
+        try:
+            # FORCE-ready: ts_fields scopes by the caller's tenants.
+            arm_rls_gucs(conn, user_id, caller_tenant_ids(user_id))
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            cursor.execute("SELECT variety FROM fields WHERE id = %s", (field_id,))
+            row = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            return row['variety'] if row else None
+        except Exception:
+            return None
+
+    variety = await run_in_threadpool(_variety_for_field) if field_id else None
+
     try:
         # Fetch all agricultural metrics concurrently
         import asyncio
@@ -3736,7 +3768,12 @@ async def get_full_climate_data(lat: float = None, lon: float = None, field_id: 
 
 
 @app.get("/crops/{crop_name}/varieties")
-async def get_crop_varieties(crop_name: str, user_id: str = Depends(verify_token)):
+# Sync on purpose. This handler does blocking psycopg2 work and awaits
+# nothing, so `async def` put that work straight onto the event loop: with one
+# uvicorn worker, a 50ms query here stalls every other in-flight request,
+# including the chat stream. FastAPI runs a plain `def` handler in its
+# threadpool instead, which is exactly where blocking I/O belongs.
+def get_crop_varieties(crop_name: str, user_id: str = Depends(verify_token)):
     """
     Get available varieties for a specific crop.
     Returns variety details including maturity, yield potential, and characteristics.
@@ -3786,7 +3823,12 @@ async def get_crop_varieties(crop_name: str, user_id: str = Depends(verify_token
 
 
 @app.get("/crops")
-async def list_crops(user_id: str = Depends(verify_token)):
+# Sync on purpose. This handler does blocking psycopg2 work and awaits
+# nothing, so `async def` put that work straight onto the event loop: with one
+# uvicorn worker, a 50ms query here stalls every other in-flight request,
+# including the chat stream. FastAPI runs a plain `def` handler in its
+# threadpool instead, which is exactly where blocking I/O belongs.
+def list_crops(user_id: str = Depends(verify_token)):
     """
     Get list of all available crops with variety counts.
     """
@@ -4401,7 +4443,12 @@ async def record_yield(field_id: str, payload: dict, user_id: str = Depends(veri
 
 
 @app.get("/yield-analytics")
-async def get_yield_analytics(user_id: str = Depends(verify_token)):
+# Sync on purpose. This handler does blocking psycopg2 work and awaits
+# nothing, so `async def` put that work straight onto the event loop: with one
+# uvicorn worker, a 50ms query here stalls every other in-flight request,
+# including the chat stream. FastAPI runs a plain `def` handler in its
+# threadpool instead, which is exactly where blocking I/O belongs.
+def get_yield_analytics(user_id: str = Depends(verify_token)):
     """
     Get aggregate yield analytics across all user fields.
     
@@ -4668,7 +4715,12 @@ async def irrigation_advice(
 
 
 @app.get("/agro/harvest/{field_id}")
-async def harvest_readiness(
+# Sync on purpose. This handler does blocking psycopg2 work and awaits
+# nothing, so `async def` put that work straight onto the event loop: with one
+# uvicorn worker, a 50ms query here stalls every other in-flight request,
+# including the chat stream. FastAPI runs a plain `def` handler in its
+# threadpool instead, which is exactly where blocking I/O belongs.
+def harvest_readiness(
     field_id: str,
     user_id: str = Depends(verify_token),
 ):
@@ -4773,26 +4825,33 @@ async def crop_intelligence(
         except Exception:
             pass
 
-        # Get variety maturity
-        variety_maturity = None
+        # Get variety maturity — in a threadpool, because psycopg2 blocks and
+        # this handler is async. See _variety_for_field in the agricultural
+        # metrics route for the same fix and the reason for it.
         variety = field.get("variety")
-        if variety:
+
+        def _variety_maturity():
             conn2 = get_db_connection()
-            if conn2:
+            if not conn2:
+                return None
+            try:
+                cur2 = conn2.cursor(cursor_factory=RealDictCursor)
+                cur2.execute(
+                    "SELECT days_to_maturity FROM crop_varieties WHERE LOWER(variety_name) LIKE LOWER(%s) LIMIT 1",
+                    (f"%{variety}%",),
+                )
+                row = cur2.fetchone()
+                cur2.close()
+                conn2.close()
+                return int(row["days_to_maturity"]) if row and row.get("days_to_maturity") else None
+            except Exception:
                 try:
-                    cur2 = conn2.cursor(cursor_factory=RealDictCursor)
-                    cur2.execute(
-                        "SELECT days_to_maturity FROM crop_varieties WHERE LOWER(variety_name) LIKE LOWER(%s) LIMIT 1",
-                        (f"%{variety}%",),
-                    )
-                    row = cur2.fetchone()
-                    if row and row.get("days_to_maturity"):
-                        variety_maturity = int(row["days_to_maturity"])
-                    cur2.close()
                     conn2.close()
                 except Exception:
-                    if conn2:
-                        conn2.close()
+                    pass
+                return None
+
+        variety_maturity = await run_in_threadpool(_variety_maturity) if variety else None
 
         # Assemble full intelligence report
         return {

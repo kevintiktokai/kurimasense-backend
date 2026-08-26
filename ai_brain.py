@@ -75,6 +75,15 @@ _briefing_cache: Dict[str, Tuple[float, Any]] = {}
 _briefing_inflight: Dict[str, "asyncio.Future"] = {}
 _BRIEFING_CACHE_MAX = 2000
 
+# Contexts whose priorities are being warmed in the background right now, and
+# strong references to the tasks doing it. See `refresh_priorities_soon`.
+_priorities_warming: set = set()
+_priorities_tasks: set = set()
+
+# Ceiling on one background completion. Nothing waits on these tasks, so an
+# untimed one would hang silently rather than fail.
+_AI_PRIORITIES_TIMEOUT = float(os.getenv("AI_PRIORITIES_TIMEOUT_SECONDS", "25"))
+
 
 def _briefing_cache_key(ctx: Dict[str, Any]) -> str:
     """Stable key over the inputs that actually change the answer.
@@ -1025,7 +1034,78 @@ Respond with a JSON object:
             print(f"Insight generation failed: {e}")
             raise  # Let caller handle with crop-specific deterministic fallback
 
-    async def generate_ai_priorities_and_risks(self, 
+    def priorities_if_cached(self, context_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """The AI priorities for this context, but only if we already have them.
+
+        Never calls the model. Returns ``None`` on a miss so the caller can
+        decide what to do about it — which, on a request a farmer is waiting on,
+        is "carry on without them".
+        """
+        hit = _briefing_cache.get(_briefing_cache_key(context_data))
+        if hit and (time.time() - hit[0]) < _BRIEFING_TTL:
+            return hit[1]
+        return None
+
+    def refresh_priorities_soon(self, context_data: Dict[str, Any]) -> bool:
+        """Warm the priorities cache for this context, off the request path.
+
+        Returns True if a refresh was scheduled. Safe to call on every miss:
+        an already-running flight for the same context is not duplicated.
+
+        Why this exists
+        ---------------
+        ``/field/{id}/state`` used to await the completion inline. A dashboard
+        opening seven fields with seven different crops and stages meant seven
+        different cache keys, so single-flight could not help — seven language
+        model completions, in the request path, with no timeout. Production:
+
+            "path": "/field/805bdf95…/state", "duration_ms": 61776.54
+            "path": "/field/c13a4c80…/state", "duration_ms": 73743.01
+
+        A farmer waited over a minute to see a field. The guidance is blunt
+        about this and correct: the user should never wait for a third-party
+        service. So the first view of a field now returns its deterministic
+        alerts immediately and schedules the model call; the next view, any
+        time in the next six hours, has the AI layer too.
+        """
+        key = _briefing_cache_key(context_data)
+        if key in _briefing_inflight or key in _priorities_warming:
+            return False
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return False
+
+        _priorities_warming.add(key)
+
+        async def _warm() -> None:
+            try:
+                # A completion with no timeout can hang for as long as the
+                # upstream will hold the socket. Nothing waits on this task, so
+                # a hung one would leak quietly rather than fail loudly.
+                await asyncio.wait_for(
+                    self.generate_ai_priorities_and_risks(context_data),
+                    timeout=_AI_PRIORITIES_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "AI priorities timed out after %ss for %s",
+                    _AI_PRIORITIES_TIMEOUT, context_data.get("field_name"),
+                )
+            except Exception:
+                logger.exception("AI priorities refresh failed")
+            finally:
+                _priorities_warming.discard(key)
+
+        task = loop.create_task(_warm())
+        # asyncio holds only a weak reference to a running task, so without a
+        # strong one here the garbage collector can cancel this mid-flight and
+        # the cache silently never warms.
+        _priorities_tasks.add(task)
+        task.add_done_callback(_priorities_tasks.discard)
+        return True
+
+    async def generate_ai_priorities_and_risks(self,
                                                context_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Generate daily priorities (actions) and risk assessment using AI.
