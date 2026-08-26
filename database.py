@@ -666,6 +666,23 @@ def init_db():
                 CREATE INDEX IF NOT EXISTS idx_fields_user_id        ON fields(user_id);
                 CREATE INDEX IF NOT EXISTS idx_daily_logs_field_id   ON daily_logs(field_id);
                 CREATE INDEX IF NOT EXISTS idx_daily_logs_field_date ON daily_logs(field_id, log_date DESC);
+            """)
+
+            # One satellite reading per field per day (migration 027). The
+            # constraint existed only in production; app.py's upsert needs it.
+            cursor.execute("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                                   WHERE conname = 'daily_logs_field_id_log_date_key') THEN
+                        DELETE FROM daily_logs a USING daily_logs b
+                        WHERE a.field_id = b.field_id AND a.log_date = b.log_date
+                          AND (a.created_at, a.id) < (b.created_at, b.id);
+                        ALTER TABLE daily_logs
+                            ADD CONSTRAINT daily_logs_field_id_log_date_key
+                            UNIQUE (field_id, log_date);
+                    END IF;
+                END $$;
                 CREATE INDEX IF NOT EXISTS idx_farm_tasks_user_date  ON farm_tasks(user_id, task_date);
 
                 -- NEW: Critical indexes for slow queries identified in performance audit

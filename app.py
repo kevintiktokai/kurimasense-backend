@@ -22,6 +22,7 @@ from starlette.middleware.gzip import GZipMiddleware
 from starlette.concurrency import run_in_threadpool
 from typing import Optional
 from services.idempotency import keys as idem_keys
+from services.singleflight import coalesce, new_inflight_map
 from services.idempotency import repository as idem_repo
 
 from dotenv import load_dotenv
@@ -566,6 +567,9 @@ def _cache_invalidate(prefix: str):
 # that genuinely change a field's state, so views are cheap by default yet never
 # stale after a user action ("event-driven cache").
 _FIELD_STATE_TTL = 600  # 10 min — aligned with the fastest input (weather)
+#: Coalesces concurrent misses for the same field. Keyed identically to the
+#: cache, so one flight serves every caller waiting on that key.
+_FIELD_STATE_INFLIGHT = new_inflight_map()
 
 
 def _invalidate_field_caches(field_id: str, user_id: Optional[str] = None):
@@ -1005,9 +1009,32 @@ async def trigger_sentinel_analysis(field_id: str, lat: float, lon: float,
             arm_rls_gucs_all_tenants(conn, service_user="service:sentinel_analysis")
 
         cursor = conn.cursor(cursor_factory=RealDictCursor)
+        # UPSERT, not INSERT. daily_logs is unique on (field_id, log_date), and
+        # log_date defaults to today — so the second analysis of a field on the
+        # same day raised a duplicate-key error, rolled the whole transaction
+        # back, and took the health_score update and the cache invalidation with
+        # it. The satellite fetch had already succeeded; the reading was simply
+        # discarded, and the handler logged "Using fallback simulation" for a
+        # branch that only calls rollback().
+        #
+        # To the farmer that looked like Analyze doing nothing after the first
+        # run of the day. Re-analysing should refresh the reading, which is what
+        # DO UPDATE does.
         cursor.execute("""
             INSERT INTO daily_logs (field_id, ndvi, evi, soil_moisture, cloud_cover, source, insight_text, sar_vv_db, sar_vh_db)
             VALUES (%s, %s, %s, %s, %s, 'Sentinel-2', %s, %s, %s)
+            ON CONFLICT (field_id, log_date) DO UPDATE SET
+                ndvi = EXCLUDED.ndvi,
+                evi = EXCLUDED.evi,
+                soil_moisture = EXCLUDED.soil_moisture,
+                cloud_cover = EXCLUDED.cloud_cover,
+                source = EXCLUDED.source,
+                insight_text = EXCLUDED.insight_text,
+                -- SAR is fetched separately and is often absent (Sentinel-1 has
+                -- a different revisit). A pass that returns no backscatter must
+                -- not erase yesterday's reading.
+                sar_vv_db = COALESCE(EXCLUDED.sar_vv_db, daily_logs.sar_vv_db),
+                sar_vh_db = COALESCE(EXCLUDED.sar_vh_db, daily_logs.sar_vh_db)
         """, (field_id, real_ndvi, real_evi, real_moisture, data.get("cloud_cover_pct", 0), insight_text, sar_vv_db, sar_vh_db))
 
         cursor.execute("UPDATE fields SET health_score = %s WHERE id = %s", (new_health, field_id))
@@ -1018,18 +1045,17 @@ async def trigger_sentinel_analysis(field_id: str, lat: float, lon: float,
         _invalidate_field_caches(field_id)
         print(f"Sentinel Analysis Complete for {field_id}")
         
-    except Exception as e:
-        print(f"Sentinel Analysis Failed: {e}. Using fallback simulation.")
-        # Fallback simulation so user still gets "some" data even if API fails (e.g. invalid key)
-        # This keeps the app "functional" as requested
-        # In production we might want to show an error instead.
+    except Exception:
+        # There is no fallback simulation, and there should not be. The previous
+        # message here claimed one existed; the branch only opened a cursor it
+        # never used and called rollback(). Saying "using fallback simulation"
+        # while silently discarding a real reading is the opposite of this
+        # codebase's rule — decline to answer rather than guess. A field with no
+        # pass today shows no pass today.
+        logger.exception("sentinel analysis failed for field %s", field_id)
         try:
-             # Just set some plausible defaults if real fetch fails
-             cursor = conn.cursor(cursor_factory=RealDictCursor)
-             # Logic to insert fallback data... omitted to keep code clean, 
-             # assuming main flow works or we just fail gracefully.
-             conn.rollback()
-        except:
+            conn.rollback()
+        except Exception:
             pass
     finally:
         conn.close()
@@ -2205,18 +2231,34 @@ async def get_field_state(field_id: str, principal: dict = Depends(get_state_pri
     cached = _cache_get(cache_key, _FIELD_STATE_TTL)
     if cached is not None:
         return cached
-    try:
+
+    async def produce():
+        # Re-check inside the producer: by the time we win the coalesce, an
+        # earlier flight for this key may have finished and filled the cache.
+        warm = _cache_get(cache_key, _FIELD_STATE_TTL)
+        if warm is not None:
+            return warm
         state = await build_field_state(
             field_id, principal["requester_id"],
             tenant_ids=principal.get("tenant_ids"), is_admin=principal.get("is_admin", False),
         )
+        payload = state.model_dump()
+        _cache_set(cache_key, payload)
+        return payload
+
+    try:
+        # Single-flight. The cache above handles the second minute; this handles
+        # the second millisecond. A dashboard opens ten fields at once and every
+        # one of them missed the cache simultaneously, so the same computation
+        # ran ten times and the requests queued behind each other — ten
+        # responses landing within half a millisecond of each other, twelve
+        # seconds in. Past that fan-out the client's 20s deadline expires and a
+        # working backend reads as a connection failure.
+        return await coalesce(cache_key, _FIELD_STATE_INFLIGHT, produce)
     except FieldAccessDenied:
         raise HTTPException(status_code=403, detail="You do not have access to this field")
     except FieldNotFound:
         raise HTTPException(status_code=404, detail="Field not found")
-    payload = state.model_dump()
-    _cache_set(cache_key, payload)
-    return payload
 
 
 @app.get("/market/prices")
