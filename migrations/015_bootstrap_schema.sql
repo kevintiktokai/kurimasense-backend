@@ -498,3 +498,15 @@ CREATE INDEX IF NOT EXISTS idx_growers_tenant_active
     WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_field_inputs_date ON field_inputs (input_date)
     WHERE input_date IS NOT NULL;
+
+-- Durable weather cache (migration 028). Mirrored so convergence holds with
+-- DB_SELF_HEAL_SCHEMA=false; 028 remains canonical and explains why it exists.
+-- No RLS: rows are weather for a 5.5 km grid square, shared by every grower in
+-- it, and attributable to no farm.
+CREATE TABLE IF NOT EXISTS climate_cache (
+    cache_key    TEXT PRIMARY KEY,
+    fetched_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ttl_seconds  INTEGER     NOT NULL,
+    payload      JSONB       NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_climate_cache_fetched ON climate_cache(fetched_at);

@@ -14,8 +14,10 @@ call per (endpoint, location) window instead of a stampede.
 """
 import os
 import httpx
+import json
 import time
 import random
+import weakref
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List, Tuple, Callable, Awaitable
 import asyncio
@@ -36,7 +38,31 @@ OPENMETEO_API_KEY = os.getenv("OPENMETEO_API_KEY", "").strip()
 DEFAULT_LAT = -17.82
 DEFAULT_LON = 31.05
 
-_http: Optional[httpx.AsyncClient] = None
+# One HTTP client per event loop — NOT one per process.
+#
+# This was a single module-level `AsyncClient`, and it broke every notification
+# cycle. `services/notifications/generators` calls `asyncio.run(...)` once per
+# field, so each field gets a fresh event loop that is closed when the call
+# returns. The client, and the pooled connections inside it, stayed bound to the
+# first loop. Every subsequent field then hit:
+#
+#     [notifications.generators] weather fetch failed (-16.75,31.66): Event loop is closed
+#     [notifications.generators] irrigation failed for field f3a7dc8c…: Event loop is closed
+#
+# Intermittently, which is what made it hard to see: when the pool happened to
+# open a fresh connection on the current loop the call succeeded, and when it
+# reused one from the dead loop it raised. A cycle would report having generated
+# some alerts, so nothing looked broken — the farmers whose fields fell on the
+# failing half simply got no irrigation advice at all.
+#
+# Keyed by the loop object in a WeakKeyDictionary, deliberately not by `id()`:
+# CPython reuses the id of a garbage-collected loop, so an id-keyed map hands
+# back the dead client for a brand-new loop and reintroduces the exact bug. The
+# weak keys also mean an entry disappears when its loop does, so a process that
+# runs thousands of `asyncio.run` calls does not accumulate clients.
+_http_by_loop: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, httpx.AsyncClient]" = (
+    weakref.WeakKeyDictionary()
+)
 
 # Unified resilience cache: key -> (fetched_at, ttl_seconds, value). Expired
 # entries are deliberately RETAINED (not evicted) up to _STALE_MAX_AGE so they
@@ -53,11 +79,29 @@ _TTL_FORECAST = 60 * 60         # daily/hourly forecast: 1 h
 _TTL_AGRI = 60 * 60 * 3         # soil / ET metrics: 3 h
 _TTL_HISTORY = 60 * 60 * 6      # historical archive (past days don't change): 6 h
 
+def _new_http() -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=5.0, read=15.0, write=10.0, pool=10.0)
+    )
+
+
 def _get_http() -> httpx.AsyncClient:
-    global _http
-    if _http is None:
-        _http = httpx.AsyncClient(timeout=httpx.Timeout(connect=5.0, read=15.0, write=10.0, pool=10.0))
-    return _http
+    """An HTTP client bound to the event loop that is running right now.
+
+    See ``_http_by_loop``. Falls back to a fresh client when there is no running
+    loop, which only happens if something calls this from sync code — worth a
+    working client rather than a crash.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return _new_http()
+
+    client = _http_by_loop.get(loop)
+    if client is None or client.is_closed:
+        client = _new_http()
+        _http_by_loop[loop] = client
+    return client
 
 # Grid size for weather cache keys, in degrees. 0.05 deg is ~5.5 km — far finer
 # than any weather model's own resolution (Open-Meteo's best is ~1-11 km), so
@@ -99,17 +143,82 @@ def _join_params(params: Dict[str, Any]) -> Dict[str, str]:
     return out
 
 
-_RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+# 5xx and transport errors are worth retrying: the next attempt hits a different
+# backend and usually works. 429 is deliberately NOT in this set — see below.
+_RETRYABLE_STATUS = {500, 502, 503, 504}
+
+
+class ClimateRateLimited(RuntimeError):
+    """Open-Meteo is rate-limiting this egress IP; no call was made."""
+
+
+# How long to stop calling Open-Meteo after it returns a 429, when it gives no
+# Retry-After of its own. Long enough to let a per-minute quota refill, short
+# enough that a brief limit does not cost an hour of freshness.
+_RATE_LIMIT_COOLDOWN_DEFAULT = float(os.getenv("OPENMETEO_COOLDOWN_SECONDS", "90"))
+# A server-supplied Retry-After is honoured but capped. An hour-long value would
+# otherwise pin the whole service to stale data on one unlucky response.
+_RATE_LIMIT_COOLDOWN_MAX = 600.0
+
+#: Unix time until which we treat the upstream as rate-limited.
+_rate_limited_until: float = 0.0
+
+
+def rate_limit_cooldown_remaining() -> float:
+    """Seconds left on the upstream rate-limit cooldown; 0.0 when clear."""
+    return max(0.0, _rate_limited_until - time.time())
+
+
+def _trip_rate_limit(retry_after: Optional[str] = None) -> None:
+    """Record that Open-Meteo is rate-limiting us, and for how long."""
+    global _rate_limited_until
+    delay = _RATE_LIMIT_COOLDOWN_DEFAULT
+    if retry_after:
+        candidate = retry_after.strip()
+        if candidate.isdigit():
+            delay = min(float(candidate), _RATE_LIMIT_COOLDOWN_MAX)
+    _rate_limited_until = max(_rate_limited_until, time.time() + delay)
+
+
+def _reset_rate_limit() -> None:
+    """Clear the cooldown. For tests, and for a success that proves we are clear."""
+    global _rate_limited_until
+    _rate_limited_until = 0.0
 
 
 async def _get_json(url: str, params: Dict[str, Any], *, retries: int = 3) -> Dict[str, Any]:
     """Resilient Open-Meteo GET.
 
-    Retries on 429 / 5xx with exponential backoff + jitter, honouring the
-    server's ``Retry-After`` header when present. Injects the API key if one is
-    configured. Raises the last error only after exhausting retries (the caller —
-    normally ``_cached`` — then decides whether to serve stale).
+    Retries 5xx and transport errors with exponential backoff + jitter. Raises
+    the last error only after exhausting retries — the caller, normally
+    ``_cached``, then decides whether to serve stale.
+
+    Why 429 is not retried
+    ----------------------
+    It used to be, three times with backoff, and that was actively harmful.
+    Open-Meteo's free tier limits *by IP*, and on Render the egress IP is shared
+    with every other tenant on the instance. When it returns 429 the quota is
+    already spent; a retry does not find a healthier backend, it spends more of
+    the quota that is exhausted and pushes the recovery further away. Four
+    attempts per call turned one rate-limited request into four.
+
+    It also cost the farmer ten seconds. Every 429'd request in the production
+    logs sat at ``duration_ms`` between 10,000 and 11,500 — that is 1s + 2s + 4s
+    of backoff plus jitter, spent sleeping, before the route gave up and returned
+    an empty card anyway. The spinner was the backoff.
+
+    So a 429 now trips a process-wide cooldown and raises immediately, and every
+    call made during that cooldown returns without touching the network at all.
+    The farmer gets last-known-good weather in milliseconds instead of a
+    ten-second wait for nothing, and the quota is left alone long enough to
+    refill.
     """
+    remaining = rate_limit_cooldown_remaining()
+    if remaining > 0:
+        raise ClimateRateLimited(
+            f"Open-Meteo rate limit in effect for another {remaining:.0f}s; no request made"
+        )
+
     p = _join_params(params)
     if OPENMETEO_API_KEY:
         p["apikey"] = OPENMETEO_API_KEY
@@ -118,10 +227,14 @@ async def _get_json(url: str, params: Dict[str, Any], *, retries: int = 3) -> Di
     for attempt in range(retries + 1):
         try:
             resp = await client.get(url, params=p)
+            if resp.status_code == 429:
+                _trip_rate_limit(resp.headers.get("Retry-After"))
+                raise ClimateRateLimited(
+                    f"Open-Meteo returned 429; pausing upstream calls for "
+                    f"{rate_limit_cooldown_remaining():.0f}s"
+                )
             if resp.status_code in _RETRYABLE_STATUS and attempt < retries:
-                ra = resp.headers.get("Retry-After", "")
-                delay = float(ra) if ra.isdigit() else min(2 ** attempt, 8)
-                await asyncio.sleep(delay + random.uniform(0, 0.5))
+                await asyncio.sleep(min(2 ** attempt, 8) + random.uniform(0, 0.5))
                 continue
             resp.raise_for_status()
             return resp.json()
@@ -136,6 +249,70 @@ async def _get_json(url: str, params: Dict[str, Any], *, retries: int = 3) -> Di
     raise RuntimeError("unreachable")
 
 
+def _persist_stale(key: str, ttl: float, value: Any) -> None:
+    """Write a successful fetch to the durable cache. Never raises.
+
+    Sync, psycopg2, called from a worker thread — see ``_cached``.
+    """
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO climate_cache (cache_key, fetched_at, ttl_seconds, payload)
+                VALUES (%s, NOW(), %s, %s::jsonb)
+                ON CONFLICT (cache_key) DO UPDATE
+                    SET fetched_at = EXCLUDED.fetched_at,
+                        ttl_seconds = EXCLUDED.ttl_seconds,
+                        payload = EXCLUDED.payload
+                """,
+                (key, int(ttl), json.dumps(value, default=str)),
+            )
+            conn.commit()
+            cur.close()
+        finally:
+            conn.close()
+    except Exception as e:
+        # A weather cache that takes the request down with it when the database
+        # is unwell is worse than no weather cache.
+        print(f"[climate] durable cache write failed for '{key}': {e}")
+
+
+def _load_stale(key: str) -> Optional[Tuple[float, Any]]:
+    """Last-known-good for this key from the durable cache, as (age_s, value).
+
+    Returns None when there is nothing, the row is older than
+    ``_STALE_MAX_AGE``, or the database is unavailable. Never raises.
+    """
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return None
+        try:
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute(
+                "SELECT EXTRACT(EPOCH FROM (NOW() - fetched_at)) AS age_s, payload "
+                "FROM climate_cache WHERE cache_key = %s",
+                (key,),
+            )
+            row = cur.fetchone()
+            cur.close()
+        finally:
+            conn.close()
+        if not row:
+            return None
+        age = float(row["age_s"])
+        if age > _STALE_MAX_AGE:
+            return None
+        return age, row["payload"]
+    except Exception as e:
+        print(f"[climate] durable cache read failed for '{key}': {e}")
+        return None
+
+
 async def _cached(key: str, ttl: float, producer: "Callable[[], Awaitable[Any]]") -> Any:
     """Cache + single-flight + serve-stale-on-error around an async producer.
 
@@ -143,8 +320,23 @@ async def _cached(key: str, ttl: float, producer: "Callable[[], Awaitable[Any]]"
     * Concurrent misses for the same key coalesce onto one producer call
       (single-flight) — collapses the field/weather-view stampede that was
       driving the rate limit.
-    * Producer failure → serve last-known-good if we have any within
-      ``_STALE_MAX_AGE``; otherwise propagate the error.
+    * Producer failure → serve last-known-good, from memory if we have it and
+      from the ``climate_cache`` table if we do not.
+
+    Why the durable tier exists
+    ---------------------------
+    The in-memory cache is the whole stale-serve story, and it dies with the
+    process. Render restarts on every deploy. So the sequence that actually
+    happened on 26 Aug was: Open-Meteo rate-limits the shared egress IP →
+    stale-serve covers for it → we deploy → the cache is empty → every key is a
+    miss with nothing behind it, and the resilience layer has nothing to be
+    resilient with. The service had exactly the data it needed to keep working
+    and threw it away at the worst possible moment.
+
+    The durable tier is only read when the producer has already failed, so the
+    healthy path never pays for a database round trip. The table is keyed by
+    cache key, and the keys are a bounded set (endpoint × snapped grid square),
+    so it upserts in place and never needs pruning.
     """
     now = time.time()
     hit = _cache.get(key)
@@ -155,8 +347,7 @@ async def _cached(key: str, ttl: float, producer: "Callable[[], Awaitable[Any]]"
     if inflight is not None:
         return await inflight
 
-    loop = asyncio.get_event_loop()
-    fut: "asyncio.Future" = loop.create_future()
+    fut: "asyncio.Future" = asyncio.get_running_loop().create_future()
     # Mark any exception "retrieved" so a producer failure with no concurrent
     # waiter doesn't emit asyncio's "Future exception was never retrieved"
     # warning (waiters still receive it via `await inflight`).
@@ -165,13 +356,22 @@ async def _cached(key: str, ttl: float, producer: "Callable[[], Awaitable[Any]]"
     try:
         value = await producer()
         _cache[key] = (now, ttl, value)
+        # Write-through, off the event loop: a fetch the farmer is waiting on
+        # must not block on psycopg2.
+        try:
+            await asyncio.to_thread(_persist_stale, key, ttl, value)
+        except Exception as e:
+            print(f"[climate] durable cache write skipped for '{key}': {e}")
         if not fut.done():
             fut.set_result(value)
         return value
     except Exception as e:
-        if hit and (now - hit[0]) < _STALE_MAX_AGE:
-            stale = hit[2]
-            print(f"⚠️ Climate upstream failed for '{key}' ({type(e).__name__}); serving stale data.")
+        stale = await _stale_for(key, hit, now)
+        if stale is not None:
+            print(
+                f"⚠️ Climate upstream failed for '{key}' ({type(e).__name__}); "
+                "serving last-known-good."
+            )
             if not fut.done():
                 fut.set_result(stale)
             return stale
@@ -180,6 +380,32 @@ async def _cached(key: str, ttl: float, producer: "Callable[[], Awaitable[Any]]"
         raise
     finally:
         _inflight.pop(key, None)
+
+
+async def _stale_for(key: str, hit: Optional[Tuple[float, float, Any]], now: float) -> Any:
+    """Last-known-good for a key: memory first, then the durable tier.
+
+    Returns None when there is genuinely nothing to serve, which the caller
+    treats as "propagate the error" — the honest outcome for a location we have
+    never successfully fetched.
+    """
+    if hit and (now - hit[0]) < _STALE_MAX_AGE:
+        return hit[2]
+    # Off the loop. During a rate-limit outage every single request lands here,
+    # and this process runs with WEB_CONCURRENCY=1 — a blocking psycopg2 call on
+    # the event loop would serialise the whole API behind the fallback path.
+    try:
+        persisted = await asyncio.to_thread(_load_stale, key)
+    except Exception as e:
+        print(f"[climate] durable cache lookup skipped for '{key}': {e}")
+        return None
+    if persisted is None:
+        return None
+    age, value = persisted
+    # Promote into memory so the next caller in this process does not go back to
+    # the database for it.
+    _cache[key] = (now - age, _TTL_CURRENT, value)
+    return value
 
 
 async def get_current_weather(lat: float = DEFAULT_LAT, lon: float = DEFAULT_LON) -> Dict[str, Any]:

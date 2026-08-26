@@ -661,6 +661,23 @@ def init_db():
                     ON field_assignments(field_id) WHERE unassigned_at IS NULL;
             """)
 
+            # Durable weather cache (migration 028). Self-heals here because
+            # climate_service degrades silently without it — every durable read
+            # and write is wrapped, so a missing table costs a log line and the
+            # loss of the exact property the table exists to provide: weather
+            # that survives a deploy. Silent loss of a safety net is the worst
+            # kind, so create it at boot rather than wait for a migration run.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS climate_cache (
+                    cache_key    TEXT PRIMARY KEY,
+                    fetched_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    ttl_seconds  INTEGER     NOT NULL,
+                    payload      JSONB       NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_climate_cache_fetched
+                    ON climate_cache(fetched_at);
+            """)
+
             # Performance indexes — created once, idempotent via IF NOT EXISTS
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_fields_user_id        ON fields(user_id);
