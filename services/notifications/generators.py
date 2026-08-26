@@ -181,7 +181,7 @@ def generate_weather_alerts(now_utc: datetime) -> int:
         """
         SELECT id, user_id, name, polygon_coordinates
         FROM fields
-        WHERE user_id IS NOT NULL AND user_id <> ''
+        WHERE user_id IS NOT NULL
         """
     )
     # (user, lat, lon) → field names, so one alert covers all fields at a location
@@ -264,7 +264,7 @@ def generate_irrigation_recommendations(now_utc: datetime) -> int:
         """
         SELECT id, user_id, name, crop_type, planting_date, polygon_coordinates
         FROM fields
-        WHERE user_id IS NOT NULL AND user_id <> ''
+        WHERE user_id IS NOT NULL
           AND planting_date IS NOT NULL
         """
     )
