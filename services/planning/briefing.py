@@ -50,10 +50,6 @@ from .fertiliser import build_fertiliser_programme
 #: not for the whole season. The planner screen shows the full programme.
 _MAX_FERTILISER_STEPS = 4
 
-#: Same reasoning for barns. The planning screen lists every workable option;
-#: a chat turn that recites six of them has buried the answer.
-_MAX_BARN_OPTIONS = 3
-
 
 def _positive(value) -> bool:
     """True for a real, usable quantity — not None and not zero.
@@ -289,7 +285,13 @@ def curing_briefing(
     if plan.barn_options:
         lines.append("")
         lines.append("**Barn capacity for this field:**")
-        for option in plan.barn_options[:_MAX_BARN_OPTIONS]:
+        # Not truncated. The first draft capped this at three, which for a 2 ha
+        # field cut off the plastic and rocket barns — the two Kutsaga names as
+        # suiting "beginners and low-income small-scale growers", which is most
+        # of this product's users. Sorting puts fewest-barns-first, so the cap
+        # dropped precisely the affordable options and kept the coal ones. There
+        # are at most six barn types; there was never enough to save.
+        for option in plan.barn_options:
             barn = option.barn
             unit = "barn" if option.count == 1 else "barns"
             fuel = ""
