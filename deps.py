@@ -351,6 +351,7 @@ async def get_field_context(field_id: str, user_id: str) -> FieldContext:
                 SELECT
                     f.name, f.crop_type, f.planting_date, f.variety, f.health_score,
                     f.transplant_date, f.is_transplanted, f.fertilizer_history,
+                    f.size_hectares, f.natural_region,
                     latest.ndvi as current_ndvi,
                     latest.soil_moisture as soil_moisture
                 FROM fields f
@@ -375,6 +376,16 @@ async def get_field_context(field_id: str, user_id: str) -> FieldContext:
             context.current_ndvi = row.get("current_ndvi")
             context.soil_moisture = row.get("soil_moisture")
             context.health_status = get_health_status(row.get("health_score"))
+            # Area and natural region are not display fields — they are planning
+            # inputs. Without them the chat calls build_establishment_plan with
+            # natural_region=None and gets a different target population from the
+            # one the planning screen shows for the same field, and the farmer
+            # has no way to tell which to plant by. Area does the same to barn
+            # sizing: the screen says "3 × rocket barn", the chat says nothing.
+            context.area_hectares = (
+                float(row["size_hectares"]) if row.get("size_hectares") else None
+            )
+            context.natural_region = row.get("natural_region")
 
             if row.get("planting_date") and row.get("crop_type"):
                 try:
