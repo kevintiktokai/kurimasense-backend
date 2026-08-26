@@ -27,11 +27,31 @@ from database import get_db_connection
 from psycopg2.extras import RealDictCursor
 from llm_models import CHAT_MODEL, DEEP_MODEL, VISION_MODEL, prepare_chat_params
 from tools.retrieve_context import search_knowledge_base
+import logging
 from crop_profiles import (
     get_crop_profile, build_crop_context_for_ai,
     get_diseases_for_conditions, get_pests_for_stage,
     get_current_stage_for_crop,
 )
+
+logger = logging.getLogger("kurimasense")
+
+
+def _as_context_date(value):
+    """A FieldContext ISO date string as a `date`, or None.
+
+    FieldContext carries planting_date as a string because it crosses the API
+    boundary; the planning modules want a date. Returns None rather than
+    raising: a malformed date must not cost the farmer their whole chat turn.
+    """
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).date()
+    except (ValueError, TypeError):
+        return None
+
+
 
 load_dotenv()
 
@@ -649,6 +669,34 @@ Respond with a JSON object:
             )
             if crop_intel and "No detailed profile" not in crop_intel:
                 parts.append(crop_intel)
+
+        # --- PLANNING KNOWLEDGE (the same functions the planner screen calls) ---
+        # The planner computes spacing, seed rate and the fertiliser schedule
+        # from services.planning; the chat used to improvise them. Two surfaces
+        # answering the same question differently is the thing this repo's
+        # shared-helper convention exists to prevent, and a farmer has no way to
+        # tell which number to plant by.
+        #
+        # Rendered from the functions themselves rather than described in the
+        # prompt, so when the agronomy changes both surfaces change together.
+        if field_context and field_context.crop_type:
+            try:
+                from services.planning.briefing import planning_briefing
+
+                planted = bool(field_context.planting_date)
+                briefing = planning_briefing(
+                    field_context.crop_type,
+                    planting_date=_as_context_date(field_context.planting_date),
+                    is_planted=planted,
+                )
+                if briefing:
+                    parts.append(briefing)
+            except Exception:
+                # The chat must still answer if the planner cannot. Logged, not
+                # swallowed: an earlier draft of the briefing had a wrong call
+                # signature and a bare `except` hid it completely, producing a
+                # chat that silently never mentioned fertiliser.
+                logger.exception("planning briefing unavailable for the chat context")
 
         # --- RAG INTEGRATION (semantic, async) ---
         if user_query and len(user_query) > 5:
