@@ -44,6 +44,14 @@ window costs, storage moisture, retrospective attribution coefficients, zone
 thresholds, and nitrogen loss fractions. Don't remove those warnings without
 sign-off.
 
+`services/planning/curing.py` differs in one respect: its figures come from a
+named primary source (Kutsaga, the Tobacco Research Board) rather than compiled
+literature, and its docstring carries the URLs. It still needs sign-off —
+published ranges are not a schedule for a particular barn, leaf position or
+season. It also deliberately omits TIMB's reaping-ripeness guidance, because
+TIMB's site was unreachable and nobody has opened the document. **Don't fill
+that gap from a search summary.**
+
 ## Kev Kreds
 
 Kevin keeps a credit ledger with me. The canonical file is
