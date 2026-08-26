@@ -168,6 +168,22 @@ _WEATHER_CATEGORY = {
 }
 
 
+async def _gather_weather(lat: float, lon: float) -> List[Any]:
+    """Alerts and the 7-day forecast for one location, on one event loop.
+
+    ``gather`` rather than two awaits: both calls go through climate_service's
+    single-flight cache, and the alerts fetch is itself built on the daily
+    forecast, so running them together lets the second ride the first instead of
+    waiting for it.
+    """
+    from climate_service import get_daily_forecast, get_weather_alerts
+
+    return await asyncio.gather(
+        get_weather_alerts(lat, lon),
+        get_daily_forecast(lat, lon, days=7),
+    )
+
+
 def generate_weather_alerts(now_utc: datetime) -> int:
     """Per distinct farm location: forecast-driven hazard alerts + dry spells.
 
@@ -175,8 +191,6 @@ def generate_weather_alerts(now_utc: datetime) -> int:
     2dp), and climate_service caches Open-Meteo calls, so this stays cheap even
     with many fields.
     """
-    import climate_service
-
     fields = _query(
         """
         SELECT id, user_id, name, polygon_coordinates
@@ -195,8 +209,15 @@ def generate_weather_alerts(now_utc: datetime) -> int:
     emitted = 0
     for (user_id, lat, lon), field_names in list(locations.items())[:200]:
         try:
-            alerts = asyncio.run(climate_service.get_weather_alerts(lat, lon))
-            forecast = asyncio.run(climate_service.get_daily_forecast(lat, lon, days=7))
+            # One loop for both fetches, not one each. Two `asyncio.run` calls
+            # meant two event loops per location, each closed before the next
+            # opened, while climate_service held a single shared HTTP client —
+            # which is how this generator spent weeks logging "Event loop is
+            # closed" and silently skipping half the farms it was meant to warn.
+            # climate_service now keeps a client per loop, so this is belt and
+            # braces; it also halves the loop churn and lets the two fetches
+            # overlap.
+            alerts, forecast = asyncio.run(_gather_weather(lat, lon))
         except Exception as e:
             print(f"[notifications.generators] weather fetch failed ({lat},{lon}): {e}")
             continue
