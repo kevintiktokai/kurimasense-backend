@@ -191,6 +191,8 @@ def generate_weather_alerts(now_utc: datetime) -> int:
     2dp), and climate_service caches Open-Meteo calls, so this stays cheap even
     with many fields.
     """
+    from climate_service import run_isolated
+
     fields = _query(
         """
         SELECT id, user_id, name, polygon_coordinates
@@ -206,68 +208,74 @@ def generate_weather_alerts(now_utc: datetime) -> int:
             continue
         locations[(f["user_id"], c[0], c[1])].append(f.get("name") or "your field")
 
-    emitted = 0
-    for (user_id, lat, lon), field_names in list(locations.items())[:200]:
-        try:
-            # One loop for both fetches, not one each. Two `asyncio.run` calls
-            # meant two event loops per location, each closed before the next
-            # opened, while climate_service held a single shared HTTP client —
-            # which is how this generator spent weeks logging "Event loop is
-            # closed" and silently skipping half the farms it was meant to warn.
-            # climate_service now keeps a client per loop, so this is belt and
-            # braces; it also halves the loop churn and lets the two fetches
-            # overlap.
-            alerts, forecast = asyncio.run(_gather_weather(lat, lon))
-        except Exception as e:
-            print(f"[notifications.generators] weather fetch failed ({lat},{lon}): {e}")
-            continue
-
-        where = field_names[0] if len(field_names) == 1 else f"{len(field_names)} of your fields"
-
-        for alert in (alerts or {}).get("alerts", []):
-            category = _WEATHER_CATEGORY.get(alert.get("type"))
-            if not category:
+    # One event loop for the whole batch, not one per location.
+    #
+    # It was one `asyncio.run` per location, and each of those loops was
+    # retained for the life of the process along with its HTTP client and
+    # sockets — the OOM described in climate_service._http_by_loop. Hoisting
+    # the loop out of the batch cuts the number of loops from one-per-farm to
+    # one, and `run_isolated` closes the client of the one that is left.
+    #
+    # It also lets the connection to Open-Meteo be reused across locations
+    # instead of a fresh TLS handshake per farm, which is the same pressure
+    # that earned the 429s in August.
+    async def _emit_all() -> int:
+        emitted = 0
+        for (user_id, lat, lon), field_names in list(locations.items())[:200]:
+            try:
+                alerts, forecast = await _gather_weather(lat, lon)
+            except Exception as e:
+                print(f"[notifications.generators] weather fetch failed ({lat},{lon}): {e}")
                 continue
-            severity = Severity.CRITICAL if alert.get("severity") == "high" else Severity.WARNING
-            recommendations = (alert.get("recommendations") or [])[:2]
-            body = alert.get("message", "")
-            if recommendations:
-                body += "\n• " + "\n• ".join(recommendations)
-            if notify(NotificationEvent(
-                user_id=user_id,
-                category=category,
-                severity=severity,
-                title=f"{alert.get('title', 'Weather alert')} — {where}",
-                body=body,
-                action_url="/dashboard/weather",
-                data={"alert": {k: alert.get(k) for k in ("type", "severity", "date", "message")},
-                      "lat": lat, "lon": lon},
-                dedupe_key=f"weather:{alert.get('type')}:{alert.get('date')}:{lat}:{lon}",
-                source="climatology",
-            )):
-                emitted += 1
 
-        # Extended dry spell: negligible rain across the full 7-day horizon.
-        daily = (forecast or {}).get("daily", [])
-        if len(daily) >= 7:
-            total_rain = sum(d.get("precipitation") or 0 for d in daily)
-            max_prob = max((d.get("precipitation_probability") or 0) for d in daily)
-            if total_rain < 5 and max_prob < 40:
-                week = now_utc.isocalendar()
+            where = field_names[0] if len(field_names) == 1 else f"{len(field_names)} of your fields"
+
+            for alert in (alerts or {}).get("alerts", []):
+                category = _WEATHER_CATEGORY.get(alert.get("type"))
+                if not category:
+                    continue
+                severity = Severity.CRITICAL if alert.get("severity") == "high" else Severity.WARNING
+                recommendations = (alert.get("recommendations") or [])[:2]
+                body = alert.get("message", "")
+                if recommendations:
+                    body += "\n• " + "\n• ".join(recommendations)
                 if notify(NotificationEvent(
                     user_id=user_id,
-                    category="weather_dry_spell",
-                    title=f"Extended dry spell ahead — {where}",
-                    body=(f"Less than {total_rain:.0f}mm of rain is forecast over the next 7 days "
-                          f"(max rain chance {max_prob:.0f}%). Review irrigation plans and "
-                          "prioritise moisture-sensitive crops."),
+                    category=category,
+                    severity=severity,
+                    title=f"{alert.get('title', 'Weather alert')} — {where}",
+                    body=body,
                     action_url="/dashboard/weather",
-                    data={"total_rain_7d": round(total_rain, 1), "max_probability": max_prob},
-                    dedupe_key=f"weather:dry_spell:{week.year}-W{week.week}:{lat}:{lon}",
+                    data={"alert": {k: alert.get(k) for k in ("type", "severity", "date", "message")},
+                          "lat": lat, "lon": lon},
+                    dedupe_key=f"weather:{alert.get('type')}:{alert.get('date')}:{lat}:{lon}",
                     source="climatology",
                 )):
                     emitted += 1
-    return emitted
+
+            # Extended dry spell: negligible rain across the full 7-day horizon.
+            daily = (forecast or {}).get("daily", [])
+            if len(daily) >= 7:
+                total_rain = sum(d.get("precipitation") or 0 for d in daily)
+                max_prob = max((d.get("precipitation_probability") or 0) for d in daily)
+                if total_rain < 5 and max_prob < 40:
+                    week = now_utc.isocalendar()
+                    if notify(NotificationEvent(
+                        user_id=user_id,
+                        category="weather_dry_spell",
+                        title=f"Extended dry spell ahead — {where}",
+                        body=(f"Less than {total_rain:.0f}mm of rain is forecast over the next 7 days "
+                              f"(max rain chance {max_prob:.0f}%). Review irrigation plans and "
+                              "prioritise moisture-sensitive crops."),
+                        action_url="/dashboard/weather",
+                        data={"total_rain_7d": round(total_rain, 1), "max_probability": max_prob},
+                        dedupe_key=f"weather:dry_spell:{week.year}-W{week.week}:{lat}:{lon}",
+                        source="climatology",
+                    )):
+                        emitted += 1
+        return emitted
+
+    return run_isolated(_emit_all())
 
 
 # ── irrigation recommendations → planner + notification ─────────────────────
@@ -279,6 +287,7 @@ def generate_irrigation_recommendations(now_utc: datetime) -> int:
     The irrigation service owns planner-task creation/dedupe; this generator
     owns targeting + notification, keeping engine and delivery decoupled.
     """
+    from climate_service import run_isolated
     from services.irrigation import service as irrigation_service
 
     fields = _query(
@@ -290,36 +299,42 @@ def generate_irrigation_recommendations(now_utc: datetime) -> int:
         """
     )
     prefs_by_user = repository.all_preferences()
-    emitted = 0
-    for field in fields[:200]:
-        user_id = field["user_id"]
-        local = _local_now(prefs_by_user.get(user_id), now_utc)
-        if local.hour < 6:  # recommendations land with the morning review
-            continue
-        try:
-            rec = asyncio.run(irrigation_service.recommendation_for_field_row(field))
-        except Exception as e:
-            print(f"[notifications.generators] irrigation failed for field {field.get('id')}: {e}")
-            continue
-        if rec is None or rec.action not in ("irrigate_now", "irrigate_soon"):
-            continue
+    # One event loop for the batch — see generate_weather_alerts. Per-field
+    # `asyncio.run` was the larger half of the leak here: this generator visits
+    # every planted field, not one entry per shared location.
+    async def _emit_all() -> int:
+        emitted = 0
+        for field in fields[:200]:
+            user_id = field["user_id"]
+            local = _local_now(prefs_by_user.get(user_id), now_utc)
+            if local.hour < 6:  # recommendations land with the morning review
+                continue
+            try:
+                rec = await irrigation_service.recommendation_for_field_row(field)
+            except Exception as e:
+                print(f"[notifications.generators] irrigation failed for field {field.get('id')}: {e}")
+                continue
+            if rec is None or rec.action not in ("irrigate_now", "irrigate_soon"):
+                continue
 
-        task = irrigation_service.ensure_planner_task(field, rec)
-        urgency = "today" if rec.action == "irrigate_now" else "within 2 days"
-        if notify(NotificationEvent(
-            user_id=user_id,
-            category="irrigation",
-            severity=Severity.WARNING if rec.action == "irrigate_now" else Severity.INFO,
-            title=f"Irrigate {field.get('name') or 'your field'} {urgency} (~{rec.recommended_mm:.0f}mm)",
-            body=rec.summary(),
-            field_id=str(field["id"]),
-            action_url="/dashboard/plan",
-            data={"recommendation": rec.to_dict(), "planner_task_id": task.get("id") if task else None},
-            dedupe_key=f"irrigation:{field['id']}:{local.date().isoformat()}",
-            source="irrigation_engine",
-        )):
-            emitted += 1
-    return emitted
+            task = irrigation_service.ensure_planner_task(field, rec)
+            urgency = "today" if rec.action == "irrigate_now" else "within 2 days"
+            if notify(NotificationEvent(
+                user_id=user_id,
+                category="irrigation",
+                severity=Severity.WARNING if rec.action == "irrigate_now" else Severity.INFO,
+                title=f"Irrigate {field.get('name') or 'your field'} {urgency} (~{rec.recommended_mm:.0f}mm)",
+                body=rec.summary(),
+                field_id=str(field["id"]),
+                action_url="/dashboard/plan",
+                data={"recommendation": rec.to_dict(), "planner_task_id": task.get("id") if task else None},
+                dedupe_key=f"irrigation:{field['id']}:{local.date().isoformat()}",
+                source="irrigation_engine",
+            )):
+                emitted += 1
+        return emitted
+
+    return run_isolated(_emit_all())
 
 
 # ── summaries ────────────────────────────────────────────────────────────────

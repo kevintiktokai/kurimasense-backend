@@ -57,9 +57,24 @@ DEFAULT_LON = 31.05
 #
 # Keyed by the loop object in a WeakKeyDictionary, deliberately not by `id()`:
 # CPython reuses the id of a garbage-collected loop, so an id-keyed map hands
-# back the dead client for a brand-new loop and reintroduces the exact bug. The
-# weak keys also mean an entry disappears when its loop does, so a process that
-# runs thousands of `asyncio.run` calls does not accumulate clients.
+# back the dead client for a brand-new loop and reintroduces the exact bug.
+#
+# The weak keys do NOT make this self-cleaning, and believing they did is what
+# later put the service into an out-of-memory loop. A client that has actually
+# completed a request holds a keep-alive connection; the connection holds an
+# asyncio transport; the transport holds the loop. So the map's *value* keeps
+# its own weak *key* alive, and neither is ever collected. Measured against the
+# pinned httpx 0.28.1: ~1.8 MB of RSS and two file descriptors retained per
+# `asyncio.run` that completes a request, with the client, the loop and its
+# sockets all still live afterwards.
+#
+# A client that never sent anything does drop out of the map, so the idle case
+# looks clean — which is why this was invisible to a test suite that fetches
+# through mock transports.
+#
+# The fix is not a cleverer map: a pooled connection has to be *closed*, not
+# merely dereferenced. Sync callers that drive a throwaway loop go through
+# `run_isolated`, which closes that loop's client on the way out.
 _http_by_loop: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, httpx.AsyncClient]" = (
     weakref.WeakKeyDictionary()
 )
@@ -102,6 +117,48 @@ def _get_http() -> httpx.AsyncClient:
         client = _new_http()
         _http_by_loop[loop] = client
     return client
+
+
+async def aclose_http() -> None:
+    """Close the HTTP client bound to the running loop, if there is one.
+
+    Closing is what releases the pooled connections; dropping the reference is
+    not enough, because the connection holds the loop that the map is keyed on
+    (see ``_http_by_loop``). Never raises: a cleanup path that can fail is a
+    cleanup path that ends up skipped.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    client = _http_by_loop.pop(loop, None)
+    if client is None or client.is_closed:
+        return
+    try:
+        await client.aclose()
+    except Exception as e:
+        print(f"[climate] closing HTTP client failed: {e}")
+
+
+def run_isolated(coro: "Awaitable[Any]") -> Any:
+    """``asyncio.run(coro)``, plus the cleanup that makes it safe to repeat.
+
+    Sync callers driving async code in a fresh loop — the notification
+    generators, anything else running from a worker thread — must use this
+    rather than `asyncio.run` directly. Every `asyncio.run` gets its own loop
+    and therefore its own client, and a client left open pins that loop, its
+    connections and its file descriptors for the life of the process. At the
+    measured ~1.8 MB apiece, sixty per notification cycle and four cycles an
+    hour exhausts a 512 MB instance inside two hours.
+    """
+    async def _runner() -> Any:
+        try:
+            return await coro
+        finally:
+            await aclose_http()
+
+    return asyncio.run(_runner())
+
 
 # Grid size for weather cache keys, in degrees. 0.05 deg is ~5.5 km — far finer
 # than any weather model's own resolution (Open-Meteo's best is ~1-11 km), so
@@ -313,6 +370,28 @@ def _load_stale(key: str) -> Optional[Tuple[float, Any]]:
         return None
 
 
+# Scanning `_cache` costs O(n); only bother once it is bigger than any
+# plausible working set of (endpoint x grid square) keys.
+_PRUNE_ABOVE = 512
+
+
+def _prune_cache(now: float) -> None:
+    """Drop entries too old to be served even as stale.
+
+    `_cache` retains expired entries on purpose so they can cover an upstream
+    outage, but past `_STALE_MAX_AGE` `_stale_for` will not serve them and they
+    are just held memory. The key space is bounded by (endpoint x snapped grid
+    square), so this is slow growth rather than the leak that caused the OOM —
+    but "bounded" quietly assumes a fixed set of farms, and the durable tier
+    behind it makes an evicted entry cheap to get back.
+    """
+    if len(_cache) <= _PRUNE_ABOVE:
+        return
+    for key in [k for k, (fetched_at, _, _) in _cache.items()
+                if now - fetched_at > _STALE_MAX_AGE]:
+        _cache.pop(key, None)
+
+
 async def _cached(key: str, ttl: float, producer: "Callable[[], Awaitable[Any]]") -> Any:
     """Cache + single-flight + serve-stale-on-error around an async producer.
 
@@ -356,6 +435,7 @@ async def _cached(key: str, ttl: float, producer: "Callable[[], Awaitable[Any]]"
     try:
         value = await producer()
         _cache[key] = (now, ttl, value)
+        _prune_cache(now)
         # Write-through, off the event loop: a fetch the farmer is waiting on
         # must not block on psycopg2.
         try:
