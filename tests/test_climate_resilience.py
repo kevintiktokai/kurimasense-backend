@@ -38,6 +38,18 @@ Stale-serve is what should have carried the app through fault 2. It lived
 entirely in process memory, and at 09:55 the service deployed. New process,
 empty cache, every key a miss with nothing behind it. The data needed to keep
 the app useful had existed twenty minutes earlier.
+
+FAULT 4 — the fix for fault 1, leaking (9 September 2026)
+---------------------------------------------------------
+    Ran out of memory (used over 512MB) while running your code.
+
+A client per event loop fixed fault 1 and introduced an out-of-memory loop.
+Nothing closed the client, and a client holding a keep-alive connection holds
+the loop through it — so the weak-keyed map that was supposed to clean up after
+itself retained every loop the notification cycle ever opened. One per farm,
+roughly sixty a cycle, four cycles an hour, ~1.8 MB apiece. The Open-Meteo logs
+for that morning show the shape plainly: a fresh connection per location, never
+reused, right up to the kill.
 """
 
 import asyncio
@@ -332,11 +344,13 @@ def test_a_broken_database_never_breaks_the_weather(monkeypatch):
 # ---------------------------------------------------------------------------
 # Wiring guard
 # ---------------------------------------------------------------------------
-def test_the_notification_generator_opens_one_loop_per_location_not_two():
-    # Two `asyncio.run` calls back to back was the shape that exposed fault 1.
-    # climate_service is now robust to it either way, but a generator that
-    # churns a loop per upstream call is a standing invitation to the next
-    # instance of this bug.
+def test_the_notification_generators_never_call_asyncio_run_directly():
+    # `asyncio.run` in a generator is how both faults on this page happened.
+    # Fault 1 was a shared client outliving the loop it was bound to; fault 4
+    # was the opposite — a client per loop, never closed, retaining the loop
+    # and its sockets until the process was killed for it. `run_isolated`
+    # closes the client, and hoisting it out of the per-item batch means there
+    # is one loop per cycle rather than one per farm.
     import pathlib
 
     src = (
@@ -344,11 +358,99 @@ def test_the_notification_generator_opens_one_loop_per_location_not_two():
         / "services" / "notifications" / "generators.py"
     ).read_text()
 
-    weather = src[src.index("def generate_weather_alerts"):src.index("def generate_irrigation_recommendations")]
-    assert weather.count("asyncio.run(") == 1, (
-        "one event loop per location, not one per upstream call"
+    assert "asyncio.run(" not in src, (
+        "generators must drive their loop through climate_service.run_isolated, "
+        "which closes the loop's HTTP client — a bare asyncio.run leaks it"
     )
+
+    weather = src[src.index("def generate_weather_alerts"):src.index("def generate_irrigation_recommendations")]
+    irrigation = src[src.index("def generate_irrigation_recommendations"):src.index("# \u2500\u2500 summaries")]
+    for name, body in (("weather", weather), ("irrigation", irrigation)):
+        assert body.count("run_isolated(") == 1, (
+            f"{name}: one event loop for the batch, not one per item"
+        )
     assert "_gather_weather" in weather
+
+
+# ---------------------------------------------------------------------------
+# FAULT 4 — the client per loop that was never closed
+# ---------------------------------------------------------------------------
+def test_run_isolated_retains_no_client_loop_or_socket_per_call():
+    """The OOM: a client per loop is only half a fix if nothing closes it.
+
+    `_http_by_loop` is weak-keyed on the loop, which reads as self-cleaning and
+    is not. Once a client has completed a request it holds a keep-alive
+    connection; the connection holds an asyncio transport; the transport holds
+    the loop. The map's value keeps its own weak key alive, so the entry, the
+    client, the loop and two file descriptors survive every `asyncio.run` for
+    the life of the process.
+
+    This has to fetch over a real socket to reproduce: a client that never sent
+    anything holds no connection, drops out of the map exactly as advertised,
+    and makes the bug invisible to the mock-transport tests above.
+    """
+    import gc
+    import os
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class _Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"  # keep-alive: the connection must persist
+
+        def do_GET(self):
+            body = b'{"ok": true}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{server.server_address[1]}/v1/forecast"
+
+    def live_clients():
+        gc.collect()
+        return sum(isinstance(o, httpx.AsyncClient) for o in gc.get_objects())
+
+    def open_fds():
+        try:
+            return len(os.listdir("/proc/self/fd"))
+        except OSError:  # not Linux; the object counts still carry the test
+            return None
+
+    async def _fetch():
+        response = await cs._get_http().get(url)
+        assert response.status_code == 200
+
+    try:
+        cs.run_isolated(_fetch())  # warm up: first-call allocations aren't leaks
+        before_clients, before_fds = live_clients(), open_fds()
+
+        for _ in range(25):
+            cs.run_isolated(_fetch())
+
+        after_clients, after_fds = live_clients(), open_fds()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert not cs._http_by_loop, (
+        f"{len(cs._http_by_loop)} client(s) still mapped to finished loops — "
+        "the value is pinning its own weak key"
+    )
+    assert after_clients <= before_clients, (
+        f"{after_clients - before_clients} httpx.AsyncClient(s) retained across "
+        "25 run_isolated calls; each one holds a loop and its sockets"
+    )
+    if before_fds is not None:
+        assert after_fds - before_fds < 10, (
+            f"{after_fds - before_fds} file descriptors retained across 25 calls "
+            "(the unclosed pool leaks two apiece)"
+        )
 
 
 # ---------------------------------------------------------------------------
